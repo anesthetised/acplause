@@ -1,0 +1,50 @@
+package main
+
+import (
+	"cmp"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"time"
+
+	"github.com/anesthetised/acplause/internal/llm"
+)
+
+// config is read from the environment.
+type config struct {
+	BaseURL     string
+	APIKey      string
+	MaxRounds   int
+	BashTimeout time.Duration
+	LogLevel    slog.Level
+}
+
+func loadConfig(getenv func(string) string) (config, error) {
+	cfg := config{
+		BaseURL: cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
+		APIKey:  cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
+	}
+
+	var errs []error
+	if v := getenv("ACPLAUSE_MAX_ROUNDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			errs = append(errs, fmt.Errorf("ACPLAUSE_MAX_ROUNDS: want a positive integer, got %q", v))
+		}
+		cfg.MaxRounds = n
+	}
+	if v := getenv("ACPLAUSE_BASH_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			errs = append(errs, fmt.Errorf("ACPLAUSE_BASH_TIMEOUT: want a positive duration such as 90s, got %q", v))
+		}
+		cfg.BashTimeout = d
+	}
+	if v := getenv("ACPLAUSE_LOG_LEVEL"); v != "" {
+		if err := cfg.LogLevel.UnmarshalText([]byte(v)); err != nil {
+			errs = append(errs, fmt.Errorf("ACPLAUSE_LOG_LEVEL: %w", err))
+		}
+	}
+	return cfg, errors.Join(errs...)
+}
