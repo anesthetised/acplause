@@ -56,49 +56,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
-      contents: write
+      contents: write # the badges branch
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Prepare coverage branch
-        run: |
-          if git ls-remote --exit-code --heads origin coverage; then
-            git fetch --depth=1 origin coverage
-            git switch -c coverage FETCH_HEAD
-          else
-            status=$?
-            if [ "$status" -ne 2 ]; then exit "$status"; fi
-            git switch --orphan coverage
-          fi
-
-      - name: Generate badge
-        shell: python
+      # The README badge reads coverage.json from the `badges` branch via
+      # shields.io; the branch holds one commit, replaced on every push.
+      - name: Publish the coverage badge
         env:
+          GH_TOKEN: ${{ github.token }}
           COVERAGE: ${{ needs.check.outputs.coverage }}
         run: |
-          import os
-          from pathlib import Path
-
-          coverage = float(os.environ["COVERAGE"].removesuffix("%"))
-          label = f"{coverage:.1f}%"
-          Path("coverage.svg").write_text(f'''<svg xmlns="http://www.w3.org/2000/svg" width="142" height="20" role="img" aria-label="Go coverage: {label}">
-            <title>Go coverage: {label}</title>
-            <clipPath id="r"><rect width="142" height="20" rx="3"/></clipPath>
-            <g clip-path="url(#r)">
-              <path fill="#555" d="M0 0h80v20H0z"/>
-              <path fill="#007ec6" d="M80 0h62v20H80z"/>
-            </g>
-            <g fill="#fff" text-anchor="middle" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11">
-              <text x="40" y="14">Go coverage</text>
-              <text x="111" y="14">{label}</text>
-            </g>
-          </svg>\n''')
-
-      - name: Publish badge
-        run: |
-          git add coverage.svg
-          if git diff --cached --quiet; then exit 0; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Update coverage badge'
-          git push origin HEAD:coverage
+          pct=${COVERAGE%\%}
+          color=$(awk -v p="$pct" 'BEGIN { print (p >= 80 ? "brightgreen" : p >= 60 ? "yellow" : "red") }')
+          mkdir badge && cd badge
+          printf '{"schemaVersion":1,"label":"Go coverage","message":"%s%%","color":"%s"}\n' "$pct" "$color" > coverage.json
+          git init -q -b badges
+          git add coverage.json
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -q -m "coverage $pct%"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" badges
