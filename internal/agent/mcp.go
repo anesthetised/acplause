@@ -26,6 +26,7 @@ type modelRound struct {
 }
 
 type preparedTool struct {
+	observeShell   func() *tools.ShellObserver
 	Title, Command string
 	Locations      []string
 	permission     bool
@@ -61,7 +62,11 @@ func prepareBuiltin(tb *tools.Toolbox, name, args string) (*preparedTool, error)
 	if err != nil {
 		return nil, err
 	}
-	return &preparedTool{Title: c.Title, Command: c.Command, Locations: c.Locations, permission: asksPermission(tb.Kind(name)), preview: c.Preview, run: func(ctx context.Context) toolOutput { return builtinOutput(c.Run(ctx)) }}, nil
+	prepared := &preparedTool{Title: c.Title, Command: c.Command, Locations: c.Locations, permission: asksPermission(tb.Kind(name)), preview: c.Preview, run: func(ctx context.Context) toolOutput { return builtinOutput(c.Run(ctx)) }}
+	if c.Command != "" {
+		prepared.observeShell = c.ObserveShell
+	}
+	return prepared, nil
 }
 func prepareMCP(t mcp.Tool, args string, vision bool) (*preparedTool, error) {
 	raw, err := mcp.ObjectArguments(args)

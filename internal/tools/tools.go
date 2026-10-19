@@ -41,12 +41,26 @@ type Spec struct {
 
 // Call is a validated tool invocation, ready to run.
 type Call struct {
-	Title     string
-	Locations []string // absolute paths the call touches
-	Command   string   // the command line, for bash
-	run       func(ctx context.Context) (string, error)
-	preview   func(ctx context.Context) (*acp.ToolCallContent, error) // file tools
-	diff      *acp.ToolCallContent                                    // set by run before it writes, for file tools
+	shell      *ShellObserver // opt-in, attached before Run
+	shellLimit int
+	Title      string
+	Locations  []string // absolute paths the call touches
+	Command    string   // the command line, for bash
+	run        func(ctx context.Context) (string, error)
+	preview    func(ctx context.Context) (*acp.ToolCallContent, error) // file tools
+	diff       *acp.ToolCallContent                                    // set by run before it writes, for file tools
+}
+
+// ObserveShell enables bounded observation of a bash call. Attach it before Run;
+// non-shell calls return nil. Each prepared call owns its observer.
+func (c *Call) ObserveShell() *ShellObserver {
+	if c.Command == "" {
+		return nil
+	}
+	if c.shell == nil {
+		c.shell = &ShellObserver{output: cappedBuffer{limit: c.shellLimit}, changed: make(chan struct{}, 1)}
+	}
+	return c.shell
 }
 
 // Preview returns the diff a file tool would apply, without applying it, so

@@ -1,13 +1,14 @@
 # Execution plan: Stream agent-owned bash terminals with bounded replay
 
-Status: planned. Baseline: acplause `d9c99f1`, 2026-10-19.
+Status: implemented for #35/#36 with automated coverage; real-T3 gate (#38) pending.
+Baseline: acplause `d9c99f1`, 2026-10-19.
 Tracker: [#25](https://github.com/anesthetised/acplause/issues/25); task checkboxes live in GitHub Issues.
 Contract: [ADR 0014](../../docs/adr/0014-stream-agent-terminals.md).
 Read the [roadmap](../plan.md) for ordering and shared acceptance gates.
 
 ## Execution rules
 
-This is a planning deliverable; no feature is implemented by this document.
+This document records the implementation contract and verification workflow.
 Use GitHub issues as the authoritative task checklist. Each issue below is one
 bounded execution task; do not implement the whole roadmap in one run.
 
@@ -105,6 +106,14 @@ Coordinate resume and command output with channels/barriers; assert terminal fin
 
 Then run the shared check/coverage gate. For groundwork issues, no public feature
 is advertised yet; their dependent activation issue supplies protocol e2e coverage.
+
+## Integration note
+
+The activation slice also carries a small `preparedTool` adapter change in
+`internal/agent/mcp.go`, where built-in calls enter the shared execution path.
+It retains the invocation-local observer hook; external MCP calls do not use
+it. This glue is required to connect SHELL to TERMINAL without moving the
+existing preparation code.
 
 ## Exit checkpoint and handoff
 

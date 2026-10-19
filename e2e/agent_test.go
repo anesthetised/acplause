@@ -71,6 +71,12 @@ type rpcError struct {
 
 // update is a decoded session/update notification.
 type update struct {
+	TerminalID      string          `json:"terminalId"`
+	Command         string          `json:"command"`
+	Cwd             string          `json:"cwd"`
+	Output          *terminalOutput `json:"output"`
+	ExitStatus      *terminalExit   `json:"exitStatus"`
+	Data            string          `json:"data"`
 	seq             int
 	SessionID       string
 	SessionUpdate   string          `json:"sessionUpdate"`

@@ -1,6 +1,6 @@
 # ADR 0014: Stream agent-owned bash terminals with bounded replay
 
-- Status: proposed; implementation contract prepared for the requested roadmap
+- Status: accepted; implemented with schema-validated tests; real-T3 validation pending (#38)
 - Date: 2026-10-19
 - Issues: [#35](https://github.com/anesthetised/acplause/issues/35), [#36](https://github.com/anesthetised/acplause/issues/36)
 - Scope change: Extends bash presentation; preserves ADRs 0003 and 0008 execution/timeout policies
@@ -39,5 +39,10 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
-Execution plan: [terminals](../../tasks/t3/terminals.md). The roadmap's request is to prepare this design, not implement it. Mark accepted when implementation is authorized; do not silently revise the contract in a small execution task.
+Execution plan: [terminals](../../tasks/t3/terminals.md). Issues #35 and #36
+implement this contract. Automated tests cover live binary output, bounded
+replacement and replay, simultaneous sessions, slow/failing publication,
+permission rejection, failed starts, cancellation, timeout, close/delete and
+crash recovery. The actual T3 client gate remains pending under #38;
+fake-client tests do not satisfy it.
 

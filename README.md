@@ -16,6 +16,7 @@ first, and works in your workspace through tools.
 
 - ACP v2 only, validated against the pinned schema (`testdata/schema/v2`).
 - Streaming text and reasoning, tool calls, usage and cost reporting.
+- Live bash terminal output with bounded snapshots for session replay.
 - Asks permission before changing files or running commands.
 - Prompt queue, cancellation that aborts the HTTP stream and kills
   everything a command started, session list/resume/close/delete.
@@ -102,6 +103,23 @@ acplause offers "allow once" and "reject once"; anything else, including a
 cancelled or unrecognised answer, is a rejection, which the model is told
 about. Automatic approval is the client's setting. See
 [ADR 0003](docs/adr/0003-permissions.md).
+
+Permitted `bash` commands stream combined stdout/stderr into an agent-owned,
+noninteractive ACP terminal. The client gets the command, working directory,
+a terminal reference on the tool call, byte chunks and a final replacement
+snapshot with the process's exit code or signal. Rejected commands and failed
+process starts create no terminal. Commands continue to use the existing
+permissions, timeout and process-group cancellation policy.
+
+Terminal output retains the first 50,000 bytes; excess bytes are counted and
+reported by an omission marker in the final snapshot. Live updates publish at
+most every 100 ms in chunks up to 16 KiB. Resume replays one bounded snapshot
+per terminal, ordered with ongoing output. Restarts preserve saved output and
+mark interrupted terminals ended with unknown exit status; recent unsaved
+chunks may be lost. The model still receives the usual bounded textual tool
+result. Terminals provide no stdin, PTY or detached jobs. See
+[ADR 0014](docs/adr/0014-stream-agent-terminals.md). Automated tests validate the
+wire protocol; actual T3 rendering remains pending [#38](https://github.com/anesthetised/acplause/issues/38).
 
 File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not
