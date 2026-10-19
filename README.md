@@ -119,8 +119,9 @@ per terminal, ordered with ongoing output. Restarts preserve saved output and
 mark interrupted terminals ended with unknown exit status; recent unsaved
 chunks may be lost. The model still receives the usual bounded textual tool
 result. Terminals provide no stdin, PTY or detached jobs. See
-[ADR 0014](docs/adr/0014-stream-agent-terminals.md). Automated tests validate the
-wire protocol; actual T3 rendering remains pending [#38](https://github.com/anesthetised/acplause/issues/38).
+[ADR 0014](docs/adr/0014-stream-agent-terminals.md). Actual T3 streaming,
+cancellation and restart replay were verified in the
+[runtime smoke record](docs/testing/t3-first-class-smoke.md).
 
 File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not
@@ -155,9 +156,10 @@ then paste a screenshot into the composer or upload a PNG/JPEG attachment
 and send the prompt. T3 supplies the image bytes over ACP; a file path in a
 text prompt does not attach its pixels. Image-only prompts and multiple
 images are accepted. A session without a textual title is named "Image prompt".
-Actual T3 clipboard/upload interoperability is still awaiting the runtime
-checks in [#38](https://github.com/anesthetised/acplause/issues/38); automated
-tests cover the ACP-to-provider path. See [ADR 0010](docs/adr/0010-image-prompts.md).
+Actual T3 clipboard paste, JPEG upload, attachment-only composer input and
+multiple images were verified with random visual markers in the
+[runtime smoke record](docs/testing/t3-first-class-smoke.md). Automated tests
+cover the ACP-to-provider path. See [ADR 0010](docs/adr/0010-image-prompts.md).
 
 Images are limited to 4 MiB decoded bytes and 16 million pixels each, four
 images and 8 MiB decoded total per prompt. Invalid images, no model selection,
@@ -187,8 +189,9 @@ ask in text. Malformed optional capability values are treated as unsupported,
 so they do not prevent initialization. This does not enable MCP server
 elicitation. See
 [ADR 0011](docs/adr/0011-structured-user-questions.md) and the
-[T3 form smoke procedure](docs/testing/t3-first-class-smoke.md). Actual T3 question
-card acceptance remains pending [#38](https://github.com/anesthetised/acplause/issues/38).
+[T3 form smoke procedure](docs/testing/t3-first-class-smoke.md). Native T3 form
+answers and turn cancellation were verified; the procedure distinguishes those
+observations from extended lifecycle cases covered only by automated tests.
 
 For multi-step work, the model can publish a native ACP plan with `update_plan`.
 Each call replaces the complete list of one to twenty entries, with priorities
@@ -203,9 +206,8 @@ position. Cancellation, errors and restarts preserve unfinished statuses.
 Plans report progress without executing commands, changing files or asking
 permission, and require no optional client capability. See
 [ADR 0012](docs/adr/0012-structured-plans.md). Automated tests cover the protocol;
-actual T3 rendering remains pending the
-[runtime acceptance procedure](docs/testing/t3-first-class-smoke.md) in
-[#38](https://github.com/anesthetised/acplause/issues/38).
+native T3 plan replacement, Plan/Build selection and plan replay after restart
+were verified in the [runtime smoke record](docs/testing/t3-first-class-smoke.md).
 
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
@@ -303,8 +305,12 @@ usable text/JSON and images that fit. Audio and blob results remain omitted.
 An unsupported-only result fails with a possible-completion warning; image
 projection never repeats the remote operation. Images persist for resume and
 replay, while summaries and ACP rawOutput carry descriptors without base64.
-Actual T3 screenshot interoperability remains a runtime gate in
-[#38](https://github.com/anesthetised/acplause/issues/38).
+Actual T3 browser screenshots reached the vision model and fresh visual markers
+were recognized. In the tested T3 build, the expanded ACP tool card displays
+only the image descriptor, without an inline image; this client display gap is
+tracked in [#71](https://github.com/anesthetised/acplause/issues/71), separately
+from successful model delivery. See the
+[runtime smoke record](docs/testing/t3-first-class-smoke.md).
 See [ADR 0009](docs/adr/0009-image-tool-results.md),
 [ADR 0007](docs/adr/0007-mcp-servers.md) and the
 [real T3 smoke record](docs/testing/mcp-t3-smoke.md).
@@ -333,8 +339,14 @@ Cancellation and summary failures keep the pre-summary history (apart from
 any completed tool-output trimming). `/compact explanation`, `/compactness`,
 resource contents and prompts mixing text with attachments remain ordinary
 prompts. The command is advertised on session creation and resume; see
-[ADR 0015](docs/adr/0015-compact-slash-command.md). Actual T3 slash-menu
-validation remains part of [#38](https://github.com/anesthetised/acplause/issues/38).
+[ADR 0015](docs/adr/0015-compact-slash-command.md). In the tested T3 Code (Beta)
+0.1.0 build, the advertised command is absent from the slash menu and submission
+fails before ACP dispatch; see [#70](https://github.com/anesthetised/acplause/issues/70).
+The [runtime smoke record](docs/testing/t3-first-class-smoke.md) distinguishes
+shipped ACP behavior from client compatibility. Full T3 acceptance
+[#38](https://github.com/anesthetised/acplause/issues/38) remains open for this
+and tool-image display. Checkpoint rollback, native subagent lineage, rewind,
+active steering and auth are not provided by this ACP v2 roadmap.
 
 ## Storage
 
