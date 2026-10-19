@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,5 +174,38 @@ func TestMCPTimeoutIsIndependent(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("MCP tool did not use independent deadline")
+	}
+}
+
+func TestMCPRequestCancellationDoesNotCancelNextPrompt(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(reply("second ran"))
+	a := start(t, llm)
+	a.initialize()
+	cwd := t.TempDir()
+	sid := mcpSession(t, a, cwd)
+	gate := filepath.Join(cwd, "gate")
+	cfg := mcpConfig("alpha", filepath.Join(cwd, "calls"), "new")
+	cfg["env"] = append(cfg["env"].([]any), map[string]string{"name": "FIXTURE_GATE", "value": gate})
+	resume := a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{cfg}})
+	waitForFile(t, gate+".entered")
+	first := a.prompt(sid, "first")
+	second := a.prompt(sid, "second")
+	a.notify("$/cancel_request", map[string]any{"requestId": json.RawMessage(first)})
+	if r := a.response(first); r.Error == nil || r.Error.Code != -32800 {
+		t.Fatalf("first: %+v", r)
+	}
+	if err := os.WriteFile(gate, []byte("go"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if r := a.response(resume); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	a.updateWhere(sid, func(u update) bool { return u.is("state_update") && u.State == "idle" })
+	a.accepted(second)
+	a.untilIdle(sid)
+	if llm.requestCount() != 1 {
+		t.Fatalf("requests=%d", llm.requestCount())
 	}
 }

@@ -306,8 +306,13 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 	op := a.reserveOperation(ctx, req.SessionID, false)
 	op.prompt = true
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
-		if op.previous != nil && op.previous.err != nil {
-			return op.previous.err
+		for setup := op.previous; setup != nil; setup = setup.previous {
+			if !setup.prompt {
+				if setup.err != nil {
+					return setup.err
+				}
+				break
+			}
 		}
 		s, err := a.session(req.SessionID)
 		if err != nil {
