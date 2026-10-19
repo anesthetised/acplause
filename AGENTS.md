@@ -120,6 +120,15 @@ testdata/schema/v2 pinned ACP schema; see VERSION
   storage or restarts.
 - Unix-only tests (process groups, `syscall.Kill`) go in files built with
   `//go:build unix`.
+- Actual T3 acceptance is recorded in
+  [docs/testing/t3-first-class-smoke.md](docs/testing/t3-first-class-smoke.md).
+  Keep #38/#25 open while a required runtime gate fails or is unavailable;
+  #70 tracks `/compact` discovery/dispatch and #71 tracks tool-image display.
+  Test the built binary as a T3 ACP provider; parent tools, CLI fallbacks and
+  automated fake clients do not establish child-provider interoperability.
+  Record clipboard paste separately from file upload and tool images, using
+  random pixel-only markers and secret-free metadata. Distinguish model
+  delivery from client rendering; do not change wire shapes for a client gap.
 
 ## Out of scope
 
