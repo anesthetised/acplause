@@ -14,7 +14,7 @@ import (
 	"github.com/anesthetised/acplause/internal/llm"
 )
 
-var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questions when you need input to continue. Use options for a single choice, or omit options for text. This requests information, never permission to perform an action.", json.RawMessage(`{
+var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questions when you need input to continue. Use options for a single choice, or omit options for text. This requests information, never permission to perform an action. Never request secrets or credentials, including passwords, API keys, tokens, private keys, recovery codes or payment credentials. If credentials are needed, ask the user to configure them outside this conversation and report only whether setup is complete. Do not ask them to paste secrets into chat.", json.RawMessage(`{
  "type":"object","properties":{
   "message":{"type":"string","minLength":1,"maxLength":2000},
   "questions":{"type":"array","minItems":1,"maxItems":3,"items":{

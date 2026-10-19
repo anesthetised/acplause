@@ -280,3 +280,33 @@ func TestElicitationAnswerDoesNotGrantPermission(t *testing.T) {
 		t.Fatalf("rejected write ran: %v", err)
 	}
 }
+
+func TestElicitationMalformedCapabilities(t *testing.T) {
+	t.Parallel()
+	for _, caps := range []string{
+		`true`,
+		`[]`,
+		`{"elicitation":false}`,
+		`{"elicitation":[]}`,
+		`{"elicitation":{"form":true}}`,
+		`{"elicitation":{"form":[]}}`,
+	} {
+		t.Run(caps, func(t *testing.T) {
+			t.Parallel()
+			llm := newMockLLM(t)
+			llm.enqueue(reply("Ready."))
+			a := start(t, llm)
+			a.ok("initialize", map[string]any{"protocolVersion": 2, "info": map[string]any{"name": "e2e", "version": "1"}, "capabilities": json.RawMessage(caps)}, nil)
+			sid := a.newSession(t.TempDir()).SessionID
+			a.ok("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": "test/model"}, nil)
+			a.accepted(a.prompt(sid, "hello"))
+			a.untilIdle(sid)
+			for _, tool := range llm.request(0).Tools {
+				if tool["function"].(map[string]any)["name"] == "ask_user" {
+					t.Fatal("malformed capability advertised form support")
+				}
+			}
+			a.expectNoElicitation()
+		})
+	}
+}

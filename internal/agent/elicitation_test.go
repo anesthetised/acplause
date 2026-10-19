@@ -276,9 +276,17 @@ func TestElicitationCapabilityControlsCatalog(t *testing.T) {
 			s := c.agent.sessions[sid]
 			c.agent.mu.Unlock()
 			catalog := s.request()
-			found := slices.ContainsFunc(catalog.Tools, func(t llm.Tool) bool { return t.Function.Name == "ask_user" })
-			if found != forms {
-				t.Fatalf("advertised=%v", found)
+			index := slices.IndexFunc(catalog.Tools, func(t llm.Tool) bool { return t.Function.Name == "ask_user" })
+			if (index >= 0) != forms {
+				t.Fatalf("ask_user tool index=%d, supported=%v", index, forms)
+			}
+			if forms {
+				description := catalog.Tools[index].Function.Description
+				for _, instruction := range []string{"Never request secrets or credentials", "passwords", "API keys", "outside this conversation", "Do not ask them to paste secrets into chat"} {
+					if !strings.Contains(description, instruction) {
+						t.Errorf("missing form safety instruction %q", instruction)
+					}
+				}
 			}
 			if !forms {
 				c.await(c.prompt(sid, "ask"))

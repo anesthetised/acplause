@@ -126,6 +126,9 @@ fields, optionally with single-choice options. Only a complete accepted answer
 with the requested keys and valid values reaches the model as answers; decline,
 cancel, malformed responses and request failures become failed tool results.
 While waiting, the tool stays pending and the session reports `requires_action`.
+The tool instructs the model never to request secrets or credentials, including
+passwords and API keys. When access needs configuring, the user should do so
+outside the conversation and report only whether setup is complete.
 Answers request information; file writes and commands still require permission.
 
 Cancelling, closing or deleting the session stops waiting and sends best-effort
@@ -133,7 +136,9 @@ Cancelling, closing or deleting the session stops waiting and sends best-effort
 replays the pending tool without reissuing the form; a process restart restores
 finished results or fails interrupted questions. Form support is renegotiated on
 every connection. Clients without it receive no `ask_user` tool and the model can
-ask in text. This does not enable MCP server elicitation. See
+ask in text. Malformed optional capability values are treated as unsupported,
+so they do not prevent initialization. This does not enable MCP server
+elicitation. See
 [ADR 0011](docs/adr/0011-structured-user-questions.md) and the
 [T3 form smoke procedure](docs/testing/t3-first-class-smoke.md). Actual T3 question
 card acceptance remains pending [#38](https://github.com/anesthetised/acplause/issues/38).
