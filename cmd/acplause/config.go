@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/anesthetised/acplause/internal/agent"
 	"github.com/anesthetised/acplause/internal/llm"
 )
 
@@ -27,7 +28,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		BaseURL:    cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
 		APIKey:     cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
 		DataDir:    getenv("ACPLAUSE_DATA_DIR"),
-		MCPTimeout: 10 * time.Minute,
+		MCPTimeout: agent.DefaultMCPTimeout,
 	}
 
 	var errs []error

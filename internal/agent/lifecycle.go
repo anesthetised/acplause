@@ -22,6 +22,8 @@ type sessionOperation struct {
 	err      error // published by closing done
 }
 
+// reserveOperation records ACP arrival order before any off-loop work. An
+// interrupting close/delete cancels predecessors, but still owns terminal cleanup.
 func (a *Agent) reserveOperation(ctx context.Context, id string, interrupt bool) *sessionOperation {
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(a.ctx, cancel)
@@ -39,6 +41,10 @@ func (a *Agent) reserveOperation(ctx context.Context, id string, interrupt bool)
 	a.jobs.Add(1)
 	return op
 }
+
+// startOperation waits without blocking the reader. Terminal work must still
+// release resources after request cancellation; closing done preserves the
+// barrier even when a queued operation's reply has already been rejected.
 func (a *Agent) startOperation(id string, op *sessionOperation, work func(context.Context) error) {
 	go func() {
 		defer a.jobs.Done()
@@ -76,6 +82,10 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 		}
 	}()
 }
+
+// cancelWaitingPrompts signals cancellation without settling replies owned by
+// Session: a store commit racing cancellation may already have crossed insertion.
+// Operations still waiting for setup are rejected by startOperation instead.
 func (a *Agent) cancelWaitingPrompts(id string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -83,7 +93,6 @@ func (a *Agent) cancelWaitingPrompts(id string) bool {
 	for op := tail; op != nil; op = op.previous {
 		if op.prompt {
 			op.cancel()
-			op.reply.Reject(acp.ErrRequestCancelled())
 		}
 	}
 	return tail != nil

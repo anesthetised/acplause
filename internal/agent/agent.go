@@ -24,6 +24,9 @@ import (
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
+// DefaultMCPTimeout bounds external tool execution independently of bash.
+const DefaultMCPTimeout = 10 * time.Minute
+
 // Model streams chat completions; *llm.Client implements it.
 type Model interface {
 	Chat(ctx context.Context, req llm.Request, onDelta func(llm.Delta)) (*llm.Completion, error)
@@ -81,7 +84,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	mcpTimeout := 10 * time.Minute
+	mcpTimeout := DefaultMCPTimeout
 	if cfg.MCPTimeout != nil {
 		mcpTimeout = *cfg.MCPTimeout
 	}
@@ -282,7 +285,12 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 		if a.shuttingDown || ctx.Err() != nil || a.ctx.Err() != nil {
 			a.mu.Unlock()
 			s.Close()
-			a.release(s)
+			// The client never received this ID. Remove its unpublished record
+			// even on shutdown, rather than leaving a listed ghost session.
+			if err := a.cfg.Store.Delete(context.WithoutCancel(a.ctx), s.id); err != nil {
+				a.cfg.Log.Warn("discarding unpublished session", "session", s.id, "err", err)
+				a.release(s)
+			}
 			reply.Reject(acp.ErrRequestCancelled())
 			return
 		}
@@ -307,6 +315,8 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 	op := a.reserveOperation(ctx, req.SessionID, false)
 	op.prompt = true
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		// A prompt depends on the requested setup, not on whether an earlier
+		// prompt was cancelled. Failed setup must reject before insertion.
 		for setup := op.previous; setup != nil; setup = setup.previous {
 			if !setup.prompt {
 				if setup.err != nil {
