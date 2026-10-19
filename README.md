@@ -91,6 +91,17 @@ Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
 already running keeps its roots until it finishes.
 
+Long conversations automatically reduce model context when its estimated
+input size exceeds 75% of the model's advertised window. Large tool results
+are shortened oldest first; if that is insufficient, the same model summarizes
+older history. The system instructions, latest user prompt and latest tool
+exchange in the active turn are retained. The editor receives compaction
+status and the summary, and replay keeps the original full conversation.
+Summary requests count toward the request limit and usage cost. The portable
+byte-based estimate is conservative; providers without a published context
+length do not enable automatic compaction. See
+[ADR 0006](docs/adr/0006-context-compaction.md) for limits and recovery behavior.
+
 ## Storage
 
 Sessions are stored in `~/.acplause/acplause.db`; `ACPLAUSE_DATA_DIR` selects

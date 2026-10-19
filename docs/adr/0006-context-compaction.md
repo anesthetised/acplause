@@ -4,7 +4,8 @@
 - Date: 2026-10-19
 - Issue: #11
 - Source: ACP schema at `3be9cfc` (`testdata/schema/v2/VERSION`),
-  `CompactionUpdate`; [OpenRouter parameters](https://openrouter.ai/docs/api/reference/parameters)
+  `CompactionUpdate`, `protocol/v2/prompt-lifecycle.mdx#session-compaction`;
+  [OpenRouter parameters](https://openrouter.ai/docs/api/reference/parameters)
 
 ## Context
 
@@ -32,10 +33,13 @@ user saw. No tokenizer is shared by all supported models.
    model, without tools, to summarize older messages. Preserve goals, user
    constraints, decisions, file changes, tool outcomes and pending work.
    Keep the system prompt, latest user prompt and most recent complete
-   assistant/tool exchange verbatim (apart from result trimming). Earlier
-   exchanges within the current turn may be summarized too. Never split
+   assistant/tool exchange in the active turn verbatim (apart from result
+   trimming). Completed earlier turns and older exchanges within the current
+   turn may be summarized. Never split
    a tool call from its results. Store the summary as an assistant message,
    not as system instructions. Future compactions summarize earlier summaries.
+   Historical messages are supplied as JSON data, with reasoning fields
+   excluded so hidden reasoning cannot leak into the displayable summary.
 4. **Bound summary requests too.** Consume old history in complete exchanges
    that fit the same input budget, folding each chunk into a rolling summary.
    Summary calls count against `ACPLAUSE_MAX_ROUNDS`, reserving a request
@@ -58,7 +62,8 @@ user saw. No tokenizer is shared by all supported models.
    trimming is retained. Storage failures follow ADR 0004's in-memory fallback.
 7. **Account for work.** Include summary request cost in cumulative usage.
    Cancellation aborts summary generation through the turn's context. Model
-   and directory changes apply at subsequent request snapshots as before.
+   and directory changes apply when preparing the next normal request;
+   one compaction's summary calls use the model selected when it began.
 
 ## Consequences
 
