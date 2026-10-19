@@ -174,23 +174,29 @@ func (tb *Toolbox) writeFile(args writeFileArgs) (*Call, error) {
 	if len(*args.Content) > maxWriteSize {
 		return nil, fmt.Errorf("content is too large (%d bytes, max %d)", len(*args.Content), maxWriteSize)
 	}
-	c := &Call{Title: "Write " + args.Path, Locations: []string{t.abs}}
-	c.run = func(ctx context.Context) (string, error) {
-		// Diff first, so the change is known before anything is written.
+	plan := func(ctx context.Context) (*acp.ToolCallContent, error) {
 		old, err := t.readFile(ctx, maxWriteSize)
+		var d acp.ToolCallContent
 		switch {
 		case ctx.Err() != nil:
-			return "", ctx.Err()
+			return nil, ctx.Err()
 		case errors.Is(err, fs.ErrNotExist):
-			d := fileDiff(t.abs, "", false, *args.Content)
-			c.diff = &d
+			d = fileDiff(t.abs, "", false, *args.Content)
 		case err != nil: // unreadable or too large: the write decides
-			d := acp.ToolDiff([]acp.DiffChange{{Operation: acp.DiffModify, Path: t.abs, FileType: acp.FileText}}, nil)
-			c.diff = &d
+			d = acp.ToolDiff([]acp.DiffChange{{Operation: acp.DiffModify, Path: t.abs, FileType: acp.FileText}}, nil)
 		default:
-			d := fileDiff(t.abs, string(old), true, *args.Content)
-			c.diff = &d
+			d = fileDiff(t.abs, string(old), true, *args.Content)
 		}
+		return &d, nil
+	}
+	c := &Call{Title: "Write " + args.Path, Locations: []string{t.abs}, preview: plan}
+	c.run = func(ctx context.Context) (string, error) {
+		// Diff first, so the change is known before anything is written.
+		d, err := plan(ctx)
+		if err != nil {
+			return "", err
+		}
+		c.diff = d
 		if err := t.root.MkdirAll(filepath.Dir(t.rel), 0o755); err != nil {
 			return "", err
 		}
@@ -234,23 +240,35 @@ func (tb *Toolbox) edit(args editArgs) (*Call, error) {
 	if args.NewText == nil {
 		return nil, errors.New("new_text is required")
 	}
-	c := &Call{Title: "Edit " + args.Path, Locations: []string{t.abs}}
-	c.run = func(ctx context.Context) (string, error) {
+	plan := func(ctx context.Context) (string, *acp.ToolCallContent, error) {
 		data, err := t.readFile(ctx, 0)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		content := string(data)
 		switch n := strings.Count(content, args.OldText); n {
 		case 0:
-			return "", fmt.Errorf("old_text not found in %s; re-read the file and copy the exact text", args.Path)
+			return "", nil, fmt.Errorf("old_text not found in %s; re-read the file and copy the exact text", args.Path)
 		case 1:
 		default:
-			return "", fmt.Errorf("old_text occurs %d times in %s; add context to make it unique", n, args.Path)
+			return "", nil, fmt.Errorf("old_text occurs %d times in %s; add context to make it unique", n, args.Path)
 		}
 		updated := strings.Replace(content, args.OldText, *args.NewText, 1)
 		d := fileDiff(t.abs, content, true, updated)
-		c.diff = &d
+		return updated, &d, nil
+	}
+	c := &Call{Title: "Edit " + args.Path, Locations: []string{t.abs}}
+	c.preview = func(ctx context.Context) (*acp.ToolCallContent, error) {
+		_, d, err := plan(ctx)
+		return d, err
+	}
+	c.run = func(ctx context.Context) (string, error) {
+		// Plan again: the file may have changed since the preview.
+		updated, d, err := plan(ctx)
+		if err != nil {
+			return "", err
+		}
+		c.diff = d
 		if err := t.writeFile(ctx, []byte(updated)); err != nil {
 			return "", err
 		}

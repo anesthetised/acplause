@@ -76,8 +76,9 @@ type State string
 
 // Foreground states.
 const (
-	StateIdle    State = "idle"
-	StateRunning State = "running"
+	StateIdle           State = "idle"
+	StateRunning        State = "running"
+	StateRequiresAction State = "requires_action"
 )
 
 // StopReason says why foreground work ended.
@@ -118,6 +119,7 @@ type ToolCallStatus string
 
 // Tool call statuses.
 const (
+	ToolPending    ToolCallStatus = "pending"
 	ToolInProgress ToolCallStatus = "in_progress"
 	ToolCompleted  ToolCallStatus = "completed"
 	ToolFailed     ToolCallStatus = "failed"

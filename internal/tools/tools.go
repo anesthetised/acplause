@@ -38,8 +38,20 @@ type Spec struct {
 type Call struct {
 	Title     string
 	Locations []string // absolute paths the call touches
+	Command   string   // the command line, for bash
 	run       func(ctx context.Context) (string, error)
-	diff      *acp.ToolCallContent // set by run before it writes, for file tools
+	preview   func(ctx context.Context) (*acp.ToolCallContent, error) // file tools
+	diff      *acp.ToolCallContent                                    // set by run before it writes, for file tools
+}
+
+// Preview returns the diff a file tool would apply, without applying it, so
+// the user can approve it first. Other tools have no preview. An error means
+// the call would fail; like Run's, it is meant for the model.
+func (c *Call) Preview(ctx context.Context) (*acp.ToolCallContent, error) {
+	if c.preview == nil {
+		return nil, nil
+	}
+	return c.preview(ctx)
 }
 
 // Result is what a call reports back to the model.

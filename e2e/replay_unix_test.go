@@ -13,7 +13,7 @@ func TestResumeReplaysRunningToolAndCancellation(t *testing.T) {
 	llm.enqueue(callTool("bash", `{"command":"echo ready > ready; sleep 60"}`))
 	a, sid, cwd := started(t, llm)
 	a.accepted(a.prompt(sid, "run"))
-	start := a.updateWhere(sid, func(u update) bool { return u.is("tool_call_update") })
+	start := a.toolStarted(sid)
 	waitForFile(t, filepath.Join(cwd, "ready"))
 	params := map[string]any{
 		"sessionId": sid, "cwd": cwd, "additionalDirectories": []string{t.TempDir()},

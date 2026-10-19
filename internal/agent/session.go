@@ -18,7 +18,7 @@ import (
 
 // deps is what sessions share with the agent.
 type deps struct {
-	out       Notifier
+	out       Client
 	model     Model
 	maxRounds int
 	tools     tools.Options

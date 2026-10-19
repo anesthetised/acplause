@@ -25,6 +25,8 @@ const (
 	MethodSessionClose     = "session/close"
 	MethodSessionSetConfig = "session/set_config_option"
 	MethodSessionUpdate    = "session/update"
+
+	MethodSessionRequestPermission = "session/request_permission"
 )
 
 // ACP error codes beyond the JSON-RPC standard set.

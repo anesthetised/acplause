@@ -9,6 +9,7 @@ first, and works in your workspace through tools.
 
 - ACP v2 only, validated against the pinned schema (`testdata/schema/v2`).
 - Streaming text and reasoning, tool calls, usage and cost reporting.
+- Asks permission before changing files or running commands.
 - Prompt queue, cancellation that aborts the HTTP stream and kills
   everything a command started, session list/resume/close.
 - Model and reasoning effort selection from OpenRouter's model list.
@@ -50,6 +51,13 @@ models with tool support, session creation fails.
 
 `write_file` and `edit` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
+
+`write_file`, `edit` and `bash` run only after the user allows them through
+`session/request_permission`, with the diff or command shown in the request.
+acplause offers "allow once" and "reject once"; anything else, including a
+cancelled or unrecognised answer, is a rejection, which the model is told
+about. Automatic approval is the client's setting. See
+[ADR 0003](docs/adr/0003-permissions.md).
 
 File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not

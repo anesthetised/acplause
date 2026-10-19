@@ -132,17 +132,25 @@ type agent struct {
 	out        chan *message
 	readerDone chan struct{}
 
+	// askUser leaves permission requests to the test; by default they are
+	// allowed as they arrive, like a client that auto-approves.
+	askUser bool
+
+	writeMu sync.Mutex // the test and auto-approval both write to stdin
 	mu      sync.Mutex
 	methods map[string]string // method of each request sent, by id
 	nextID  int
 	pending []*message // read but not yet taken
 }
 
-type option func(*exec.Cmd)
+type option func(*agent)
 
 func withEnv(kv ...string) option {
-	return func(c *exec.Cmd) { c.Env = append(c.Env, kv...) }
+	return func(a *agent) { a.cmd.Env = append(a.cmd.Env, kv...) }
 }
+
+// askingUser makes the test answer permission requests itself.
+func askingUser(a *agent) { a.askUser = true }
 
 func start(t *testing.T, llm *mockLLM, opts ...option) *agent {
 	t.Helper()
@@ -157,15 +165,15 @@ func start(t *testing.T, llm *mockLLM, opts ...option) *agent {
 		"ACPLAUSE_API_KEY=test-key",
 		"ACPLAUSE_LOG_LEVEL=debug",
 	)
-	for _, opt := range opts {
-		opt(cmd)
-	}
 	a := &agent{
 		t: t, llm: llm, cmd: cmd,
 		stderr:     &bytes.Buffer{},
 		out:        make(chan *message, 1024),
 		readerDone: make(chan struct{}),
 		methods:    map[string]string{},
+	}
+	for _, opt := range opts {
+		opt(a)
 	}
 	cmd.Stderr = &lockedWriter{w: a.stderr}
 	if a.stdin, err = cmd.StdinPipe(); err != nil {
@@ -239,12 +247,50 @@ func (a *agent) accept(v *validator, msg *message, raw []byte) {
 	if err := v.validate(raw, msg, method); err != nil {
 		a.t.Errorf("schema violation: %v\n%s", err, raw)
 	}
+	if msg.Method == "session/request_permission" && !a.askUser {
+		// Not a.answer: this runs off the test goroutine, and stdin may
+		// already be closed when the test is done.
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{
+			"outcome": map[string]any{"outcome": "selected", "optionId": optionOfKind(a.t, msg, "allow_once")},
+		}})
+		a.writeMu.Lock()
+		_, _ = a.stdin.Write(append(b, '\n'))
+		a.writeMu.Unlock()
+	}
 	a.out <- msg
+}
+
+// permissionRequest takes the next session/request_permission.
+func (a *agent) permissionRequest() *message {
+	a.t.Helper()
+	return a.take(func(m *message) bool { return m.Method == "session/request_permission" })
+}
+
+// answer responds to a request the agent sent.
+func (a *agent) answer(req *message, result any) {
+	a.write(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+}
+
+// optionOfKind returns the id of the permission option of a kind.
+func optionOfKind(t *testing.T, req *message, kind string) string {
+	var p struct {
+		Options []struct{ OptionID, Kind string }
+	}
+	_ = json.Unmarshal(req.Params, &p)
+	for _, o := range p.Options {
+		if o.Kind == kind {
+			return o.OptionID
+		}
+	}
+	t.Errorf("no %s option in %s", kind, req.Params)
+	return ""
 }
 
 // send writes a raw line to the agent.
 func (a *agent) send(line string) {
 	a.t.Helper()
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	if _, err := io.WriteString(a.stdin, line+"\n"); err != nil {
 		a.t.Fatalf("write to agent: %v", err)
 	}
@@ -379,6 +425,17 @@ func (a *agent) updateWhere(sid string, pred func(update) bool) update {
 		return m.Method == "session/update" && sessionOf(m) == sid && pred(decodeUpdate(a.t, m))
 	})
 	return decodeUpdate(a.t, m)
+}
+
+// toolStarted takes the session's updates up to the next tool call that
+// starts running, past any permission request for it, and returns that call.
+func (a *agent) toolStarted(sid string) update {
+	a.t.Helper()
+	for {
+		if u := a.nextUpdate(sid); u.is("tool_call_update") && u.Status == "in_progress" {
+			return u
+		}
+	}
 }
 
 // untilIdle takes the session's updates up to and including the next idle

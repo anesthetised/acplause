@@ -33,7 +33,8 @@ func (tb *Toolbox) bash(args bashArgs) (*Call, error) {
 		return nil, err
 	}
 	return &Call{
-		Title: "Run " + clip(firstLine(args.Command), 80),
+		Title:   "Run " + clip(firstLine(args.Command), 80),
+		Command: args.Command,
 		run: func(ctx context.Context) (string, error) {
 			return runShell(ctx, tb.roots.Cwd(), args.Command, tb.opts)
 		},

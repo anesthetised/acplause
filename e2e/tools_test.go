@@ -147,10 +147,7 @@ func TestCancelDuringBash(t *testing.T) {
 	pidFile := filepath.Join(cwd, "child.pid")
 
 	a.accepted(a.prompt(sid, "run it"))
-	start := a.updateWhere(sid, func(u update) bool { return u.is("tool_call_update") })
-	if start.Status != "in_progress" || start.Kind != "execute" {
-		t.Fatalf("bash start: %+v", start)
-	}
+	a.toolStarted(sid)
 	waitForFile(t, pidFile)
 	a.notify("session/cancel", map[string]any{"sessionId": sid})
 
@@ -271,7 +268,7 @@ func TestFileToolsReportDiffs(t *testing.T) {
 	a.accepted(a.prompt(sid, "edit"))
 	var done []update
 	for _, u := range filter(a.untilIdle(sid), "tool_call_update") {
-		if u.Status != "in_progress" {
+		if u.Status == "completed" || u.Status == "failed" {
 			done = append(done, u)
 		}
 	}

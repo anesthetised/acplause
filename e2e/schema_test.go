@@ -20,7 +20,7 @@ type validator struct {
 	compiler *jsonschema.Compiler
 	root     *jsonschema.Schema
 	// Definitions by method: responses of agent methods, params of
-	// notifications the agent sends to the client.
+	// requests and notifications the agent sends to the client.
 	responses map[string]string
 	params    map[string]string
 
@@ -65,7 +65,7 @@ var loadValidator = sync.OnceValues(func() (*validator, error) {
 		case def.Method == "":
 		case def.Side == "agent" && strings.HasSuffix(name, "Response"):
 			v.responses[def.Method] = name
-		case def.Side == "client" && strings.HasSuffix(name, "Notification"):
+		case def.Side == "client" && (strings.HasSuffix(name, "Notification") || strings.HasSuffix(name, "Request")):
 			v.params[def.Method] = name
 		}
 	}
@@ -124,7 +124,7 @@ func (v *validator) validate(line []byte, msg *message, method string) error {
 	case msg.Method != "":
 		name, ok := v.params[msg.Method]
 		if !ok {
-			return fmt.Errorf("agent sent unknown notification %q", msg.Method)
+			return fmt.Errorf("agent sent unknown method %q", msg.Method)
 		}
 		return v.check(name, msg.Params)
 	}

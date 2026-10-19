@@ -29,6 +29,13 @@ func (r recorder) Notify(_ string, params any) error {
 	return nil
 }
 
+// Call allows every permission request.
+func (r recorder) Call(_ context.Context, _ string, _, result any) error {
+	resp := result.(*acp.RequestPermissionResponse)
+	resp.Outcome.Outcome, resp.Outcome.OptionID = acp.OutcomeSelected, optionAllow
+	return nil
+}
+
 // untilIdle returns the updates up to and including the next idle state.
 func (r recorder) untilIdle(t *testing.T) []acp.Update {
 	t.Helper()

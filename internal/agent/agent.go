@@ -28,9 +28,12 @@ type Model interface {
 	Chat(ctx context.Context, req llm.Request, onDelta func(llm.Delta)) (*llm.Completion, error)
 }
 
-// Notifier sends notifications to the client; *jsonrpc.Conn implements it.
-type Notifier interface {
+// Client is the connection to the ACP client; *jsonrpc.Conn implements it.
+type Client interface {
 	Notify(method string, params any) error
+	// Call sends a request and waits for its result. It blocks, so only
+	// session goroutines use it, never handlers on the read loop.
+	Call(ctx context.Context, method string, params, result any) error
 }
 
 // ListModels loads the model catalog.
@@ -64,7 +67,7 @@ type Agent struct {
 }
 
 // New creates an agent and starts loading the model catalog.
-func New(cfg Config, out Notifier, model Model, listModels ListModels) *Agent {
+func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	cfg.MaxRounds = cmp.Or(cfg.MaxRounds, 25)
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
