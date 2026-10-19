@@ -41,7 +41,7 @@ func TestCancelWaitingPromptPreservesCommittedInsertion(t *testing.T) {
 	s.model = "m"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	op := &sessionOperation{ctx: ctx, cancel: cancel, prompt: true, reply: jsonrpc.NewReply()}
+	op := &sessionOperation{ctx: ctx, cancel: cancel, prompt: true, reply: jsonrpc.NewReply(context.Background())}
 	a := &Agent{operations: map[string]*sessionOperation{s.id: {previous: op}}}
 	s.deps.store = saveStore{save: func(context.Context, store.Session, []store.Row, []store.Row) error {
 		a.cancelWaitingPrompts(s.id)

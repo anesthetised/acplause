@@ -1,14 +1,20 @@
 package jsonrpc
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // Reply is the answer to a request that a Handler settles later. A handler
 // returns a *Reply as its result, keeps a reference, and calls Resolve or
-// Reject from wherever the work completes. Only the first settlement counts.
+// Reject from wherever the work completes. For a request-bound reply, settlement
+// and the handler's return or panic share one completion: only the first counts.
 //
-// The response is queued for writing synchronously inside Resolve or Reject,
-// so a caller that settles a reply and then sends a notification is
-// guaranteed to put them on the wire in that order.
+// For a single request, a reply obtained with NewReply(ctx) queues the response
+// synchronously inside Resolve or Reject, even before the handler returns.
+// A notification sent afterwards therefore follows the response on the wire.
+// For a batch, settlement contributes to the response array without waiting
+// for the other requests; notifications may precede the completed array.
 type Reply struct {
 	mu      sync.Mutex
 	settled bool
@@ -17,8 +23,17 @@ type Reply struct {
 	deliver func(result any, err error)
 }
 
-// NewReply returns an unsettled reply.
-func NewReply() *Reply { return &Reply{} }
+type replyContextKey struct{}
+
+// NewReply returns the reply bound to the request in ctx, including derived
+// contexts. Without a request binding it returns a standalone reply, whose
+// settlement is stored until a handler returns it to a connection.
+func NewReply(ctx context.Context) *Reply {
+	if reply, ok := ctx.Value(replyContextKey{}).(*Reply); ok {
+		return reply
+	}
+	return &Reply{}
+}
 
 // Resolve answers the request with result.
 func (r *Reply) Resolve(result any) { r.settle(result, nil) }

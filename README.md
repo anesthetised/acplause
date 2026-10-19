@@ -141,6 +141,10 @@ sent once, as a `session_info_update`, when that prompt is accepted, and is
 returned by `session/list`. It is not replayed on resume: replay is
 conversation history, and the title is metadata that `session/list` reports.
 
+For an individual prompt request, the acceptance response precedes its
+`user_message` and later turn updates. JSON-RPC batches receive one response
+array after every request in the batch settles; updates may precede that array.
+
 Prompts may embed resources (`session.prompt.embeddedContext`). A text
 resource reaches the model as `<resource uri="...">` with its contents; a blob
 resource is replaced by a one-line note naming its URI. The client still gets

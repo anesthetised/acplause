@@ -28,7 +28,7 @@ func (a *Agent) reserveOperation(ctx context.Context, id string, interrupt bool)
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(a.ctx, cancel)
 	context.AfterFunc(ctx, func() { stop() })
-	op := &sessionOperation{ctx: ctx, cancel: cancel, done: make(chan struct{}), reply: jsonrpc.NewReply(), terminal: interrupt}
+	op := &sessionOperation{ctx: ctx, cancel: cancel, done: make(chan struct{}), reply: jsonrpc.NewReply(ctx), terminal: interrupt}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	op.previous = a.operations[id]

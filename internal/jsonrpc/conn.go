@@ -22,10 +22,11 @@ var ErrClosed = errors.New("jsonrpc: connection closed")
 
 // Handler serves one method. Handlers run on the connection's read loop,
 // one at a time and in arrival order, so they must not block. A handler that
-// has to wait returns a *Reply and settles it later.
+// has to wait returns NewReply(ctx) and settles it later. The request's reply
+// is bound before invocation so work may settle it before the handler returns.
 //
-// ctx is cancelled when the peer sends $/cancel_request for the request or
-// the connection stops serving. For notifications the result is ignored.
+// ctx is cancelled when the request is answered, the peer sends $/cancel_request,
+// or the connection stops serving. For notifications the result is ignored.
 type Handler func(ctx context.Context, params json.RawMessage) (any, error)
 
 // Methods maps method names to handlers.
@@ -328,20 +329,24 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	result, err := c.invoke(ctx, method, handler, params)
-	reply, deferred := result.(*Reply)
-	if !deferred || err != nil {
-		cancel()
-		respond(newResponse(id, result, err))
-		return
-	}
-
+	reply := &Reply{}
 	c.track(id, cancel)
 	reply.bind(func(result any, err error) {
 		c.untrack(id)
 		cancel()
 		respond(newResponse(id, result, err))
 	})
+	ctx = context.WithValue(ctx, replyContextKey{}, reply)
+	result, err := c.invoke(ctx, method, handler, params)
+	if deferred, ok := result.(*Reply); ok && err == nil {
+		if deferred != reply {
+			// Standalone replies can be settled outside a request, then
+			// returned by a handler to read their stored result.
+			deferred.bind(reply.settle)
+		}
+		return
+	}
+	reply.settle(result, err)
 }
 
 func (c *Conn) notify(ctx context.Context, methods Methods, method string, params json.RawMessage) {

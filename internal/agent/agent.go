@@ -273,7 +273,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 // newSession waits for the catalog and earlier model selections off the
 // read loop, then creates a session with the last available user choice.
 func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any, error) {
-	reply := jsonrpc.NewReply()
+	reply := jsonrpc.NewReply(ctx)
 	saved := a.pendingSelection()
 	a.jobs.Add(1)
 	go func() {
@@ -391,12 +391,12 @@ func (a *Agent) cancelSession(_ context.Context, n acp.CancelSessionNotification
 }
 
 // listSessions reads the store, which holds the sessions of every process.
-func (a *Agent) listSessions(_ context.Context, req acp.ListSessionsRequest) (any, error) {
+func (a *Agent) listSessions(ctx context.Context, req acp.ListSessionsRequest) (any, error) {
 	offset, err := decodeCursor(req.Cursor)
 	if err != nil {
 		return nil, err
 	}
-	reply := jsonrpc.NewReply()
+	reply := jsonrpc.NewReply(ctx)
 	go func() {
 		sessions, more, err := a.cfg.Store.List(a.ctx, req.Cwd, offset, listPageSize)
 		if err != nil {
