@@ -168,12 +168,14 @@ func setSlice[S ~[]E, E any](dst *S, src S) {
 }
 
 // ToolCallContent is content produced by a tool call: a content block or a
-// file diff. Fields of the other variant stay zero and are omitted.
+// file diff or terminal reference. Other variants' fields stay zero and
+// are omitted.
 type ToolCallContent struct {
-	Type    string       `json:"type"`
-	Content ContentBlock `json:"content,omitzero"`  // content
-	Changes []DiffChange `json:"changes,omitempty"` // diff; required, never empty
-	Patch   *DiffPatch   `json:"patch,omitempty"`   // diff
+	Type       string       `json:"type"`
+	TerminalID string       `json:"terminalId,omitempty"` // terminal
+	Content    ContentBlock `json:"content,omitzero"`     // content
+	Changes    []DiffChange `json:"changes,omitempty"`    // diff; required, never empty
+	Patch      *DiffPatch   `json:"patch,omitempty"`      // diff
 }
 
 // ToolText wraps text as tool call content.

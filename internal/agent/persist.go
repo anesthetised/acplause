@@ -54,6 +54,8 @@ func encodeEntry(u acp.Update) ([]byte, error) {
 		kind = "tool_call_update"
 	case acp.PlanUpdate:
 		kind = "plan_update"
+	case acp.TerminalUpdate:
+		kind = "terminal_update"
 	default:
 		return nil, fmt.Errorf("cannot store a %T", u)
 	}
@@ -90,6 +92,10 @@ func decodeEntry(data []byte) (acp.Update, error) {
 		u = m
 	case "tool_call_update":
 		var m acp.ToolCallUpdate
+		err = json.Unmarshal(e.Update, &m)
+		u = m
+	case "terminal_update":
+		var m acp.TerminalUpdate
 		err = json.Unmarshal(e.Update, &m)
 		u = m
 	case "plan_update":
@@ -228,19 +234,31 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 	return s, nil
 }
 
-// repair finishes what a dead process left: unfinished compactions fail,
-// and unfinished tool calls fail and get a result in the history.
+// repair finishes what a dead process left: terminals end with unknown
+// status, compactions fail, and tool calls fail with matching history results.
 func (s *Session) repair() {
 	for i, u := range s.transcript {
+		if terminal, ok := u.(acp.TerminalUpdate); ok && terminal.ExitStatus == nil {
+			terminal.ExitStatus = &acp.TerminalExitStatus{}
+			s.transcript[i] = terminal
+			s.dirty[i] = true
+		}
 		if c, ok := u.(acp.CompactionUpdate); ok && c.Status == acp.CompactionInProgress {
 			c.Status, c.Error = acp.CompactionFailed, "acplause exited before compaction finished."
 			s.transcript[i] = c
 			s.dirty[i] = true
 		}
 		if call, ok := u.(acp.ToolCallUpdate); ok && (call.Status == acp.ToolPending || call.Status == acp.ToolInProgress) {
+			var content []acp.ToolCallContent
+			for _, item := range call.Content {
+				if item.Type == "terminal" {
+					content = append(content, item)
+				}
+			}
+			content = append(content, acp.ToolText(interrupted))
 			s.transcript[i] = call.Merge(acp.ToolCallUpdate{
 				Status:    acp.ToolFailed,
-				Content:   []acp.ToolCallContent{acp.ToolText(interrupted)},
+				Content:   content,
 				RawOutput: jsonString(interrupted),
 			})
 			s.dirty[i] = true

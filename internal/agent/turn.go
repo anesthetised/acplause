@@ -153,7 +153,8 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 			patch.Status = acp.ToolInProgress
 		}
 		update.Status = acp.ToolInProgress
-		if name != "ask_user" {
+		// Shell progress is reported with its terminal reference after process start.
+		if name != "ask_user" && prepared.observeShell == nil {
 			entry = s.reportTool(entry, patch)
 		}
 		runCtx := callCtx
@@ -162,7 +163,7 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 			runCtx, cancel = context.WithTimeout(callCtx, s.deps.mcpTimeout)
 			defer cancel()
 		}
-		result = prepared.run(runCtx)
+		result = s.executeTool(runCtx, prepared, entry, update.ToolCallID)
 	}
 
 	final := acp.ToolCallUpdate{
