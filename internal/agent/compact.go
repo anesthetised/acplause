@@ -38,20 +38,25 @@ func requestSize(req llm.Request) uint64 {
 // prepareRequest runs only on the session worker, between complete tool
 // rounds. Snapshot edits do not touch replay; only a validated summary can
 // replace history. The current user prompt is never shortened.
-func (s *Session) prepareRequest(ctx context.Context, remaining *int) (llm.Request, error) {
+func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRound, error) {
 	for {
-		req := s.request()
+		if err := ctx.Err(); err != nil {
+			return modelRound{}, err
+		}
+		s.mcp.Recover(ctx)
+		round := s.request()
+		req := &round.Request
 		window := s.catalog.contextLength(req.Model)
 		if window == 0 {
-			return req, nil
+			return round, nil
 		}
 		budget := window - window/4
 		req.MaxTokens = max(1, min(window/4, 8192))
 		if limit := s.catalog.outputLimit(req.Model); limit > 0 {
 			req.MaxTokens = min(req.MaxTokens, limit)
 		}
-		if requestSize(req) <= budget {
-			return req, nil
+		if requestSize(*req) <= budget {
+			return round, nil
 		}
 
 		trimmed := false
@@ -61,7 +66,7 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (llm.Reque
 			}
 			req.Messages[i].Content = trimToolOutput(m.Content)
 			trimmed = true
-			if requestSize(req) <= budget {
+			if requestSize(*req) <= budget {
 				break
 			}
 		}
@@ -84,16 +89,16 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (llm.Reque
 			}
 		}
 		if user == 0 || keep <= 1 {
-			return req, fmt.Errorf("context window is too small for the system instructions, tools and latest prompt")
+			return round, fmt.Errorf("context window is too small for the system instructions, tools and latest prompt")
 		}
 		retained := slices.Clone(req.Messages[keep:])
 		if user < keep {
 			retained = append([]llm.Message{req.Messages[user]}, retained...)
 		}
 		prefix := req.Messages[1:keep]
-		_, err := s.compact(ctx, req, prefix, retained, budget, remaining)
+		_, err := s.compact(ctx, *req, prefix, retained, budget, remaining)
 		if err != nil {
-			return req, err
+			return round, err
 		}
 		// A config change during compaction applies to the next request.
 	}

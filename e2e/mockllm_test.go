@@ -117,7 +117,7 @@ func (m *mockLLM) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no script", http.StatusInternalServerError)
 			return
 		}
-		next(&stream{w: w, r: r})
+		next(&stream{w: w, r: r, req: req})
 	default:
 		http.NotFound(w, r)
 	}
@@ -125,8 +125,9 @@ func (m *mockLLM) serve(w http.ResponseWriter, r *http.Request) {
 
 // stream writes one SSE response.
 type stream struct {
-	w http.ResponseWriter
-	r *http.Request
+	req chatRequest
+	w   http.ResponseWriter
+	r   *http.Request
 }
 
 func (s *stream) raw(event string) {

@@ -157,7 +157,7 @@ func (s *Session) flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if errors.Is(err, store.ErrLost) {
-		s.lost = true
+		s.loseLocked()
 		return
 	}
 	if undo != nil {
@@ -277,7 +277,7 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 		undo()
 	}
 	if errors.Is(err, store.ErrLost) {
-		s.lost = true
+		s.loseLocked()
 		return errSessionLost()
 	}
 	if ctx.Err() != nil {
@@ -300,7 +300,15 @@ func errSessionLost() *jsonrpc.Error {
 func (s *Session) markLost() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.loseLocked()
+}
+
+// loseLocked revokes work as soon as any ownership check detects a takeover.
+// Requires s.mu; cleanup must run outside it because transports may wait on I/O.
+func (s *Session) loseLocked() {
 	s.lost = true
+	s.cancel()
+	go s.mcp.Close()
 }
 
 func (s *Session) isLost() bool {

@@ -133,7 +133,7 @@ func TestResumeRetainsRootsUntilActiveToolFinishes(t *testing.T) {
 	}
 	// Several resumes must retain only the roots still used by this call.
 	for range 2 {
-		if err := s.Resume([]string{t.TempDir()}, false); err != nil {
+		if err := s.Resume(context.Background(), []string{t.TempDir()}, nil, false); err != nil {
 			t.Fatal(err)
 		}
 	}

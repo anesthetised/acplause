@@ -17,6 +17,7 @@ first, and works in your workspace through tools.
   everything a command started, session list/resume/close/delete.
 - Sessions survive restarts and can move between editor windows.
 - Model and reasoning effort selection from OpenRouter's model list.
+- Session-owned MCP tools over stdio and Streamable HTTP.
 
 ## Install
 
@@ -32,6 +33,7 @@ go install github.com/anesthetised/acplause/cmd/acplause@latest
 | `ACPLAUSE_BASE_URL`     | `https://openrouter.ai/api/v1`  | any OpenAI-compatible API root        |
 | `ACPLAUSE_MAX_ROUNDS`   | `25`                            | model requests per turn               |
 | `ACPLAUSE_BASH_TIMEOUT` | `2m`                            | timeout of the `bash` tool            |
+| `ACPLAUSE_MCP_TIMEOUT`  | `10m`                           | MCP call timeout; `0` disables it     |
 | `ACPLAUSE_DATA_DIR`    | `~/.acplause`                    | session database directory            |
 | `ACPLAUSE_LOG_LEVEL`    | `info`                          | logs go to stderr                     |
 
@@ -93,6 +95,83 @@ every block echoed back unchanged. Images and audio are not supported.
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
 already running keeps its roots until it finishes.
+
+## MCP servers
+
+The ACP client supplies `mcpServers` in `session/new` and `session/resume`.
+Both transports use the same discovery, permissions and tool history:
+
+```json
+{
+  "mcpServers": [
+    {
+      "type": "stdio",
+      "name": "workspace",
+      "command": "/absolute/path/to/mcp-server",
+      "args": ["--stdio"],
+      "env": [{"name": "SERVER_TOKEN", "value": "client-supplied-token"}]
+    },
+    {
+      "type": "http",
+      "name": "remote",
+      "url": "https://mcp.example.com/mcp",
+      "headers": [{"name": "Authorization", "value": "Bearer client-supplied-token"}]
+    }
+  ]
+}
+```
+
+Stdio executes the absolute command directly, without a shell, in the
+session's `cwd`. It inherits only `HOME`, `PATH`, `USER`, `LOGNAME`,
+`TMPDIR`/`TMP`/`TEMP`, `LANG` and `LC_*`, plus Windows system/profile
+variables; explicit `env` entries override these. Provider API keys are not
+inherited implicitly. MCP servers run with the agent's OS privileges,
+outside the built-in file sandbox. Server stderr is discarded.
+
+acplause requests MCP `2025-11-25` and also accepts `2025-06-18`. It reads
+every tool-list page, retains input schemas, assigns stable aliases to avoid
+name collisions, and refreshes changed catalogs. Every external call needs
+explicit ACP permission, including tools marked read-only. Nested arguments,
+structured-only output and opaque IDs remain JSON; the current model API
+receives structured output as text, and ACP `rawOutput` retains its structure.
+
+Resume replaces the entire MCP configuration; an omitted or empty list
+removes all servers. Healthy unchanged connections are reused. Failed setup
+preserves the previous configuration; later prompts wait for setup before
+insertion. Changed/removed connections invalidate earlier model tool
+bindings, so an old approval cannot invoke a replacement endpoint. Configs,
+environment values, headers and upstream session IDs are kept in memory.
+Tool results follow the normal conversation storage policy.
+
+Setup allows 30 seconds, with at most four connections starting together;
+discovery/refresh allows 15 seconds per server. `ACPLAUSE_MCP_TIMEOUT` starts
+after permission, independently of the bash timeout. Cancellation stops local
+waiting promptly and sends a best-effort MCP cancellation notification. A
+remote side effect may still complete. Calls are never automatically repeated
+after an ambiguous failure. Crashed stdio servers restart on explicit resume;
+an expired HTTP session gets one recovery attempt for future model requests.
+
+HTTP supports JSON and SSE responses, optional GET event streams (405 is
+allowed), session/version headers and best-effort DELETE on close. Interrupted
+SSE results resume only by GET with `Last-Event-ID`; a missing cursor fails
+the call. Redirects are rejected. Legacy HTTP+SSE, OAuth, interactive auth,
+roots, sampling, elicitation and MCP Tasks are not supported.
+
+Close/delete/shutdown/ownership loss release connections. Stdio cleanup closes
+stdin, waits one second, sends TERM, waits one second, then kills and reaps;
+Unix cleanup includes the process group. Other platforms clean up the direct
+child only. HTTP DELETE has a two-second deadline. Limits are 16 servers,
+100 pages/1,024 tools per server, 8 MiB per message/event/catalog and 256 KiB
+per projected result; exceeding a limit fails explicitly.
+
+Text, embedded text resources and resource links are supported. Image, audio
+and blob results produce omission markers; unsupported-only output fails
+with a possible-completion warning. Binary payloads are not stored or sent to
+the model. Image projection is deferred to [#23](https://github.com/anesthetised/acplause/issues/23).
+See [ADR 0007](docs/adr/0007-mcp-servers.md) and the
+[real T3 smoke record](docs/testing/mcp-t3-smoke.md).
+
+## Context compaction
 
 Long conversations automatically reduce model context when its estimated
 input size exceeds 75% of the model's advertised window. Large tool results

@@ -10,7 +10,7 @@ import (
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
-	"github.com/anesthetised/acplause/internal/tools"
+	"github.com/anesthetised/acplause/internal/mcp"
 )
 
 // converse runs model rounds until the model stops calling tools, the round
@@ -31,7 +31,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 		}
 		remaining--
 		out := roundOutput{s: s}
-		completion, err := s.deps.model.Chat(ctx, req, out.delta)
+		completion, err := s.deps.model.Chat(ctx, req.Request, out.delta)
 		if err != nil {
 			return acp.StopError, turnError(err)
 		}
@@ -43,7 +43,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 			return stopReason(completion.FinishReason)
 		}
 		for _, call := range completion.ToolCalls {
-			s.runTool(ctx, call)
+			s.runTool(ctx, call, req.bindings)
 		}
 		if ctx.Err() != nil {
 			return acp.StopCancelled, nil
@@ -52,7 +52,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 }
 
 // request snapshots what the next model request needs.
-func (s *Session) request() llm.Request {
+func (s *Session) request() modelRound {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req := llm.Request{Model: s.model, Messages: slices.Clone(s.history)}
@@ -62,12 +62,17 @@ func (s *Session) request() llm.Request {
 	if s.catalog.reasons(s.model) && s.effort != effortDefault {
 		req.ReasoningEffort = s.effort
 	}
-	return req
+	bindings := map[string]mcp.Tool{}
+	for _, t := range s.mcp.Snapshot() {
+		bindings[t.Name] = t
+		req.Tools = append(req.Tools, llm.FunctionTool(t.Name, t.Description, t.InputSchema))
+	}
+	return modelRound{Request: req, bindings: bindings}
 }
 
 // runTool reports and executes one tool call. Every call gets a result in
 // the history, so the conversation stays valid even when cancelled.
-func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
+func (s *Session) runTool(ctx context.Context, call llm.ToolCall, bindings map[string]mcp.Tool) {
 	if ctx.Err() != nil {
 		s.appendHistory(toolResult(call.ID, "Cancelled before it ran."))
 		return
@@ -83,18 +88,36 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 		Kind:       toolbox.Kind(name),
 		RawInput:   rawInput(call.Function.Arguments),
 	}
-	var result tools.Result
+	var result toolOutput
 	entry := -1
-	prepared, err := toolbox.Prepare(name, call.Function.Arguments)
+	var prepared *preparedTool
+	var err error
+	if binding, ok := bindings[name]; ok {
+		if binding.ReadOnly {
+			update.Kind = acp.ToolRead
+		}
+		prepared, err = prepareMCP(binding, call.Function.Arguments)
+	} else {
+		prepared, err = prepareBuiltin(toolbox, name, call.Function.Arguments)
+	}
+	callCtx, stopCall := context.WithCancel(ctx)
+	defer stopCall()
+	if prepared != nil && prepared.binding != nil {
+		stopBinding := context.AfterFunc(prepared.binding, stopCall)
+		defer stopBinding()
+		if prepared.binding.Err() != nil {
+			err = errors.New("MCP tool binding was revoked")
+		}
+	}
 	if err == nil {
 		update.Title = prepared.Title
 		update.Locations = locations(prepared.Locations)
-		if asksPermission(update.Kind) {
-			entry, err = s.requestPermission(ctx, entry, &update, prepared)
+		if prepared.permission {
+			entry, err = s.requestPermission(callCtx, ctx, entry, &update, prepared)
 		}
 	}
 	if err != nil {
-		result = tools.Result{Output: "Error: " + err.Error(), Failed: true}
+		result = toolOutput{Output: "Error: " + err.Error(), Failed: true}
 	} else {
 		patch := acp.ToolCallUpdate{ToolCallID: update.ToolCallID, Status: acp.ToolInProgress}
 		if entry < 0 {
@@ -103,14 +126,20 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 		}
 		update.Status = acp.ToolInProgress
 		entry = s.reportTool(entry, patch)
-		result = prepared.Run(ctx)
+		runCtx := callCtx
+		if prepared.binding != nil && s.deps.mcpTimeout > 0 {
+			var cancel context.CancelFunc
+			runCtx, cancel = context.WithTimeout(callCtx, s.deps.mcpTimeout)
+			defer cancel()
+		}
+		result = prepared.run(runCtx)
 	}
 
 	final := acp.ToolCallUpdate{
 		ToolCallID: update.ToolCallID,
 		Status:     acp.ToolCompleted,
-		Content:    []acp.ToolCallContent{acp.ToolText(result.Output)},
-		RawOutput:  jsonString(result.Output),
+		Content:    result.Content,
+		RawOutput:  result.RawOutput,
 	}
 	switch {
 	case ctx.Err() != nil:
@@ -118,8 +147,15 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 		result.Output = "Cancelled by the user."
 	case result.Failed:
 		final.Status = acp.ToolFailed
-	case result.Diff != nil:
-		final.Content = []acp.ToolCallContent{*result.Diff, final.Content[0]}
+
+	}
+	if ctx.Err() == nil {
+		if len(final.Content) == 0 {
+			final.Content = []acp.ToolCallContent{acp.ToolText(result.Output)}
+		}
+		if final.RawOutput == nil {
+			final.RawOutput = jsonString(result.Output)
+		}
 	}
 	if update.Status == "" { // never reported: send everything at once
 		final = update.Merge(final)
@@ -153,7 +189,7 @@ var errRejected = errors.New("the user rejected this tool call")
 // apply, and asks the user to allow it. A nil error is approval; any other
 // answer, or none, is an error for the model. A call whose preview fails is
 // not asked about: it would fail anyway.
-func (s *Session) requestPermission(ctx context.Context, entry int, update *acp.ToolCallUpdate, call *tools.Call) (int, error) {
+func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, update *acp.ToolCallUpdate, call *preparedTool) (int, error) {
 	diff, err := call.Preview(ctx)
 	if err != nil {
 		return entry, err
@@ -175,8 +211,8 @@ func (s *Session) requestPermission(ctx context.Context, entry int, update *acp.
 	s.flush() // a blocked turn is busy: it cannot be taken over
 	var resp acp.RequestPermissionResponse
 	err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
-	if ctx.Err() != nil {
-		return entry, ctx.Err() // the turn ends as cancelled; no running in between
+	if turnCtx.Err() != nil {
+		return entry, turnCtx.Err() // the turn ends as cancelled; no running in between
 	}
 	s.setState(acp.StateUpdate{State: acp.StateRunning})
 	switch outcome := resp.Outcome; {

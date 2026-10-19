@@ -7,6 +7,7 @@
 //	ACPLAUSE_BASE_URL       API root; default https://openrouter.ai/api/v1
 //	ACPLAUSE_MAX_ROUNDS     model requests per turn; default 25
 //	ACPLAUSE_BASH_TIMEOUT   bash tool timeout; default 2m
+//	ACPLAUSE_MCP_TIMEOUT    MCP tool timeout; default 10m, 0 disables
 //	ACPLAUSE_LOG_LEVEL      debug, info, warn or error; default info
 //	ACPLAUSE_DATA_DIR       session store directory; default ~/.acplause
 //
@@ -75,11 +76,12 @@ func run() error {
 
 	conn := jsonrpc.NewConn(os.Stdin, os.Stdout, log)
 	ag := agent.New(agent.Config{
-		Info:      acp.Implementation{Name: "acplause", Version: version()},
-		MaxRounds: cfg.MaxRounds,
-		Tools:     tools.Options{BashTimeout: cfg.BashTimeout},
-		Log:       log,
-		Store:     st,
+		Info:       acp.Implementation{Name: "acplause", Version: version()},
+		MaxRounds:  cfg.MaxRounds,
+		MCPTimeout: &cfg.MCPTimeout,
+		Tools:      tools.Options{BashTimeout: cfg.BashTimeout},
+		Log:        log,
+		Store:      st,
 	}, conn, client, client.Models)
 
 	log.Info("serving", "base_url", cfg.BaseURL, "data_dir", dir)
