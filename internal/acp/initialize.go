@@ -55,7 +55,8 @@ type SessionCapabilities struct {
 }
 
 // PromptCapabilities lists prompt content beyond the text and resource_link
-// baseline. acplause adds embedded resources only.
+// baseline.
 type PromptCapabilities struct {
 	EmbeddedContext *Supported `json:"embeddedContext,omitempty"`
+	Image           *Supported `json:"image,omitempty"`
 }

@@ -1,13 +1,15 @@
 # Execution plan: Accept user image prompts, including T3 clipboard attachments
 
-Status: planned. Baseline: acplause `d9c99f1`, 2026-10-19.
+Status: ACP implementation and automated coverage complete in #28; actual T3
+clipboard/upload smoke remains pending under #38. Baseline: acplause `d9c99f1`, 2026-10-19.
 Tracker: [#25](https://github.com/anesthetised/acplause/issues/25); task checkboxes live in GitHub Issues.
 Contract: [ADR 0010](../../docs/adr/0010-image-prompts.md).
 Read the [roadmap](../plan.md) for ordering and shared acceptance gates.
 
 ## Execution rules
 
-This is a planning deliverable; no feature is implemented by this document.
+The ordered steps below are the original execution contract; #28 implements
+the agent path. This document does not establish actual T3 interoperability.
 Use GitHub issues as the authoritative task checklist. Each issue below is one
 bounded execution task; do not implement the whole roadmap in one run.
 
@@ -65,7 +67,7 @@ MEDIA and HISTORY must be implemented first. MCP image activation is not a depen
 ### Verification
 
 ```sh
-go test -race ./internal/acp ./internal/agent && just e2e -run 'ImagePrompt|Clipboard'
+go test -race ./internal/acp ./internal/agent && just e2e -run ImagePrompt
 ```
 
 Use generated tiny valid image fixtures and separate oversized/header-only fixtures; test exact image count/byte limits and absence of image data in titles.

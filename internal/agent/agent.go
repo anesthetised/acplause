@@ -225,7 +225,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 		Capabilities: acp.AgentCapabilities{
 			Session: &acp.SessionCapabilities{
 				MCP:                   &acp.MCPCapabilities{Stdio: &acp.Supported{}, HTTP: &acp.Supported{}},
-				Prompt:                &acp.PromptCapabilities{EmbeddedContext: &acp.Supported{}},
+				Prompt:                &acp.PromptCapabilities{EmbeddedContext: &acp.Supported{}, Image: &acp.Supported{}},
 				AdditionalDirectories: &acp.Supported{},
 				Delete:                &acp.Supported{},
 			},

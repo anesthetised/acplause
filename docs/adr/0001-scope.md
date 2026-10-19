@@ -47,4 +47,5 @@ it in tests.
   re-run validation.
 - MCP exclusion is superseded by [ADR 0007](0007-mcp-servers.md): session-owned
   stdio and Streamable HTTP tools are supported and advertised.
-- Prompts support the baseline `text` and `resource_link` content only.
+- Prompts support baseline `text` and `resource_link`, embedded resources,
+  and validated PNG/JPEG images ([ADR 0010](0010-image-prompts.md)).

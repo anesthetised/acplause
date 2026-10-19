@@ -120,7 +120,9 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 ## Out of scope
 
-Auth methods, image and audio prompts/results, non-OpenAI-compatible backends,
-legacy MCP HTTP+SSE and MCP server capabilities beyond tools. ACP v2 has no
+Auth methods, audio prompts/results, image tool results and image formats beyond
+validated PNG/JPEG prompts ([ADR 0010](docs/adr/0010-image-prompts.md)),
+non-OpenAI-compatible backends, legacy MCP HTTP+SSE and MCP server capabilities
+beyond tools. ACP v2 has no
 client `fs/*` or `terminal/*` methods. The roadmap
 is tracked in [GitHub milestones](https://github.com/anesthetised/acplause/milestones).

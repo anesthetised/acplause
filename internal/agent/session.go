@@ -355,6 +355,13 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 // prompt, unless it was cancelled first. The prompt response precedes the
 // user_message update on the wire.
 func (s *Session) insert(ctx context.Context, sub *submission) bool {
+	// Validation runs on the session worker, never the protocol read loop.
+	// Keep both cancellation sources live while decoding and claiming the turn.
+	saveCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(sub.ctx, cancel)
+	defer stop()
+	defer cancel()
+	images, imageErr := promptImages(saveCtx, sub.prompt)
 	s.flushMu.Lock()
 	defer s.flushMu.Unlock()
 	s.mu.Lock()
@@ -368,15 +375,25 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 		sub.reply.Reject(acp.ErrRequestCancelled())
 		return false
 	}
+	if imageErr != nil {
+		sub.reply.Reject(acp.ErrInvalidParams("invalid prompt images: %v", imageErr))
+		return false
+	}
+	if len(images) > 0 {
+		if s.model == "" {
+			sub.reply.Reject(acp.ErrInvalidParams("select a model before submitting a prompt"))
+			return false
+		}
+		if !s.catalog.vision(s.model) {
+			sub.reply.Reject(acp.ErrInvalidParams("selected model %q is not known to accept images", s.model))
+			return false
+		}
+	}
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
-	user := llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt)}
+	user := llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt), Images: images}
 	updated := time.Now()
 	// Until the transaction commits, neither replay nor the model may see
 	// the prompt. Cancellation remains available while SQLite is busy.
-	saveCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(sub.ctx, cancel)
-	defer stop()
-	defer cancel()
 	if err := s.claimTurn(saveCtx, msg, user, updated); err != nil {
 		sub.reply.Reject(err)
 		return false
