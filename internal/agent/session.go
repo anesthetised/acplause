@@ -18,7 +18,7 @@ import (
 
 // deps is what sessions share with the agent.
 type deps struct {
-	out       Notifier
+	out       Client
 	model     Model
 	maxRounds int
 	tools     tools.Options
@@ -28,10 +28,12 @@ type deps struct {
 // Session is one conversation. Prompts queue up and run one turn at a time
 // on a worker goroutine that exists only while there is work.
 type Session struct {
-	id      string
-	cwd     string
-	deps    deps
-	catalog *catalog
+	id  string
+	cwd string
+	// instructions is AGENTS.md as read when the session was created.
+	instructions string
+	deps         deps
+	catalog      *catalog
 
 	ctx    context.Context // cancelled by Close
 	cancel context.CancelFunc
@@ -67,20 +69,25 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 	if err != nil {
 		return nil, err
 	}
+	instructions, err := toolbox.Instructions(parent)
+	if err != nil {
+		d.log.Warn("skipping AGENTS.md", "cwd", cwd, "err", err)
+	}
 	ctx, cancel := context.WithCancel(parent)
 	return &Session{
-		id:        newID(),
-		cwd:       cwd,
-		deps:      d,
-		catalog:   c,
-		ctx:       ctx,
-		cancel:    cancel,
-		dirs:      dirs,
-		toolbox:   toolbox,
-		effort:    effortDefault,
-		updatedAt: time.Now(),
-		history:   []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs)}},
-		state:     acp.StateUpdate{State: acp.StateIdle},
+		id:           newID(),
+		cwd:          cwd,
+		instructions: instructions,
+		deps:         d,
+		catalog:      c,
+		ctx:          ctx,
+		cancel:       cancel,
+		dirs:         dirs,
+		toolbox:      toolbox,
+		effort:       effortDefault,
+		updatedAt:    time.Now(),
+		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions)}},
+		state:        acp.StateUpdate{State: acp.StateIdle},
 	}, nil
 }
 
@@ -151,7 +158,7 @@ func (s *Session) Resume(dirs []string, replay bool) error {
 		}
 		old := s.toolbox
 		s.toolbox, s.dirs = toolbox, dirs
-		s.history[0].Content = systemPrompt(s.cwd, dirs)
+		s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions)
 		if old != s.activeToolbox {
 			s.closeToolbox(old)
 		}
@@ -311,12 +318,18 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt)})
 	s.transcript = append(s.transcript, msg)
-	if s.title == "" {
+	first := s.title == ""
+	if first {
 		s.title = title(sub.prompt)
 	}
 	s.updatedAt = time.Now()
 	sub.reply.Resolve(acp.PromptResponse{MessageID: msg.MessageID})
 	s.send(msg)
+	if first {
+		// Not in the transcript: replay is conversation history, and
+		// session/list already reports the title.
+		s.send(acp.SessionInfoUpdate{Title: s.title, UpdatedAt: s.updatedAt.UTC().Format(time.RFC3339Nano)})
+	}
 	return true
 }
 

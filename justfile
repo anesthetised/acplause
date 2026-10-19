@@ -10,13 +10,15 @@ build:
 install:
     go install ./cmd/acplause
 
-# Run all tests with the race detector.
+# Run all tests with the race detector. -count=1 because the e2e tests
+# build the binary themselves, so go test cannot see when its sources change
+# and would replay stale cached results.
 test *args:
-    go test -race {{ args }} ./...
+    go test -race -count=1 {{ args }} ./...
 
 # Run only the end-to-end tests.
 e2e *args:
-    go test -race {{ args }} ./e2e/
+    go test -race -count=1 {{ args }} ./e2e/
 
 # Format the code.
 fmt:

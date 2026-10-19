@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"sync"
 )
 
@@ -56,6 +57,8 @@ type Conn struct {
 
 	mu       sync.Mutex
 	inflight map[ID]context.CancelFunc // deferred requests by id
+	calls    map[ID]chan *inbound      // our requests awaiting a response
+	lastCall int64
 }
 
 // NewConn starts the writer for out; call Close to flush and stop it.
@@ -68,6 +71,7 @@ func NewConn(in io.Reader, out io.Writer, log *slog.Logger) *Conn {
 		quit:       make(chan struct{}),
 		writerDone: make(chan struct{}),
 		inflight:   make(map[ID]context.CancelFunc),
+		calls:      make(map[ID]chan *inbound),
 	}
 	go c.writeLoop()
 	return c
@@ -76,6 +80,62 @@ func NewConn(in io.Reader, out io.Writer, log *slog.Logger) *Conn {
 // Notify sends a notification to the peer.
 func (c *Conn) Notify(method string, params any) error {
 	return c.send(notification{JSONRPC: Version, Method: method, Params: params})
+}
+
+// Call sends a request to the peer and decodes the response's result into
+// result. It blocks, so it must not be called from a Handler: the response
+// arrives through the read loop the handler would be holding up. It returns
+// the peer's *Error, ctx's error, or ErrClosed.
+func (c *Conn) Call(ctx context.Context, method string, params, result any) error {
+	c.mu.Lock()
+	c.lastCall++
+	id := ID(strconv.FormatInt(c.lastCall, 10))
+	done := make(chan *inbound, 1)
+	c.calls[id] = done
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.calls, id)
+		c.mu.Unlock()
+	}()
+
+	if err := c.send(request{JSONRPC: Version, ID: id, Method: method, Params: params}); err != nil {
+		return err
+	}
+	select {
+	case msg := <-done:
+		if msg.Error != nil {
+			var e Error
+			if err := json.Unmarshal(msg.Error, &e); err != nil {
+				return fmt.Errorf("jsonrpc: decode error of %s: %w", method, err)
+			}
+			return &e
+		}
+		if err := json.Unmarshal(msg.Result, result); err != nil {
+			return fmt.Errorf("jsonrpc: decode result of %s: %w", method, err)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.quit:
+		return ErrClosed
+	}
+}
+
+// deliver hands a response to the Call awaiting it. Responses nobody awaits,
+// such as late answers to abandoned calls, are dropped.
+func (c *Conn) deliver(msg *inbound) {
+	var id ID
+	_ = json.Unmarshal(msg.ID, &id)
+	c.mu.Lock()
+	done := c.calls[id]
+	delete(c.calls, id)
+	c.mu.Unlock()
+	if done == nil {
+		c.log.Debug("ignoring response to no pending request", "id", string(msg.ID))
+		return
+	}
+	done <- msg
 }
 
 // Serve reads and dispatches messages until the input ends (returning nil),
@@ -187,7 +247,7 @@ func (c *Conn) dispatch(ctx context.Context, methods Methods, raw []byte, respon
 		return true
 	}
 	if msg.isResponse() {
-		c.log.Debug("ignoring response from peer", "id", string(msg.ID))
+		c.deliver(&msg)
 		return false
 	}
 

@@ -29,6 +29,13 @@ func (r recorder) Notify(_ string, params any) error {
 	return nil
 }
 
+// Call allows every permission request.
+func (r recorder) Call(_ context.Context, _ string, _, result any) error {
+	resp := result.(*acp.RequestPermissionResponse)
+	resp.Outcome.Outcome, resp.Outcome.OptionID = acp.OutcomeSelected, optionAllow
+	return nil
+}
+
 // untilIdle returns the updates up to and including the next idle state.
 func (r recorder) untilIdle(t *testing.T) []acp.Update {
 	t.Helper()
@@ -77,7 +84,7 @@ func TestTurnRunsToolsAndKeepsHistoryValid(t *testing.T) {
 	for _, u := range out.untilIdle(t) {
 		kinds = append(kinds, fmt.Sprintf("%T", u))
 	}
-	want := []string{"acp.UserMessage", "acp.StateUpdate", "acp.ToolCallUpdate", "acp.ToolCallUpdate", "acp.AgentMessageChunk", "acp.StateUpdate"}
+	want := []string{"acp.UserMessage", "acp.SessionInfoUpdate", "acp.StateUpdate", "acp.ToolCallUpdate", "acp.ToolCallUpdate", "acp.AgentMessageChunk", "acp.StateUpdate"}
 	if !slices.Equal(kinds, want) {
 		t.Fatalf("got %v, want %v", kinds, want)
 	}
@@ -204,5 +211,22 @@ func TestRawInput(t *testing.T) {
 	}
 	if got := string(rawInput(`{"a":`)); got != `"{\"a\":"` {
 		t.Fatalf("invalid JSON: %s", got)
+	}
+}
+
+func TestPromptTextEmbeddedResources(t *testing.T) {
+	var blocks []acp.ContentBlock
+	_ = json.Unmarshal([]byte(`[
+		{"type":"resource","resource":{"uri":"file:///w/a.go","mimeType":"text/x-go","text":"package a\n"}},
+		{"type":"resource","resource":{"uri":"file:///w/empty","text":""}},
+		{"type":"resource","resource":{"uri":"file:///w/x.png","mimeType":"image/png","blob":"AAEC"}}]`), &blocks)
+	want := "<resource uri=\"file:///w/a.go\">\npackage a\n\n</resource>\n\n" +
+		"<resource uri=\"file:///w/empty\">\n\n</resource>\n\n" +
+		"[binary resource omitted: file:///w/x.png]"
+	if got := promptText(blocks); got != want {
+		t.Fatalf("promptText:\n got %q\nwant %q", got, want)
+	}
+	if got := title(append(blocks, acp.Text("Explain this"))); got != "Explain this" {
+		t.Fatalf("title: %q", got)
 	}
 }

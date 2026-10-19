@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -75,13 +76,24 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 	}
 	var result tools.Result
 	entry := -1
-	if prepared, err := toolbox.Prepare(name, call.Function.Arguments); err != nil {
-		result = tools.Result{Output: "Error: " + err.Error(), Failed: true}
-	} else {
+	prepared, err := toolbox.Prepare(name, call.Function.Arguments)
+	if err == nil {
 		update.Title = prepared.Title
 		update.Locations = locations(prepared.Locations)
+		if asksPermission(update.Kind) {
+			entry, err = s.requestPermission(ctx, entry, &update, prepared)
+		}
+	}
+	if err != nil {
+		result = tools.Result{Output: "Error: " + err.Error(), Failed: true}
+	} else {
+		patch := acp.ToolCallUpdate{ToolCallID: update.ToolCallID, Status: acp.ToolInProgress}
+		if entry < 0 {
+			patch = update
+			patch.Status = acp.ToolInProgress
+		}
 		update.Status = acp.ToolInProgress
-		entry = s.reportTool(entry, update)
+		entry = s.reportTool(entry, patch)
 		result = prepared.Run(ctx)
 	}
 
@@ -105,6 +117,66 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 	}
 	s.reportTool(entry, final)
 	s.appendHistory(toolResult(call.ID, result.Output))
+}
+
+// asksPermission reports whether tools of a kind change the workspace and so
+// run only with the user's permission (ADR 0003).
+func asksPermission(kind acp.ToolKind) bool {
+	return kind == acp.ToolEdit || kind == acp.ToolExecute
+}
+
+// Permission option ids. Only "once" options are offered: remembering
+// choices is the client's auto-approval (ADR 0003).
+const (
+	optionAllow  = "allow"
+	optionReject = "reject"
+)
+
+var permissionOptions = []acp.PermissionOption{
+	{OptionID: optionAllow, Name: "Allow", Kind: acp.PermissionAllowOnce},
+	{OptionID: optionReject, Name: "Reject", Kind: acp.PermissionRejectOnce},
+}
+
+var errRejected = errors.New("the user rejected this tool call")
+
+// requestPermission reports the call as pending, with the diff it would
+// apply, and asks the user to allow it. A nil error is approval; any other
+// answer, or none, is an error for the model. A call whose preview fails is
+// not asked about: it would fail anyway.
+func (s *Session) requestPermission(ctx context.Context, entry int, update *acp.ToolCallUpdate, call *tools.Call) (int, error) {
+	diff, err := call.Preview(ctx)
+	if err != nil {
+		return entry, err
+	}
+	update.Status = acp.ToolPending
+	if diff != nil {
+		update.Content = []acp.ToolCallContent{*diff}
+	}
+	entry = s.reportTool(entry, *update)
+
+	subject := &acp.PermissionSubject{Type: acp.SubjectToolCall, ToolCall: update}
+	if call.Command != "" {
+		subject = &acp.PermissionSubject{Type: acp.SubjectCommand, Command: call.Command, Cwd: s.cwd, ToolCallID: update.ToolCallID}
+	}
+	req := acp.RequestPermissionRequest{SessionID: s.id, Title: call.Title + "?", Subject: subject, Options: permissionOptions}
+
+	// Tools run one at a time, so waiting blocks all foreground work.
+	s.setState(acp.StateUpdate{State: acp.StateRequiresAction})
+	var resp acp.RequestPermissionResponse
+	err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
+	if ctx.Err() != nil {
+		return entry, ctx.Err() // the turn ends as cancelled; no running in between
+	}
+	s.setState(acp.StateUpdate{State: acp.StateRunning})
+	switch outcome := resp.Outcome; {
+	case err != nil:
+		return entry, fmt.Errorf("could not get the user's permission: %v", err)
+	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionAllow:
+		return entry, nil
+	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionReject:
+		return entry, errRejected
+	}
+	return entry, fmt.Errorf("permission was not granted (outcome %q, option %q)", resp.Outcome.Outcome, resp.Outcome.OptionID)
 }
 
 // reportTool updates replay and live output atomically, including calls

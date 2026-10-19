@@ -34,7 +34,7 @@ func TestPromptLifecycle(t *testing.T) {
 	messageID, resp := a.accepted(id)
 	updates := a.untilIdle(sid)
 
-	want := []string{"user_message", "state_update running", "agent_thought_chunk", "agent_message_chunk", "usage_update", "state_update idle end_turn"}
+	want := []string{"user_message", "session_info_update", "state_update running", "agent_thought_chunk", "agent_message_chunk", "usage_update", "state_update idle end_turn"}
 	if got := kinds(updates); !slices.Equal(got, want) {
 		t.Fatalf("updates:\n got %v\nwant %v", got, want)
 	}
@@ -314,5 +314,30 @@ func waitClosed(t *testing.T, ch <-chan struct{}, msg string) {
 	case <-ch:
 	case <-time.After(timeout):
 		t.Fatal(msg)
+	}
+}
+
+func TestEmbeddedResourcesReachTheModel(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(reply("ok"))
+	a, sid, _ := started(t, llm)
+
+	blocks := []any{
+		map[string]any{"type": "text", "text": "Review this"},
+		map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///w/a.go", "mimeType": "text/x-go", "text": "package a\n"}},
+		map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///w/x.png", "mimeType": "image/png", "blob": "AAEC"}},
+	}
+	a.accepted(a.request("session/prompt", map[string]any{"sessionId": sid, "prompt": blocks}))
+	updates := a.untilIdle(sid)
+
+	var echoed []map[string]any
+	_ = json.Unmarshal(updates[0].Content, &echoed)
+	if len(echoed) != 3 || echoed[1]["type"] != "resource" || echoed[2]["resource"].(map[string]any)["blob"] != "AAEC" {
+		t.Fatalf("user_message content: %s", updates[0].Content)
+	}
+	want := "Review this\n\n<resource uri=\"file:///w/a.go\">\npackage a\n\n</resource>\n\n[binary resource omitted: file:///w/x.png]"
+	if got := llm.request(0).Messages[1]["content"]; got != want {
+		t.Fatalf("model message:\n got %q\nwant %q", got, want)
 	}
 }

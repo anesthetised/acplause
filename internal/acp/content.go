@@ -11,6 +11,7 @@ import (
 const (
 	ContentText         = "text"
 	ContentResourceLink = "resource_link"
+	ContentResource     = "resource"
 )
 
 // ContentBlock is an ACP content block. Blocks decoded from the wire keep
@@ -22,7 +23,17 @@ type ContentBlock struct {
 	URI  string // resource_link
 	Name string // resource_link
 
+	Resource *Resource // resource
+
 	raw json.RawMessage
+}
+
+// Resource is the contents of an embedded resource: text when Text is set,
+// otherwise a blob, whose data acplause never reads.
+type Resource struct {
+	URI      string  `json:"uri"`
+	MimeType string  `json:"mimeType"`
+	Text     *string `json:"text"` // a pointer: empty text is still text
 }
 
 // Text returns a text content block.
@@ -56,9 +67,19 @@ func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 		Text string `json:"text"`
 		URI  string `json:"uri"`
 		Name string `json:"name"`
+
+		Resource json.RawMessage `json:"resource"`
 	}
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
+	}
+	// Only resource blocks are held to the resource shape, so other and
+	// future block types may carry a field of that name.
+	var resource *Resource
+	if fields.Type == ContentResource && fields.Resource != nil {
+		if err := json.Unmarshal(fields.Resource, &resource); err != nil {
+			return err
+		}
 	}
 	if fields.Type == "" {
 		return errors.New("content block type is required")
@@ -68,7 +89,9 @@ func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 		Text: fields.Text,
 		URI:  fields.URI,
 		Name: fields.Name,
-		raw:  append(json.RawMessage(nil), data...),
+
+		Resource: resource,
+		raw:      append(json.RawMessage(nil), data...),
 	}
 	return nil
 }

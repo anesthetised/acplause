@@ -9,10 +9,10 @@ first, and works in your workspace through tools.
 
 - ACP v2 only, validated against the pinned schema (`testdata/schema/v2`).
 - Streaming text and reasoning, tool calls, usage and cost reporting.
+- Asks permission before changing files or running commands.
 - Prompt queue, cancellation that aborts the HTTP stream and kills
   everything a command started, session list/resume/close.
 - Model and reasoning effort selection from OpenRouter's model list.
-- Go standard library only.
 
 ## Install
 
@@ -41,7 +41,7 @@ models with tool support, session creation fails.
 
 | Tool          | Kind      |                                                   |
 | ------------- | --------- | ------------------------------------------------- |
-| `read_file`   | `read`    | text files up to 1 MiB                            |
+| `read_file`   | `read`    | text files up to 1 MiB; `offset`, `limit` lines   |
 | `list_dir`    | `read`    | tree, 3 levels, 200 entries                       |
 | `search_code` | `search`  | plain-text search, 50 matches                     |
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
@@ -51,6 +51,13 @@ models with tool support, session creation fails.
 `write_file` and `edit` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
 
+`write_file`, `edit` and `bash` run only after the user allows them through
+`session/request_permission`, with the diff or command shown in the request.
+acplause offers "allow once" and "reject once"; anything else, including a
+cancelled or unrecognised answer, is a rejection, which the model is told
+about. Automatic approval is the client's setting. See
+[ADR 0003](docs/adr/0003-permissions.md).
+
 File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not
 sandboxed.
@@ -58,6 +65,22 @@ sandboxed.
 Read, write and edit operations accept regular files only; pipes and devices
 are rejected. `write_file.content` and `edit.new_text` must be explicit
 strings: an empty string is valid, but an omitted or null value is an error.
+
+`AGENTS.md` at the root of the session's `cwd` is appended to the system
+prompt, read once when the session is created. Only that file, with no
+`CLAUDE.md` fallback and no parent directories. A missing file changes
+nothing; one that is not a regular text file or exceeds 32 KiB is skipped
+with a log line.
+
+A session is titled after the first line of its first prompt. The title is
+sent once, as a `session_info_update`, when that prompt is accepted, and is
+returned by `session/list`. It is not replayed on resume: replay is
+conversation history, and the title is metadata that `session/list` reports.
+
+Prompts may embed resources (`session.prompt.embeddedContext`). A text
+resource reaches the model as `<resource uri="...">` with its contents; a blob
+resource is replaced by a one-line note naming its URI. The client still gets
+every block echoed back unchanged. Images and audio are not supported.
 
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call

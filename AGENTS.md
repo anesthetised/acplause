@@ -62,8 +62,10 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 - **Forward compatibility.** Unknown fields and `_`-prefixed variants must not
   break parsing; prompt content blocks are echoed back verbatim.
 - **Errors meant for the model are tool results**, not protocol errors:
-  invalid tool arguments, unknown tools and sandbox violations are reported
-  as a `failed` tool call and sent back to the model.
+  invalid tool arguments, unknown tools, sandbox violations and declined
+  permission are reported as a `failed` tool call and sent back to the model.
+- **Agent-to-client requests block**, so `jsonrpc.Conn.Call` is used only from
+  session goroutines. Anything but an explicit allow is not permission.
 
 ## Code style
 
@@ -73,7 +75,7 @@ testdata/schema/v2 pinned ACP schema; see VERSION
   hand-rolled ones.
 - Doc comments on every exported identifier and on non-obvious unexported
   ones; explain why, not what. Match the surrounding density.
-- Depend on small consumer-side interfaces (`agent.Model`, `agent.Notifier`)
+- Depend on small consumer-side interfaces (`agent.Model`, `agent.Client`)
   so packages can be tested with fakes.
 - Keep `internal/acp` to types that are actually sent or read.
 
@@ -84,6 +86,8 @@ testdata/schema/v2 pinned ACP schema; see VERSION
   schema: the root schema, plus the specific `*Response` definition for
   results and the `*Notification` definition for notification params. A new
   outgoing message type is covered automatically; a violation fails the test.
+- E2E tests allow permission requests automatically; pass `askingUser` to
+  `start`/`started` to answer them with `permissionRequest` and `answer`.
 - E2E tests script the LLM with `mockLLM.enqueue` (`reply`, `callTool`,
   `waitFor`, or a custom `script`) and consume output with `take`,
   `untilIdle` and `updateWhere`. Messages a `take` skips stay available.
