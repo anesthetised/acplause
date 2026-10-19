@@ -43,6 +43,7 @@ type Session struct {
 	Title     string
 	UpdatedAt time.Time
 	Model     string
+	Mode      string // per-session execution policy; empty writes default to build
 	Effort    string
 	Cost      float64
 	State     string // foreground state as last saved
@@ -138,6 +139,7 @@ var migrations = []string{
 		model  TEXT NOT NULL,
 		effort TEXT NOT NULL
 	);`,
+	`ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build' CHECK (mode IN ('build', 'plan'));`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -198,10 +200,10 @@ func (s *Store) Create(ctx context.Context, sess Session) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO sessions
-		(id, cwd, dirs, title, updated_at, model, effort, cost, state, owner, lease_until)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, cwd, dirs, title, updated_at, model, effort, cost, state, owner, lease_until, mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.Cwd, dirs, sess.Title, sess.UpdatedAt.UnixNano(), sess.Model, sess.Effort, sess.Cost, sess.State,
-		s.owner, s.leaseUntil())
+		s.owner, s.leaseUntil(), cmp.Or(sess.Mode, "build"))
 	return err
 }
 
@@ -215,9 +217,9 @@ func (s *Store) Save(ctx context.Context, sess Session, history, transcript []Ro
 	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE sessions
-			SET dirs = ?, title = ?, updated_at = ?, model = ?, effort = ?, cost = ?, state = ?
+			SET dirs = ?, title = ?, updated_at = ?, model = ?, effort = ?, cost = ?, state = ?, mode = ?
 			WHERE id = ? AND owner = ?`,
-			dirs, sess.Title, sess.UpdatedAt.UnixNano(), sess.Model, sess.Effort, sess.Cost, sess.State, sess.ID, s.owner)
+			dirs, sess.Title, sess.UpdatedAt.UnixNano(), sess.Model, sess.Effort, sess.Cost, sess.State, cmp.Or(sess.Mode, "build"), sess.ID, s.owner)
 		if err != nil {
 			return err
 		}
@@ -253,9 +255,9 @@ func (s *Store) Acquire(ctx context.Context, id string) (*Loaded, error) {
 		var dirs string
 		var updated, leaseUntil int64
 		var owner string
-		err := tx.QueryRowContext(ctx, `SELECT cwd, dirs, title, updated_at, model, effort, cost, state, owner, lease_until
+		err := tx.QueryRowContext(ctx, `SELECT cwd, dirs, title, updated_at, model, effort, cost, state, owner, lease_until, mode
 			FROM sessions WHERE id = ?`, id).
-			Scan(&l.Cwd, &dirs, &l.Title, &updated, &l.Model, &l.Effort, &l.Cost, &l.State, &owner, &leaseUntil)
+			Scan(&l.Cwd, &dirs, &l.Title, &updated, &l.Model, &l.Effort, &l.Cost, &l.State, &owner, &leaseUntil, &l.Mode)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}

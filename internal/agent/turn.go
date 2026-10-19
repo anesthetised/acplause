@@ -63,6 +63,9 @@ func (s *Session) request() modelRound {
 	defer s.mu.Unlock()
 	req := llm.Request{Model: s.model, Messages: slices.Clone(s.history), Vision: s.catalog.vision(s.model)}
 	for _, spec := range s.toolbox.Specs() {
+		if !allowsTool(s.mode, spec.Name) {
+			continue
+		}
 		req.Tools = append(req.Tools, llm.FunctionTool(spec.Name, spec.Description, spec.Parameters))
 	}
 	req.Tools = append(req.Tools, updatePlanTool)
@@ -74,10 +77,13 @@ func (s *Session) request() modelRound {
 	}
 	bindings := map[string]mcp.Tool{}
 	for _, t := range s.mcp.Snapshot() {
+		if s.mode == modePlan {
+			continue
+		}
 		bindings[t.Name] = t
 		req.Tools = append(req.Tools, llm.FunctionTool(t.Name, t.Description, t.InputSchema))
 	}
-	return modelRound{Request: req, bindings: bindings}
+	return modelRound{Request: req, bindings: bindings, mode: s.mode}
 }
 
 // runTool reports and executes one tool call. Every call gets a result in
@@ -102,7 +108,9 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 	entry := -1
 	var prepared *preparedTool
 	var err error
-	if name == "update_plan" {
+	if !allowsTool(round.mode, name) {
+		err = fmt.Errorf("tool %q is unavailable in Plan mode", name)
+	} else if name == "update_plan" {
 		prepared, err = s.preparePlan(call.Function.Arguments)
 	} else if name == "ask_user" && s.supportsForms() {
 		var req acp.ElicitationRequest
@@ -364,4 +372,17 @@ func locations(paths []string) []acp.ToolCallLocation {
 		locs = append(locs, acp.ToolCallLocation{Path: p})
 	}
 	return locs
+}
+
+// allowsTool is shared by advertisement and invocation. Plan uses names,
+// never shell parsing or external readOnlyHint annotations (ADR 0013).
+func allowsTool(mode, name string) bool {
+	if mode != modePlan {
+		return true
+	}
+	switch name {
+	case "read_file", "list_dir", "search_code", "ask_user", "update_plan":
+		return true
+	}
+	return false
 }

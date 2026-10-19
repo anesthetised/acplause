@@ -145,7 +145,7 @@ func TestConfigOptions(t *testing.T) {
 	sid := session.SessionID
 
 	model := configByID(t, session.ConfigOptions, "model")
-	if len(session.ConfigOptions) != 1 || model.CurrentValue != "" || model.Category != "model" || !slices.Equal(values(model), []string{"", "test/model", "test/plain"}) || model.Options[0].Name != "Select a model" {
+	if len(session.ConfigOptions) != 2 || model.CurrentValue != "" || model.Category != "model" || !slices.Equal(values(model), []string{"", "test/model", "test/plain"}) || model.Options[0].Name != "Select a model" {
 		t.Fatalf("model option: %+v", model)
 	}
 	// Reject before inserting the message or contacting the model.
@@ -181,7 +181,7 @@ func TestConfigOptions(t *testing.T) {
 
 	// A model without reasoning drops the dependent option.
 	a.ok("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": "test/plain"}, &res)
-	if len(res.ConfigOptions) != 1 || res.ConfigOptions[0].CurrentValue != "test/plain" {
+	if len(res.ConfigOptions) != 2 || res.ConfigOptions[0].CurrentValue != "test/plain" {
 		t.Fatalf("after switching model: %+v", res.ConfigOptions)
 	}
 	a.accepted(a.prompt(sid, "plain"))

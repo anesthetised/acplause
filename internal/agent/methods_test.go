@@ -92,7 +92,7 @@ type acpClient struct {
 }
 
 // startAgent serves an Agent over pipes with a store in dir.
-func startAgent(t *testing.T, dir string, model Model, list ListModels) *acpClient {
+func startAgent(t *testing.T, dir string, model Model, list ListModels, wrapStore ...func(Store) Store) *acpClient {
 	t.Helper()
 	st, err := store.Open(dir, newID())
 	if err != nil {
@@ -104,8 +104,12 @@ func startAgent(t *testing.T, dir string, model Model, list ListModels) *acpClie
 	if list == nil {
 		list = func(context.Context) ([]llm.Model, error) { return testModels, nil }
 	}
+	var persistence Store = st
+	if len(wrapStore) > 0 {
+		persistence = wrapStore[0](st)
+	}
 	c := &acpClient{t: t, in: agentIn, updates: make(chan notification, 256), pending: make(map[int]chan rpcResponse), elicitations: make(chan clientElicitation, 16), cancellations: make(chan json.RawMessage, 16)}
-	c.agent = New(Config{Info: acp.Implementation{Name: "test", Version: "1"}, Store: st}, conn, model, list)
+	c.agent = New(Config{Info: acp.Implementation{Name: "test", Version: "1"}, Store: persistence}, conn, model, list)
 
 	served := make(chan struct{})
 	go func() {
@@ -321,7 +325,7 @@ func TestSessionConfigOptions(t *testing.T) {
 	cwd := t.TempDir()
 	sid := c.newSession(cwd)
 
-	if opts := c.selectModel(sid, "r"); len(opts) != 2 || opts[1].ConfigID != configEffort {
+	if opts := c.selectModel(sid, "r"); len(opts) != 3 || opts[1].ConfigID != configEffort {
 		t.Fatalf("reasoning model options: %+v", opts)
 	}
 	set := func(id, value string) map[string]any {
@@ -337,10 +341,10 @@ func TestSessionConfigOptions(t *testing.T) {
 	// A new session starts with the last choice, effort included.
 	var res acp.NewSessionResponse
 	c.ok(acp.MethodSessionNew, map[string]any{"cwd": cwd, "mcpServers": []any{}}, &res)
-	if len(res.ConfigOptions) != 2 || res.ConfigOptions[0].CurrentValue != "r" || res.ConfigOptions[1].CurrentValue != "high" {
+	if len(res.ConfigOptions) != 3 || res.ConfigOptions[0].CurrentValue != "r" || res.ConfigOptions[1].CurrentValue != "high" {
 		t.Fatalf("remembered selection: %+v", res.ConfigOptions)
 	}
-	if opts := c.selectModel(sid, "m"); len(opts) != 1 {
+	if opts := c.selectModel(sid, "m"); len(opts) != 2 {
 		t.Fatalf("plain model options: %+v", opts)
 	}
 	c.fails(acp.MethodSessionSetConfig, set(configEffort, "low"), jsonrpc.CodeInvalidParams)

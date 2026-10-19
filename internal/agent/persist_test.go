@@ -231,3 +231,56 @@ func TestRestoreRepairsInterruptedCompaction(t *testing.T) {
 		t.Fatalf("repair was not queued: %v, %v, %v", history, transcript, err)
 	}
 }
+
+func TestSessionModeRecordAndRecovery(t *testing.T) {
+	for _, mode := range []string{"", "build", "plan"} {
+		t.Run(mode, func(t *testing.T) {
+			s, err := restoreSession(context.Background(), deps{}, newCatalog(nil), &store.Loaded{Session: store.Session{ID: "s", Cwd: t.TempDir(), State: "idle", Mode: mode}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			want := mode
+			if want == "" {
+				want = "build"
+			}
+			if s.mode != want || s.record().Mode != want {
+				t.Fatalf("mode not recovered: %q %+v", s.mode, s.record())
+			}
+		})
+	}
+	s, _ := testSession(t, nil)
+	if s.record().Mode != "build" {
+		t.Fatalf("new mode: %q", s.record().Mode)
+	}
+}
+
+func TestCloseWaitsForModePersistence(t *testing.T) {
+	entered, release, saved := make(chan struct{}), make(chan struct{}), make(chan string, 1)
+	st := saveStore{save: func(_ context.Context, sess store.Session, _, _ []store.Row) error {
+		close(entered)
+		<-release
+		saved <- sess.Mode
+		return nil
+	}}
+	s, err := newSession(context.Background(), deps{store: st}, newCatalog(nil), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetConfigOption("mode", "id", jsonString("plan")); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	done := make(chan struct{})
+	go func() { s.Close(); close(done) }()
+	select {
+	case <-done:
+		t.Error("Close returned while mode save was still in progress")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-done
+	if mode := <-saved; mode != "plan" {
+		t.Fatalf("saved mode=%q", mode)
+	}
+}

@@ -25,6 +25,7 @@ first, and works in your workspace through tools.
 - Session-owned MCP tools over stdio and Streamable HTTP.
 - Structured user questions on clients advertising ACP form elicitation.
 - Native ACP execution plans with persistent progress snapshots.
+- Per-session Plan/Build modes with enforced tool restrictions.
 
 ## Install
 
@@ -61,6 +62,23 @@ longer available, sessions show "Select a model"; prompts are rejected until
 the client selects one. The agent never picks a substitute model. If the
 provider's model list cannot be loaded or contains no models with tool
 support, session creation fails. See [ADR 0005](docs/adr/0005-remember-model-selection.md).
+
+The `mode` session config option selects **Build** (the default) or **Plan**.
+Plan permits only `read_file`, `list_dir`, `search_code`, `update_plan` and,
+on capable clients, `ask_user`. It rejects file changes, all shell commands
+(including inspection commands) and all external MCP tool calls, even those
+marked read-only, before requesting permission or executing them. Build
+restores the usual tools and client-owned approval policy. Mode survives
+resume and restarts for that session; new sessions always start in Build,
+independently of remembered model and reasoning preferences.
+
+A mode change requires an idle session with no queued prompts or pending
+setup. While work, permissions or resume/setup are pending, a different mode
+is rejected with `-32602`: cancel or wait for completion, then retry. The
+worker's final save may briefly keep it busy after the idle update. Selecting
+the current mode is idempotent. Plan is an agent tool policy, not an OS
+sandbox: configured MCP servers can remain connected and setup/discovery
+still runs. See [ADR 0013](docs/adr/0013-plan-build-mode.md).
 
 ## Tools
 
