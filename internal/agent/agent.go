@@ -73,6 +73,11 @@ type Agent struct {
 	ctx         context.Context // parent of all sessions
 	cancel      context.CancelFunc
 
+	// ownershipMu serialises acquisition/publication with renewal and its
+	// loss results. Only background operations take it; turns use their own
+	// session locks. Take it before a session's flushMu, never under mu.
+	ownershipMu sync.Mutex
+
 	mu             sync.Mutex
 	sessions       map[string]*Session // open in this process
 	lost           map[string]bool     // taken over by another process
@@ -134,30 +139,53 @@ func (a *Agent) renewLeases() {
 			return
 		case <-t.C:
 		}
-		a.mu.Lock()
-		ids := slices.Collect(maps.Keys(a.sessions))
-		a.mu.Unlock()
-		if len(ids) == 0 {
-			continue
-		}
-		lost, err := a.cfg.Store.Renew(a.ctx, ids)
-		if err != nil {
-			a.cfg.Log.Warn("renewing session leases", "err", err)
-			continue
-		}
-		for _, id := range lost {
-			a.drop(id)
-		}
+		a.renew()
+	}
+}
+
+// renew applies one ownership check, including its loss notifications.
+func (a *Agent) renew() {
+	a.ownershipMu.Lock()
+	defer a.ownershipMu.Unlock()
+	a.mu.Lock()
+	ids := slices.Collect(maps.Keys(a.sessions))
+	pending := make(map[string]*sessionOperation, len(ids))
+	for _, id := range ids {
+		pending[id] = a.operations[id]
+	}
+	a.mu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+	lost, err := a.cfg.Store.Renew(a.ctx, ids)
+	if err != nil {
+		a.cfg.Log.Warn("renewing session leases", "err", err)
+		return
+	}
+	for _, id := range lost {
+		a.dropLocked(id, pending[id])
 	}
 }
 
 // drop forgets a session another process now owns, ending its work here
 // without writing to it again.
 func (a *Agent) drop(id string) {
+	a.ownershipMu.Lock()
+	defer a.ownershipMu.Unlock()
+	a.mu.Lock()
+	pending := a.operations[id]
+	a.mu.Unlock()
+	a.dropLocked(id, pending)
+}
+
+// dropLocked applies a loss to the session and setup captured by its check.
+// Requires ownershipMu. A later resume may already be waiting for that lock;
+// cancelling its reservation would prevent it from restoring the session.
+func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 	a.mu.Lock()
 	s := a.sessions[id]
 	delete(a.sessions, id)
-	for op := a.operations[id]; op != nil; op = op.previous {
+	for op := pending; op != nil; op = op.previous {
 		op.cancel()
 	}
 	a.lost[id] = true
@@ -165,7 +193,12 @@ func (a *Agent) drop(id string) {
 	if s != nil {
 		a.cfg.Log.Info("session taken over by another process", "session", id)
 		s.markLost()
+		// The map no longer exposes s to open. Drain its old write before
+		// releasing ownershipMu, or reacquisition could revive that write's
+		// process owner ID even though the detached session is marked lost.
+		s.flushMu.Lock()
 		go s.Close()
+		s.flushMu.Unlock()
 	}
 }
 
@@ -389,7 +422,7 @@ func (a *Agent) listSessions(_ context.Context, req acp.ListSessionsRequest) (an
 }
 
 // resumeSession takes the session over in the store, which also renews this
-// process's own lease, and loads it unless it is already open here.
+// process's own lease, and restores it unless local ownership was continuous.
 func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest) (any, error) {
 	replay := req.ReplayFrom != nil
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
@@ -410,9 +443,24 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	return op.reply, nil
 }
 
-// open acquires a session for this process and returns it, loading it from
-// the store if it is not open here.
+// open preserves a live local session only when Acquire proves this process
+// still owned it. Old saves must finish before ownership can return to this
+// process, or their process-owner check could overwrite the new history.
 func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
+	a.ownershipMu.Lock()
+	defer a.ownershipMu.Unlock()
+	a.mu.Lock()
+	old := a.sessions[id]
+	a.mu.Unlock()
+	if old != nil {
+		// Reject a bad workspace before changing ownership of a cached
+		// session. Its cwd is immutable for the session's lifetime.
+		if old.cwd != cwd {
+			return nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, old.cwd)
+		}
+		old.flushMu.Lock()
+		defer old.flushMu.Unlock()
+	}
 	l, err := a.cfg.Store.Acquire(ctx, id)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -422,17 +470,26 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 	case err != nil:
 		return nil, jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot load the session: %v", err)
 	}
-	a.mu.Lock()
-	s := a.sessions[id]
-	a.mu.Unlock()
 	if l.Cwd != cwd {
-		if s == nil {
+		if old == nil {
 			a.releaseID(id)
 		}
 		return nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
 	}
-	if s != nil {
-		return s, nil
+	if old != nil {
+		if l.AlreadyOwned && !old.isLost() {
+			return old, nil
+		}
+		// A lost context/MCP manager cannot be revived. Mark loss while
+		// flushMu still fences queued flushes and prompt insertions.
+		old.markLost()
+		a.mu.Lock()
+		if a.sessions[id] == old {
+			delete(a.sessions, id)
+		}
+		a.lost[id] = true
+		a.mu.Unlock()
+		go old.Close() // never release the replacement's process-owned lease
 	}
 
 	c, err := a.catalog()
@@ -440,7 +497,8 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 		a.releaseID(id)
 		return nil, turnError(err)
 	}
-	if s, err = restoreSession(a.ctx, a.deps, c, l); err != nil {
+	s, err := restoreSession(a.ctx, a.deps, c, l)
+	if err != nil {
 		a.releaseID(id)
 		return nil, acp.ErrInvalidParams("cannot restore the session: %v", err)
 	}
@@ -450,11 +508,6 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 		s.Close()
 		a.releaseID(id)
 		return nil, acp.ErrRequestCancelled()
-	}
-	if open := a.sessions[id]; open != nil { // a concurrent resume won
-		a.mu.Unlock()
-		s.Close()
-		return open, nil
 	}
 	a.sessions[id] = s
 	delete(a.lost, id)
