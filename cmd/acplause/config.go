@@ -18,12 +18,14 @@ type config struct {
 	MaxRounds   int
 	BashTimeout time.Duration
 	LogLevel    slog.Level
+	DataDir     string // "" selects ~/.acplause
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
 	cfg := config{
 		BaseURL: cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
 		APIKey:  cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
+		DataDir: getenv("ACPLAUSE_DATA_DIR"),
 	}
 
 	var errs []error

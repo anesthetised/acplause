@@ -230,3 +230,27 @@ func TestPromptTextEmbeddedResources(t *testing.T) {
 		t.Fatalf("title: %q", got)
 	}
 }
+
+func TestStoredEntriesRoundTrip(t *testing.T) {
+	line := uint32(3)
+	for _, u := range []acp.Update{
+		acp.UserMessage{MessageID: "u", Content: []acp.ContentBlock{acp.Text("hi")}},
+		acp.AgentMessage{MessageID: "a", Content: []acp.ContentBlock{acp.Text("Paris.")}},
+		acp.AgentThought{MessageID: "t", Content: []acp.ContentBlock{acp.Text("hmm")}},
+		acp.ToolCallUpdate{ToolCallID: "c", Name: "edit", Status: acp.ToolCompleted, Locations: []acp.ToolCallLocation{{Path: "/w/a", Line: &line}},
+			Content: []acp.ToolCallContent{acp.ToolDiff([]acp.DiffChange{{Operation: acp.DiffModify, Path: "/w/a"}}, nil), acp.ToolText("ok")}},
+	} {
+		data, err := encodeEntry(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := decodeEntry(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := json.Marshal(u)
+		if back, _ := json.Marshal(got); fmt.Sprintf("%T", got) != fmt.Sprintf("%T", u) || string(back) != string(want) {
+			t.Errorf("round trip of %T:\n got %s\nwant %s", u, back, want)
+		}
+	}
+}
