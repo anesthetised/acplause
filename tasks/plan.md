@@ -1,7 +1,7 @@
 # Plan: MCP tools over stdio and HTTP (#12, #13, #14)
 
 Status: implemented; real T3 stdio smoke passed, including explicit resume.
-Final verification and PR delivery are tracked below.
+Final verification passed; this change is delivered as one PR against main.
 Date: 2026-10-19. Baseline: `4793b51`. Branch: `feat/mcp-servers`.
 
 The user requested one branch and one PR for issues
@@ -258,10 +258,11 @@ using the same HTTP endpoint with isolated upstream MCP sessions.
 - [x] Runtime gate available and passed: the actual injected config was
   stdio. The smoke used acplause as the ACP provider, not this harness's
   native tools. No draft-only runtime gate remains.
-- [ ] Review diff, run final `just check`, push this branch and create one PR
-  covering #12–14. Register its URL with T3 immediately. Do not merge it or
-  include a closing reference for #23. Use closing references for other issues
-  only when their acceptance gates are actually met.
+- [x] Review the diff and run final `just check`. All required checks pass.
+
+Delivery contract: push this branch and create one PR covering #12–14;
+register its URL with T3 immediately. Do not merge it or close #23. Use
+closing references only when the corresponding acceptance gates are met.
 
 ## #23 boundary: what is deferred, and what must survive now
 
