@@ -67,7 +67,7 @@ func (tb *Toolbox) searchCode(args searchCodeArgs) (*Call, error) {
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				return s.visit(t.root.FS(), name, d)
+				return s.visit(ctx, tb.roots.within(t.root, filepath.FromSlash(name)), d)
 			})
 			if errors.Is(err, errSearchFull) {
 				fmt.Fprintf(&s.out, "... stopped after %d matches\n", maxMatches)
@@ -91,7 +91,8 @@ type searcher struct {
 	matches int
 }
 
-func (s *searcher) visit(fsys fs.FS, name string, d fs.DirEntry) error {
+func (s *searcher) visit(ctx context.Context, t target, d fs.DirEntry) error {
+	name := filepath.ToSlash(t.rel)
 	if name != "." && ignored(d.Name()) {
 		if d.IsDir() {
 			return fs.SkipDir
@@ -109,7 +110,10 @@ func (s *searcher) visit(fsys fs.FS, name string, d fs.DirEntry) error {
 	if info, err := d.Info(); err != nil || info.Size() > maxReadSize {
 		return nil
 	}
-	data, err := fs.ReadFile(fsys, name)
+	data, err := t.readFile(ctx, maxReadSize)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil || !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return nil
 	}
