@@ -40,6 +40,9 @@ type Client interface {
 	// Call sends a request and waits for its result. It blocks, so only
 	// session goroutines use it, never handlers on the read loop.
 	Call(ctx context.Context, method string, params, result any) error
+	// CallCancellable also sends best-effort wire cancellation when a locally
+	// cancelled request is no longer relevant. Permissions use Call instead.
+	CallCancellable(ctx context.Context, method string, params, result any) error
 }
 
 // ListModels loads the model catalog.
