@@ -119,7 +119,7 @@ func (s *searcher) visit(ctx context.Context, t target, d fs.DirEntry) error {
 	}
 
 	lines := bufio.NewScanner(bytes.NewReader(data))
-	lines.Buffer(nil, maxReadSize)
+	lines.Buffer(nil, maxReadSize+1)
 	for n := 1; lines.Scan(); n++ {
 		if !bytes.Contains(lines.Bytes(), s.pattern) {
 			continue
@@ -130,7 +130,7 @@ func (s *searcher) visit(ctx context.Context, t target, d fs.DirEntry) error {
 		s.matches++
 		fmt.Fprintf(&s.out, "%s:%d:%s\n", s.show(name), n, clip(strings.TrimSpace(lines.Text()), maxMatchWidth))
 	}
-	return nil
+	return lines.Err()
 }
 
 func clip(s string, width int) string {
