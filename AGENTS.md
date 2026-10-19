@@ -91,6 +91,11 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 ## Tests
 
 - New behaviour needs a test. Protocol-visible behaviour needs an e2e test.
+- Total Go statement coverage must stay at or above 80%; check it with
+  `just test -coverprofile=cover.out && go tool cover -func=cover.out | tail -1`.
+  The e2e binary is not measured, so code reached only through e2e tests
+  also needs in-package tests (`internal/agent/methods_test.go` drives the
+  handlers over `jsonrpc.Conn`).
 - The e2e harness validates every message the agent writes against the
   schema: the root schema, plus the specific `*Response` definition for
   results and the `*Notification` definition for notification params. A new

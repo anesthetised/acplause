@@ -1,7 +1,7 @@
 # acplause
 
 [![CI](https://github.com/anesthetised/acplause/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/anesthetised/acplause/actions/workflows/ci.yml)
-[![Coverage](https://raw.githubusercontent.com/anesthetised/acplause/coverage/coverage.svg)](https://github.com/anesthetised/acplause/actions/workflows/ci.yml)
+[![Go coverage](https://raw.githubusercontent.com/anesthetised/acplause/coverage/coverage.svg)](https://github.com/anesthetised/acplause/actions/workflows/ci.yml)
 
 *Don't hold your acplause — it streams.*
 
