@@ -31,15 +31,26 @@ func TestMCPHelper(t *testing.T) {
 			continue
 		}
 		var result any
+		variant := os.Getenv("ACPLAUSE_MCP_CASE")
 		switch req.Method {
 		case "initialize":
-			result = map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{"tools": map[string]any{"listChanged": true}}, "serverInfo": map[string]string{"name": "fake", "version": "1"}}
+			version := "2025-11-25"
+			if variant == "version" {
+				version = "unsupported"
+			}
+			result = map[string]any{"protocolVersion": version, "capabilities": map[string]any{"tools": map[string]any{"listChanged": true}}, "serverInfo": map[string]string{"name": "fake", "version": "1"}}
 		case "tools/list":
 			var p struct{ Cursor string }
 			_ = json.Unmarshal(req.Params, &p)
 			name, next := "read_file", "second"
 			if p.Cursor != "" {
 				name, next = "schedule_task", ""
+				if variant == "duplicate" {
+					name = "read_file"
+				}
+				if variant == "cursor" {
+					next = "second"
+				}
 			}
 			result = map[string]any{"tools": []any{map[string]any{"name": name, "description": fmt.Sprint("fixture-", changed), "inputSchema": map[string]any{"type": "object"}}}, "nextCursor": next}
 		case "tools/call":
@@ -63,6 +74,37 @@ func TestMCPHelper(t *testing.T) {
 		_ = w.Flush()
 	}
 	os.Exit(0)
+}
+
+func TestMCPRejectsInvalidDiscovery(t *testing.T) {
+	for _, variant := range []string{"version", "duplicate", "cursor"} {
+		t.Run(variant, func(t *testing.T) {
+			m := New(context.Background(), t.TempDir(), nil)
+			defer m.Close()
+			cfg := helperConfig(t, "invalid")
+			cfg.Env["ACPLAUSE_MCP_CASE"] = variant
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if _, err := m.Prepare(ctx, []Config{cfg}); err == nil {
+				t.Fatal("invalid discovery accepted")
+			}
+			if len(m.Snapshot()) != 0 {
+				t.Fatal("failed discovery published a partial catalog")
+			}
+		})
+	}
+}
+
+func TestMCPRejectsMalformedResponses(t *testing.T) {
+	for _, raw := range []string{`[]`, `{"jsonrpc":"1.0","id":"a","result":{}}`, `{"jsonrpc":"2.0","id":null,"result":{}}`, `{"jsonrpc":"2.0","id":"a","result":{},"error":{"code":1,"message":"bad"}}`, strings.Repeat("x", maxMessage+1)} {
+		p := newPeer(context.Background())
+		p.receive([]byte(raw))
+		if p.err() == nil {
+			p.cancel()
+			t.Fatal("invalid response did not retire connection")
+		}
+		p.cancel()
+	}
 }
 
 func helperConfig(t *testing.T, name string) Config {

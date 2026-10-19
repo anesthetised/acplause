@@ -8,6 +8,31 @@ import (
 	"testing"
 )
 
+func TestMCPReadOnlyHintStillRequiresPermission(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(mcpCall(t, "alpha", "read_file", `{}`), reply("declined"))
+	a := start(t, llm, askingUser)
+	a.initialize()
+	cwd := t.TempDir()
+	log := filepath.Join(cwd, "calls")
+	sid := mcpSession(t, a, cwd, mcpConfig("alpha", log, "first"))
+	a.accepted(a.prompt(sid, "call"))
+	p := a.permissionRequest()
+	a.answer(p, selected(optionOfKind(t, p, "reject_once")))
+	updates := a.untilIdle(sid)
+	if data, _ := os.ReadFile(log); len(data) != 0 {
+		t.Fatalf("declined tool dispatched: %s", data)
+	}
+	failed := false
+	for _, u := range updates {
+		failed = failed || u.Status == "failed"
+	}
+	if !failed || !strings.Contains(llm.request(1).Messages[len(llm.request(1).Messages)-1]["content"].(string), "reject") {
+		t.Fatal("permission rejection did not reach model and ACP")
+	}
+}
+
 func mcpConfig(name, log, label string) map[string]any {
 	return map[string]any{"type": "stdio", "name": name, "command": mcpBinary, "args": []string{"fixture-argument"}, "env": []any{map[string]string{"name": "FIXTURE_LOG", "value": log}, map[string]string{"name": "FIXTURE_TOKEN", "value": "configured-token"}, map[string]string{"name": "FIXTURE_LABEL", "value": label}}}
 }

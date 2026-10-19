@@ -17,6 +17,9 @@ type request struct {
 }
 
 func main() {
+	if path := os.Getenv("FIXTURE_PID"); path != "" {
+		_ = os.WriteFile(path, []byte(fmt.Sprint(os.Getpid())), 0600)
+	}
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(nil, 8<<20)
 	var waiting json.RawMessage

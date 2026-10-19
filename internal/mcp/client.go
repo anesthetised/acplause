@@ -141,6 +141,9 @@ func (p *peer) call(ctx context.Context, method string, params, result any) erro
 	if err != nil {
 		return err
 	}
+	if len(msg) > maxMessage {
+		return errors.New("MCP request exceeds 8 MiB")
+	}
 	if err = p.t.Send(ctx, msg); err != nil {
 		return err
 	}
@@ -204,7 +207,7 @@ func (p *peer) receive(b []byte) {
 		return
 	}
 	var id string
-	if json.Unmarshal(msg.ID, &id) != nil || (msg.Result == nil) == (msg.Error == nil) {
+	if json.Unmarshal(msg.ID, &id) != nil || id == "" || (msg.Result == nil) == (msg.Error == nil) {
 		p.fail(errors.New("invalid MCP response"))
 		return
 	}

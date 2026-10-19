@@ -280,6 +280,8 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 	}
 	if errors.Is(err, store.ErrLost) {
 		s.lost = true
+		s.cancel()
+		go s.mcp.Close()
 		return errSessionLost()
 	}
 	if ctx.Err() != nil {

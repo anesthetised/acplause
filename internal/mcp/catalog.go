@@ -109,7 +109,9 @@ func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *s
 	s := &server{cfg: cfg, peer: p, log: log}
 	s.hasTools, err = p.initialize(ctx)
 	if err == nil {
-		err = s.refresh(ctx)
+		discovery, cancel := context.WithTimeout(ctx, discoveryTimeout)
+		err = s.refresh(discovery)
+		cancel()
 	}
 	if err != nil {
 		s.close()
@@ -126,7 +128,7 @@ func (s *server) watch() {
 		case <-s.peer.changed:
 			ctx, cancel := context.WithTimeout(s.peer.ctx, discoveryTimeout)
 			if err := s.refresh(ctx); err != nil {
-				s.log.Warn("MCP catalog refresh failed", "server", s.cfg.Name, "err", err)
+				s.log.Warn("MCP catalog refresh failed", "server", s.cfg.Name)
 			}
 			cancel()
 		}
@@ -410,7 +412,6 @@ func (m *Manager) Snapshot() []Tool {
 	return out
 }
 
-// Close revokes every binding and releases the session's resources.
 func (m *Manager) closeResource(s *server) {
 	s.close()
 	m.mu.Lock()
@@ -418,6 +419,7 @@ func (m *Manager) closeResource(s *server) {
 	m.mu.Unlock()
 }
 
+// Close revokes every binding and releases the session's resources.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	if m.closed {

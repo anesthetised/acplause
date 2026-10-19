@@ -130,6 +130,22 @@ type saveStore struct {
 	save func(context.Context, store.Session, []store.Row, []store.Row) error
 }
 
+func TestPromptOwnershipLossRevokesMCPImmediately(t *testing.T) {
+	s, err := newSession(context.Background(), deps{out: make(recorder, 8)}, newCatalog(nil), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.deps.store = saveStore{save: func(context.Context, store.Session, []store.Row, []store.Row) error { return store.ErrLost }}
+	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("lost")}, reply: jsonrpc.NewReply()}
+	if s.insert(context.Background(), sub) {
+		t.Fatal("lost prompt was inserted")
+	}
+	if s.ctx.Err() == nil {
+		t.Fatal("ownership loss left session and MCP lifetime alive")
+	}
+}
+
 func (s saveStore) Save(ctx context.Context, sess store.Session, h, t []store.Row) error {
 	return s.save(ctx, sess, h, t)
 }

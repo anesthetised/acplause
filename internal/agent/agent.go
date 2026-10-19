@@ -460,6 +460,7 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 	}
 	op := a.reserveOperation(ctx, req.SessionID, true)
 	a.startOperation(req.SessionID, op, func(context.Context) error {
+		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
 			s.Close()
 			a.release(s)
@@ -483,6 +484,7 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 	}
 	op := a.reserveOperation(ctx, req.SessionID, true)
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
 			s.Close()
 		}
@@ -499,6 +501,23 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 		return nil
 	})
 	return op.reply, nil
+}
+
+// terminalSession catches a stored resume published between the handler's
+// removal and cancellation of earlier setup. Later resumes wait for this op.
+// Release/delete the lease only after all local resources have closed.
+func (a *Agent) terminalSession(id string, captured *Session) *Session {
+	a.mu.Lock()
+	late := a.sessions[id]
+	delete(a.sessions, id)
+	a.mu.Unlock()
+	if captured == nil {
+		return late
+	}
+	if late != nil && late != captured {
+		late.Close()
+	}
+	return captured
 }
 
 // release gives a closed session's lease back, unless it was lost.
