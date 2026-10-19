@@ -109,8 +109,8 @@ cover the current requirements.
 
 ## Delivery of the planning work
 
-Create the linked issues and update existing #23 without duplicating it. Keep
-all specifications in this branch; pushing was not requested. Issues contain
-the executable contracts themselves so they remain useful before these files
-are published. Planning verification checks links/dependencies, unchanged schema
-and code, and `just check`. Runtime acceptance belongs to implementation.
+The linked issues are created and existing #23 is updated without duplication.
+The user authorized publication to main. Issues contain executable contracts
+and link to the published ADRs and plans. Planning verification checks
+links/dependencies, unchanged schema and code, and `just check`.
+Runtime acceptance belongs to implementation.
