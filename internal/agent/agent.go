@@ -460,7 +460,20 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (any, error) {
 	a.mu.Lock()
 	s := a.sessions[req.SessionID]
-	pending := a.operations[req.SessionID] != nil
+	// Only pending setup can open an absent session. A close/delete retained
+	// until deferred cleanup (or prompts queued after it) cannot reopen it.
+	setup := a.operations[req.SessionID]
+	for setup != nil && setup.prompt {
+		setup = setup.previous
+	}
+	pending := setup != nil && !setup.terminal
+	if pending {
+		select {
+		case <-setup.done:
+			pending = false
+		default:
+		}
+	}
 	delete(a.sessions, req.SessionID)
 	a.mu.Unlock()
 	if s == nil && !pending {

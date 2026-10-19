@@ -221,3 +221,27 @@ func TestMCPRequestCancellationDoesNotCancelNextPrompt(t *testing.T) {
 		t.Fatalf("requests=%d", llm.requestCount())
 	}
 }
+
+func TestCloseDuringMCPSetupRejectsDuplicateClose(t *testing.T) {
+	t.Parallel()
+	a := start(t, newMockLLM(t))
+	a.initialize()
+	cwd := t.TempDir()
+	sid := mcpSession(t, a, cwd)
+	gate := filepath.Join(cwd, "gate")
+	cfg := mcpConfig("slow", filepath.Join(cwd, "calls"), "candidate")
+	cfg["env"] = append(cfg["env"].([]any), map[string]string{"name": "FIXTURE_GATE", "value": gate})
+	resume := a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{cfg}})
+	waitForFile(t, gate+".entered")
+	first := a.request("session/close", map[string]any{"sessionId": sid})
+	duplicate := a.request("session/close", map[string]any{"sessionId": sid})
+	if r := a.response(duplicate); r.Error == nil || r.Error.Code != -32002 {
+		t.Fatalf("duplicate close: result=%s error=%+v", r.Result, r.Error)
+	}
+	if r := a.response(first); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	if r := a.response(resume); r.Error == nil {
+		t.Fatal("interrupted setup succeeded")
+	}
+}

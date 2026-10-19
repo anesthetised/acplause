@@ -100,3 +100,44 @@ func TestCancelledNewSessionRemovesUnpublishedRecord(t *testing.T) {
 		t.Fatalf("unpublished session survived: created=%v deleted=%v", st.created, st.deleted)
 	}
 }
+
+func TestCloseRejectsOperationsThatCannotOpenSession(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		terminal, completed, prompt bool
+	}{
+		{name: "closing", terminal: true},
+		{name: "prompt after close", terminal: true, prompt: true},
+		{name: "completed setup", completed: true},
+		{name: "prompt after completed setup", completed: true, prompt: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			previous := &sessionOperation{ctx: ctx, cancel: cancel, terminal: tc.terminal, done: make(chan struct{})}
+			if tc.completed {
+				close(previous.done)
+			}
+			tail := previous
+			if tc.prompt {
+				tail = &sessionOperation{ctx: ctx, cancel: cancel, prompt: true, previous: previous, done: make(chan struct{})}
+			}
+			a := &Agent{ctx: context.Background(), operations: map[string]*sessionOperation{"closed": tail}}
+			// Keep the operation in the map as response delivery races deferred
+			// cleanup. Neither terminal cleanup nor a queued prompt can reopen it.
+			defer func() {
+				if !tc.completed {
+					close(previous.done)
+				}
+				if tail != previous {
+					close(tail.done)
+				}
+				a.jobs.Wait()
+			}()
+			_, err := a.closeSession(context.Background(), acp.CloseSessionRequest{SessionID: "closed"})
+			if err == nil || jsonrpc.AsError(err).Code != -32002 {
+				t.Fatalf("close of absent session accepted: %v", err)
+			}
+		})
+	}
+}
