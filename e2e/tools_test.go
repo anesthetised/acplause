@@ -103,6 +103,38 @@ func TestRoundLimit(t *testing.T) {
 	}
 }
 
+func TestMissingWriteContentPreservesFiles(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(
+		callTool("write_file", `{"path":"a.txt"}`),
+		callTool("edit", `{"path":"a.txt","old_text":"keep","new_text":null}`),
+		reply("Invalid arguments."),
+	)
+	a, sid, cwd := started(t, llm)
+	p := filepath.Join(cwd, "a.txt")
+	if err := os.WriteFile(p, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.accepted(a.prompt(sid, "edit"))
+	calls := filter(a.untilIdle(sid), "tool_call_update")
+	if len(calls) != 2 {
+		t.Fatalf("invalid calls must fail before starting: %v", calls)
+	}
+	for i, call := range calls {
+		if call.Status != "failed" || !strings.Contains(call.text(), "required") {
+			t.Errorf("invalid call: %+v", call)
+		}
+		msgs := llm.request(i + 1).Messages
+		if last := msgs[len(msgs)-1]; last["role"] != "tool" || !strings.Contains(last["content"].(string), "required") {
+			t.Errorf("missing tool error in history: %v", last)
+		}
+	}
+	if data, err := os.ReadFile(p); err != nil || string(data) != "keep" {
+		t.Fatalf("invalid call changed file: %q, %v", data, err)
+	}
+}
+
 func TestCancelDuringBash(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
