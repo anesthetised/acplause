@@ -52,6 +52,14 @@ File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not
 sandboxed.
 
+Read, write and edit operations accept regular files only; pipes and devices
+are rejected. `write_file.content` and `edit.new_text` must be explicit
+strings: an empty string is valid, but an omitted or null value is an error.
+
+Resuming a running session can replay partial messages and active tool calls.
+Changes to additional directories apply to subsequent tool calls; a call
+already running keeps its roots until it finishes.
+
 ## Develop
 
 ```sh

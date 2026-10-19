@@ -329,18 +329,12 @@ func (s *Session) setState(u acp.StateUpdate) {
 	s.send(u)
 }
 
+// send requires s.mu so replay snapshots and live updates cannot interleave.
 func (s *Session) send(u acp.Update) {
 	n := acp.SessionNotification{SessionID: s.id, Update: u}
 	if err := s.deps.out.Notify(acp.MethodSessionUpdate, n); err != nil {
 		s.deps.log.Warn("dropping session update", "session", s.id, "err", err)
 	}
-}
-
-// record appends to the replayable transcript.
-func (s *Session) record(u acp.Update) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.transcript = append(s.transcript, u)
 }
 
 func (s *Session) appendHistory(m llm.Message) {
