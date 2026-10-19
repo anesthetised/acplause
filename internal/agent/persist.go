@@ -51,6 +51,8 @@ func encodeEntry(u acp.Update) ([]byte, error) {
 		kind = "compaction_update"
 	case acp.ToolCallUpdate:
 		kind = "tool_call_update"
+	case acp.PlanUpdate:
+		kind = "plan_update"
 	default:
 		return nil, fmt.Errorf("cannot store a %T", u)
 	}
@@ -87,6 +89,10 @@ func decodeEntry(data []byte) (acp.Update, error) {
 		u = m
 	case "tool_call_update":
 		var m acp.ToolCallUpdate
+		err = json.Unmarshal(e.Update, &m)
+		u = m
+	case "plan_update":
+		var m acp.PlanUpdate
 		err = json.Unmarshal(e.Update, &m)
 		u = m
 	default:
@@ -196,6 +202,9 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 		if err != nil {
 			s.Close()
 			return nil, fmt.Errorf("session %s transcript: %w", l.ID, err)
+		}
+		if plan, ok := u.(acp.PlanUpdate); ok {
+			s.planIndex[plan.Plan.PlanID] = len(s.transcript)
 		}
 		s.transcript = append(s.transcript, u)
 	}

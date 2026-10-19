@@ -1,6 +1,6 @@
 # ADR 0012: Publish and persist item-based execution plans
 
-- Status: proposed; implementation contract prepared for the requested roadmap
+- Status: accepted; snapshot groundwork implemented in #31; model tool activation pending #32 and actual T3 acceptance pending #38
 - Date: 2026-10-19
 - Issues: [#31](https://github.com/anesthetised/acplause/issues/31), [#32](https://github.com/anesthetised/acplause/issues/32)
 - Scope change: No existing decision
@@ -37,5 +37,8 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
-Execution plan: [plans](../../tasks/t3/plans.md). The roadmap's request is to prepare this design, not implement it. Mark accepted when implementation is authorized; do not silently revise the contract in a small execution task.
+Execution plan: [plans](../../tasks/t3/plans.md). Snapshot types, validation,
+per-turn identity, persistence and replay are implemented as groundwork in #31.
+No model tool is advertised until #32 supplies activation and protocol e2e
+coverage. Actual T3 acceptance remains tracked in #38.
 

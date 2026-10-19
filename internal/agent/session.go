@@ -56,6 +56,8 @@ type Session struct {
 	cost          float64         // cumulative USD
 	history       []llm.Message   // what the model sees
 	transcript    []acp.Update    // what the client saw, for replay
+	planID        string          // current accepted turn's plan; empty until its first update
+	planIndex     map[string]int  // plan IDs to their first transcript positions; rebuilt on restore
 	state         acp.StateUpdate // last reported foreground state
 	queue         []*submission   // prompts not yet inserted
 	worker        chan struct{}   // closed when the running worker exits; nil when idle
@@ -104,6 +106,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions)}},
 		state:        acp.StateUpdate{State: acp.StateIdle},
 		dirty:        map[int]bool{},
+		planIndex:    map[string]int{},
 	}, nil
 }
 
@@ -402,6 +405,7 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	}
 	s.history = append(s.history, user)
 	s.transcript = append(s.transcript, msg)
+	s.planID = "" // A rejected or merely queued prompt must not reset the plan.
 	s.dirty[len(s.transcript)-1] = true
 	first := s.title == ""
 	if first {
