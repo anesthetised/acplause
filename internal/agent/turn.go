@@ -48,7 +48,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 			return stopReason(completion.FinishReason)
 		}
 		for _, call := range completion.ToolCalls {
-			s.runTool(ctx, call, req.bindings)
+			s.runTool(ctx, call, req)
 		}
 		if ctx.Err() != nil {
 			return acp.StopCancelled, nil
@@ -78,7 +78,7 @@ func (s *Session) request() modelRound {
 
 // runTool reports and executes one tool call. Every call gets a result in
 // the history, so the conversation stays valid even when cancelled.
-func (s *Session) runTool(ctx context.Context, call llm.ToolCall, bindings map[string]mcp.Tool) {
+func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRound) {
 	if ctx.Err() != nil {
 		s.appendHistory(toolResult(call.ID, "Cancelled before it ran."))
 		return
@@ -98,11 +98,11 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, bindings map[s
 	entry := -1
 	var prepared *preparedTool
 	var err error
-	if binding, ok := bindings[name]; ok {
+	if binding, ok := round.bindings[name]; ok {
 		if binding.ReadOnly {
 			update.Kind = acp.ToolRead
 		}
-		prepared, err = prepareMCP(binding, call.Function.Arguments)
+		prepared, err = prepareMCP(binding, call.Function.Arguments, round.Vision)
 	} else {
 		prepared, err = prepareBuiltin(toolbox, name, call.Function.Arguments)
 	}
@@ -151,6 +151,7 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, bindings map[s
 	case ctx.Err() != nil:
 		final = acp.ToolCallUpdate{ToolCallID: update.ToolCallID, Status: acp.ToolCancelled}
 		result.Output = "Cancelled by the user."
+		result.Images = nil
 	case result.Failed:
 		final.Status = acp.ToolFailed
 
@@ -167,7 +168,9 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, bindings map[s
 		final = update.Merge(final)
 	}
 	s.reportTool(entry, final)
-	s.appendHistory(toolResult(call.ID, result.Output))
+	message := toolResult(call.ID, result.Output)
+	message.Images = result.Images
+	s.appendHistory(message)
 	s.flush()
 }
 

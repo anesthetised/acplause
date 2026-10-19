@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
 	"github.com/anesthetised/acplause/internal/mcp"
+	"github.com/anesthetised/acplause/internal/media"
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
@@ -43,6 +45,7 @@ type toolOutput struct {
 	Failed    bool
 	Content   []acp.ToolCallContent
 	RawOutput json.RawMessage
+	Images    []media.Image
 }
 
 func builtinOutput(r tools.Result) toolOutput {
@@ -59,7 +62,7 @@ func prepareBuiltin(tb *tools.Toolbox, name, args string) (*preparedTool, error)
 	}
 	return &preparedTool{Title: c.Title, Command: c.Command, Locations: c.Locations, permission: asksPermission(tb.Kind(name)), preview: c.Preview, run: func(ctx context.Context) toolOutput { return builtinOutput(c.Run(ctx)) }}, nil
 }
-func prepareMCP(t mcp.Tool, args string) (*preparedTool, error) {
+func prepareMCP(t mcp.Tool, args string, vision bool) (*preparedTool, error) {
 	raw, err := mcp.ObjectArguments(args)
 	if err != nil {
 		return nil, err
@@ -70,14 +73,17 @@ func prepareMCP(t mcp.Tool, args string) (*preparedTool, error) {
 		if err != nil {
 			return toolOutput{Output: "Error: " + err.Error(), Failed: true}
 		}
-		return projectMCPResult(result)
+		return projectMCPResult(result, vision)
 	}}, nil
 }
 
-// projectMCPResult is the deliberate image-support boundary for issue #23.
-// Transports retain blocks; only this presentation step omits binary payloads.
-func projectMCPResult(result mcp.Result) toolOutput {
+// projectMCPResult validates images at the presentation boundary. Transports
+// retain raw blocks; text and rawOutput receive descriptors, never image bytes.
+func projectMCPResult(result mcp.Result, vision bool) toolOutput {
 	var text strings.Builder
+	var images []media.Image
+	var imageContent []acp.ToolCallContent
+	imageBlocks := 0 // invalid images also consume the decode-attempt bound
 	var structured bytes.Buffer
 	if result.StructuredContent != nil {
 		_ = json.Compact(&structured, result.StructuredContent)
@@ -93,6 +99,35 @@ func projectMCPResult(result mcp.Result) toolOutput {
 		}
 		var part string
 		switch tag.Type {
+		case "image":
+			imageBlocks++
+			var v struct {
+				Data string `json:"data"`
+			}
+			var img media.Image
+			var err error
+			switch {
+			case !vision:
+				err = errors.New("selected model does not advertise image input")
+			case imageBlocks > media.MaxImages:
+				err = fmt.Errorf("image count exceeds the limit of %d", media.MaxImages)
+			case json.Unmarshal(raw, &v) != nil:
+				err = errors.New("invalid image data field")
+			default:
+				img, err = media.New(tag.MIMEType, v.Data)
+				if err == nil {
+					err = media.CheckSet(append(images, img))
+				}
+			}
+			if err != nil {
+				part = fmt.Sprintf("[Unsupported MCP image omitted: %v]", err)
+				unsupported = true
+			} else {
+				images = append(images, img)
+				imageContent = append(imageContent, acp.ToolCallContent{Type: "content", Content: acp.ContentBlock{Type: acp.ContentImage, Data: v.Data, MimeType: img.MIME()}})
+				part = fmt.Sprintf("[MCP image: %s, %dx%d pixels, %d bytes]", img.MIME(), img.Width(), img.Height(), img.Size())
+				usable = true
+			}
 		case "text":
 			var v struct {
 				Text string `json:"text"`
@@ -162,7 +197,8 @@ func projectMCPResult(result mcp.Result) toolOutput {
 	if len(output) > 256<<10 {
 		return toolOutput{Output: "Error: MCP result exceeds 256 KiB; the remote operation may have completed. Do not repeat it automatically.", Failed: true}
 	}
-	// Store the projected content, never an image's base64 or arbitrary _meta.
+	// The rawOutput cap applies to text/JSON/metadata, independently of the
+	// validated image bounds. It must not contain a second base64 copy.
 	raw, _ := jsonrpc.Marshal(struct {
 		Content    []acp.ContentBlock `json:"content"`
 		Structured json.RawMessage    `json:"structuredContent,omitempty"`
@@ -171,7 +207,7 @@ func projectMCPResult(result mcp.Result) toolOutput {
 	if len(raw) > 256<<10 {
 		return toolOutput{Output: "Error: MCP result exceeds 256 KiB; the remote operation may have completed", Failed: true}
 	}
-	return toolOutput{Output: output, Failed: result.IsError || unsupported && !usable, Content: []acp.ToolCallContent{acp.ToolText(output)}, RawOutput: raw}
+	return toolOutput{Output: output, Failed: result.IsError || unsupported && !usable, Content: append([]acp.ToolCallContent{acp.ToolText(output)}, imageContent...), RawOutput: raw, Images: images}
 }
 
 func mcpConfigs(servers []acp.MCPServer) []mcp.Config {

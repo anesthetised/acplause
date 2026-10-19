@@ -18,6 +18,7 @@ import (
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/llm"
+	"github.com/anesthetised/acplause/internal/mcp"
 	"github.com/anesthetised/acplause/internal/media"
 	"github.com/anesthetised/acplause/internal/store"
 )
@@ -246,6 +247,14 @@ func TestImagesLeaveBeforeTextIsTrimmed(t *testing.T) {
 
 func TestCompactionDescribesImages(t *testing.T) {
 	img := testImage(t, 64, 48)
+	raw, err := json.Marshal(imageBlock(t, img))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := projectMCPResult(mcp.Result{Content: []json.RawMessage{raw}}, true)
+	if projected.Failed || len(projected.Images) != 1 {
+		t.Fatal("MCP image projection failed before compaction")
+	}
 	encoded := strings.TrimPrefix(img.DataURL(), "data:image/png;base64,")
 	var summaries []llm.Request
 	s, out := imageSession(t, fakeModel(func(_ context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
@@ -254,9 +263,9 @@ func TestCompactionDescribesImages(t *testing.T) {
 	}), 20000) // the retained image and tool definitions fit an input budget of 15000
 	s.history = append(s.history,
 		llm.Message{Role: llm.RoleUser, Content: strings.Repeat("old request ", 600), Images: []media.Image{img}},
-		callMessage("a"), imageResult("a", "old page", img),
+		callMessage("a"), imageResult("a", "old page\n"+projected.Output, projected.Images...),
 		llm.Message{Role: llm.RoleAssistant, Content: strings.Repeat("old answer ", 400)},
-		llm.Message{Role: llm.RoleUser, Content: "current"}, callMessage("b"), imageResult("b", "new page", img))
+		llm.Message{Role: llm.RoleUser, Content: "current"}, callMessage("b"), imageResult("b", "new page\n"+projected.Output, projected.Images...))
 	keep := slices.Clone(s.history[5:])
 	req, err := s.prepareRequest(context.Background(), nil)
 	if err != nil {

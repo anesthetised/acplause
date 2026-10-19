@@ -79,6 +79,15 @@ func main() {
 			case "fail":
 				respond(req.ID, map[string]any{"isError": true, "content": []any{map[string]string{"type": "text", "text": "fixture failed"}}}, nil)
 			case "image":
+				// Keep fixture pixels out of the model's tool arguments.
+				if path := os.Getenv("FIXTURE_IMAGE_RESULT"); path != "" {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						os.Exit(4)
+					}
+					respond(req.ID, json.RawMessage(data), nil)
+					continue
+				}
 				respond(req.ID, map[string]any{"content": []any{map[string]string{"type": "text", "text": "DOM snapshot"}, map[string]string{"type": "image", "mimeType": "image/png", "data": "BASE64_MUST_NOT_ESCAPE"}}}, nil)
 			case "delegate_task":
 				respond(req.ID, map[string]any{"content": []any{}, "structuredContent": map[string]string{"taskId": "task-opaque", "childThreadId": "thread-opaque", "secretRef": "secret-opaque"}}, nil)

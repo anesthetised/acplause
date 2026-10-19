@@ -1,9 +1,9 @@
 # ADR 0009: Carry bounded image tool results through model history
 
-- Status: accepted; validation and projection in #26, history and compaction in #27
+- Status: accepted; validation/projection in #26, history/compaction in #27, MCP activation in #23
 - Date: 2026-10-19
 - Issues: [#26](https://github.com/anesthetised/acplause/issues/26), [#27](https://github.com/anesthetised/acplause/issues/27), [#23](https://github.com/anesthetised/acplause/issues/23)
-- Scope change: ADR 0007 binary-image omission, and ADR 0006 image budgeting/summary projection, when implemented
+- Scope change: Supersedes ADR 0007 binary-image omission and extends ADR 0006 image budgeting/summary projection
 - Baseline: acplause `d9c99f1`; ACP `2.0.0-alpha.9` at `3be9cfc8ea2dfe5a28973b461fd956b4045f24d3`
 
 ## Context
@@ -47,6 +47,22 @@ Inline storage deliberately trades disk duplication for a small implementation a
   user prompt and the most recent exchange of its turn.
 - Each message with images adds 256 estimated tokens, beyond the per-image
   reserve, for the tool label, the synthetic message or an omission marker.
+
+#23 activates MCP image results using the ACP image encoder already added by
+#28. Prompt capabilities remain as implemented by #28. The model-round snapshot
+controls initial result projection; later requests reapply their own model's
+policy without changing canonical history. Invalid or excess images are omitted
+with explicit reasons, preserving usable text/JSON and the images that fit the
+result bounds. If no content is usable, the tool fails with a warning that the
+remote operation may have completed. `isError` retains usable images while
+keeping the tool's failed status. Cancellation discards the active call's images
+and retains results for every sibling call, including earlier completed images.
+Invalid image blocks also consume the four-image count, bounding decode attempts.
+
+Image bytes appear only in typed history attachments and ACP image content;
+`rawOutput` contains textual image descriptors and structured output. Existing
+persistence and compaction handle those attachments without a schema migration.
+Actual T3 runtime acceptance remains tracked separately in #38.
 
 ## Sources and execution
 
