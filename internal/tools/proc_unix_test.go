@@ -27,7 +27,8 @@ func TestBashTimeoutKillsTheProcessGroup(t *testing.T) {
 func TestBashCancellationKillsTheProcessGroup(t *testing.T) {
 	w := newWorkspace(t, Options{BashTimeout: new(time.Duration(0))})
 	pidFile := filepath.Join(w.cwd, "child.pid")
-	call, err := w.prepare("bash", map[string]string{"command": "sleep 30 & echo $! > child.pid; wait"})
+	// Publish only a complete PID: cancellation must not interrupt its write.
+	call, err := w.prepare("bash", map[string]string{"command": "sleep 30 & echo $! > child.pid.tmp && mv child.pid.tmp child.pid; wait"})
 	if err != nil {
 		t.Fatal(err)
 	}
