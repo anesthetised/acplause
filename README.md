@@ -13,7 +13,6 @@ first, and works in your workspace through tools.
 - Prompt queue, cancellation that aborts the HTTP stream and kills
   everything a command started, session list/resume/close.
 - Model and reasoning effort selection from OpenRouter's model list.
-- Go standard library only.
 
 ## Install
 
