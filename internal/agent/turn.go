@@ -20,7 +20,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 		if round == s.deps.maxRounds {
 			return acp.StopMaxTurnRequests, nil
 		}
-		req, toolbox := s.request()
+		req := s.request()
 		out := roundOutput{s: s}
 		completion, err := s.deps.model.Chat(ctx, req, out.delta)
 		out.record()
@@ -34,7 +34,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 			return stopReason(completion.FinishReason)
 		}
 		for _, call := range completion.ToolCalls {
-			s.runTool(ctx, toolbox, call)
+			s.runTool(ctx, call)
 		}
 		if ctx.Err() != nil {
 			return acp.StopCancelled, nil
@@ -43,7 +43,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 }
 
 // request snapshots what the next model request needs.
-func (s *Session) request() (llm.Request, *tools.Toolbox) {
+func (s *Session) request() llm.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req := llm.Request{Model: s.model, Messages: slices.Clone(s.history)}
@@ -53,16 +53,18 @@ func (s *Session) request() (llm.Request, *tools.Toolbox) {
 	if s.catalog.reasons(s.model) && s.effort != effortDefault {
 		req.ReasoningEffort = s.effort
 	}
-	return req, s.toolbox
+	return req
 }
 
 // runTool reports and executes one tool call. Every call gets a result in
 // the history, so the conversation stays valid even when cancelled.
-func (s *Session) runTool(ctx context.Context, toolbox *tools.Toolbox, call llm.ToolCall) {
+func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 	if ctx.Err() != nil {
 		s.appendHistory(toolResult(call.ID, "Cancelled before it ran."))
 		return
 	}
+	toolbox := s.acquireToolbox()
+	defer s.releaseToolbox(toolbox)
 
 	name := call.Function.Name
 	update := acp.ToolCallUpdate{
