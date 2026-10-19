@@ -22,7 +22,7 @@ type listResult struct {
 func TestListResumeAndClose(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(reply("Paris."))
+	llm.enqueue(reply("Paris."), reply("Still Paris."))
 	a, sid, cwd := started(t, llm)
 	other := a.newSession(t.TempDir()).SessionID
 
@@ -73,11 +73,15 @@ func TestListResumeAndClose(t *testing.T) {
 	a.ok("session/close", map[string]any{"sessionId": sid}, nil)
 	a.fails("session/close", map[string]any{"sessionId": sid}, -32002)
 	a.fails("session/prompt", map[string]any{"sessionId": sid, "prompt": []any{}}, -32002)
+	// Closing frees the active session; it stays stored and listed until
+	// deleted, and can be resumed again.
 	var after listResult
 	a.ok("session/list", map[string]any{}, &after)
-	if len(after.Sessions) != 1 || after.Sessions[0].SessionID != other {
+	if len(after.Sessions) != 2 {
 		t.Fatalf("session/list after close: %+v", after)
 	}
+	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
+	a.accepted(a.prompt(sid, "again"))
 }
 
 func (a *agent) cwdOf(sid string, list listResult) string {

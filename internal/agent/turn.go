@@ -29,6 +29,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 		}
 		s.reportUsage(req.Model, completion.Usage)
 		s.appendHistory(completion.Message())
+		s.flush()
 
 		if len(completion.ToolCalls) == 0 {
 			return stopReason(completion.FinishReason)
@@ -117,6 +118,7 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 	}
 	s.reportTool(entry, final)
 	s.appendHistory(toolResult(call.ID, result.Output))
+	s.flush()
 }
 
 // asksPermission reports whether tools of a kind change the workspace and so
@@ -162,6 +164,7 @@ func (s *Session) requestPermission(ctx context.Context, entry int, update *acp.
 
 	// Tools run one at a time, so waiting blocks all foreground work.
 	s.setState(acp.StateUpdate{State: acp.StateRequiresAction})
+	s.flush() // a blocked turn is busy: it cannot be taken over
 	var resp acp.RequestPermissionResponse
 	err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
 	if ctx.Err() != nil {
@@ -190,6 +193,7 @@ func (s *Session) reportTool(entry int, patch acp.ToolCallUpdate) int {
 	} else {
 		s.transcript[entry] = s.transcript[entry].(acp.ToolCallUpdate).Merge(patch)
 	}
+	s.dirty[entry] = true
 	s.send(patch)
 	return entry
 }
@@ -241,6 +245,7 @@ func (o *roundOutput) delta(d llm.Delta) {
 		o.s.transcript = append(o.s.transcript, nil)
 	}
 	m.text.WriteString(d.Text)
+	o.s.dirty[m.entry] = true
 	if d.Kind == llm.DeltaReasoning {
 		o.s.transcript[m.entry] = acp.AgentThought{MessageID: m.id, Content: []acp.ContentBlock{acp.Text(m.text.String())}}
 		o.s.send(acp.AgentThoughtChunk{MessageID: m.id, Content: acp.Text(d.Text)})

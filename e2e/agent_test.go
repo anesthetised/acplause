@@ -137,11 +137,12 @@ type agent struct {
 	// allowed as they arrive, like a client that auto-approves.
 	askUser bool
 
-	writeMu sync.Mutex // the test and auto-approval both write to stdin
-	mu      sync.Mutex
-	methods map[string]string // method of each request sent, by id
-	nextID  int
-	pending []*message // read but not yet taken
+	stopOnce sync.Once
+	writeMu  sync.Mutex // the test and auto-approval both write to stdin
+	mu       sync.Mutex
+	methods  map[string]string // method of each request sent, by id
+	nextID   int
+	pending  []*message // read but not yet taken
 }
 
 type option func(*agent)
@@ -149,6 +150,10 @@ type option func(*agent)
 func withEnv(kv ...string) option {
 	return func(a *agent) { a.cmd.Env = append(a.cmd.Env, kv...) }
 }
+
+// withDataDir makes agents share a session store, as processes of one user
+// do. Later environment entries win.
+func withDataDir(dir string) option { return withEnv("ACPLAUSE_DATA_DIR=" + dir) }
 
 // askingUser makes the test answer permission requests itself.
 func askingUser(a *agent) { a.askUser = true }
@@ -165,6 +170,7 @@ func start(t *testing.T, llm *mockLLM, opts ...option) *agent {
 		"ACPLAUSE_BASE_URL="+llm.srv.URL,
 		"ACPLAUSE_API_KEY=test-key",
 		"ACPLAUSE_LOG_LEVEL=debug",
+		"ACPLAUSE_DATA_DIR="+t.TempDir(), // withDataDir shares one between agents
 	)
 	a := &agent{
 		t: t, llm: llm, cmd: cmd,
@@ -198,8 +204,12 @@ func cleanEnv() []string {
 	})
 }
 
-// stop closes stdin, which must make the agent exit cleanly.
-func (a *agent) stop() {
+// stop closes stdin, which must make the agent exit cleanly. It runs once;
+// later calls, such as the cleanup after a test stopped the agent, do
+// nothing.
+func (a *agent) stop() { a.stopOnce.Do(a.exit) }
+
+func (a *agent) exit() {
 	_ = a.stdin.Close()
 	exited := make(chan error, 1)
 	go func() { exited <- a.cmd.Wait() }()

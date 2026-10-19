@@ -11,7 +11,8 @@ first, and works in your workspace through tools.
 - Streaming text and reasoning, tool calls, usage and cost reporting.
 - Asks permission before changing files or running commands.
 - Prompt queue, cancellation that aborts the HTTP stream and kills
-  everything a command started, session list/resume/close.
+  everything a command started, session list/resume/close/delete.
+- Sessions survive restarts and can move between editor windows.
 - Model and reasoning effort selection from OpenRouter's model list.
 
 ## Install
@@ -28,6 +29,7 @@ go install github.com/anesthetised/acplause/cmd/acplause@latest
 | `ACPLAUSE_BASE_URL`     | `https://openrouter.ai/api/v1`  | any OpenAI-compatible API root        |
 | `ACPLAUSE_MAX_ROUNDS`   | `25`                            | model requests per turn               |
 | `ACPLAUSE_BASH_TIMEOUT` | `2m`                            | timeout of the `bash` tool            |
+| `ACPLAUSE_DATA_DIR`    | `~/.acplause`                    | session database directory            |
 | `ACPLAUSE_LOG_LEVEL`    | `info`                          | logs go to stderr                     |
 
 Point your ACP v2 client at the `acplause` binary with these variables set.
@@ -85,6 +87,36 @@ every block echoed back unchanged. Images and audio are not supported.
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
 already running keeps its roots until it finishes.
+
+## Storage
+
+Sessions are stored in `~/.acplause/acplause.db`; `ACPLAUSE_DATA_DIR` selects
+another directory. acplause creates the directory with permissions `0700`
+and the database with `0600`. The database holds prompts, model output and
+tool output in plain text, along with workspace paths, titles, timestamps,
+model and effort selections, and accumulated cost. See
+[ADR 0004](docs/adr/0004-sqlite-storage.md).
+
+`session/list` includes stored sessions from every process using that data
+directory. `session/resume` restores their conversation history and settings.
+`session/close` cancels work and releases the session in this process; its
+history stays listed and can be resumed. `session/delete` cancels local work
+and removes the session and its stored history. Deleting an unknown or
+already deleted session succeeds. Nothing expires automatically.
+
+Two editor windows can work on different sessions at the same time. Resuming
+or deleting a session owned by another window is allowed while it is idle,
+and refused while it is working or waiting for permission. After a takeover
+or deletion, the old window loses access at its next write or lease renewal
+(every 10 seconds). A crashed process's lease expires within 30 seconds;
+a resumed session then starts idle, with unfinished tool calls marked failed
+and matching results added to the model history.
+
+Changes are saved at prompt, model response, tool call and configuration
+boundaries. Streaming chunks stay in memory until a save boundary, so a crash
+can lose the response being streamed. Failure to open or migrate the database
+prevents startup. A later save failure is logged to stderr; work continues
+from memory, and unsaved changes may be missing after a restart.
 
 ## Develop
 

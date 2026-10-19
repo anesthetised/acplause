@@ -23,6 +23,7 @@ type deps struct {
 	maxRounds int
 	tools     tools.Options
 	log       *slog.Logger
+	store     Store // nil keeps sessions in memory only
 }
 
 // Session is one conversation. Prompts queue up and run one turn at a time
@@ -54,6 +55,13 @@ type Session struct {
 	worker        chan struct{}   // closed when the running worker exits; nil when idle
 	stopTurn      context.CancelFunc
 	closed        bool
+
+	// Persistence (persist.go). flushMu serialises saves and is taken
+	// before mu.
+	flushMu sync.Mutex
+	saved   int          // history messages after the system prompt already stored
+	dirty   map[int]bool // transcript entries changed since the last save
+	lost    bool         // another process took the session over
 }
 
 // submission is a prompt waiting for insertion.
@@ -88,6 +96,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		updatedAt:    time.Now(),
 		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions)}},
 		state:        acp.StateUpdate{State: acp.StateIdle},
+		dirty:        map[int]bool{},
 	}, nil
 }
 
@@ -100,6 +109,10 @@ func (s *Session) Submit(ctx context.Context, prompt []acp.ContentBlock) *jsonrp
 	defer s.mu.Unlock()
 	if s.closed || ctx.Err() != nil {
 		sub.reply.Reject(acp.ErrRequestCancelled())
+		return sub.reply
+	}
+	if s.lost {
+		sub.reply.Reject(errSessionLost())
 		return sub.reply
 	}
 	if s.model == "" {
@@ -162,6 +175,7 @@ func (s *Session) Resume(dirs []string, replay bool) error {
 		if old != s.activeToolbox {
 			s.closeToolbox(old)
 		}
+		s.flushAsync()
 	}
 	if replay {
 		for _, u := range s.transcript {
@@ -193,19 +207,6 @@ func (s *Session) releaseToolbox(tb *tools.Toolbox) {
 func (s *Session) closeToolbox(tb *tools.Toolbox) {
 	if err := tb.Close(); err != nil {
 		s.deps.log.Warn("closing workspace", "session", s.id, "err", err)
-	}
-}
-
-// Info describes the session for session/list.
-func (s *Session) Info() acp.SessionInfo {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return acp.SessionInfo{
-		SessionID:             s.id,
-		Cwd:                   s.cwd,
-		AdditionalDirectories: s.dirs,
-		Title:                 s.title,
-		UpdatedAt:             s.updatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 
@@ -241,6 +242,7 @@ func (s *Session) SetConfigOption(id, valueType string, raw json.RawMessage) err
 	default:
 		return acp.ErrInvalidParams("unknown config option %q", id)
 	}
+	s.flushAsync()
 	return nil
 }
 
@@ -294,7 +296,6 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	if !s.insert(ctx, sub) {
 		return
 	}
-	s.setState(acp.StateUpdate{State: acp.StateRunning})
 	stop, err := s.converse(ctx)
 	if ctx.Err() != nil {
 		stop, err = acp.StopCancelled, nil
@@ -303,26 +304,46 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 		s.deps.log.Warn("turn failed", "session", s.id, "err", err)
 	}
 	s.setState(acp.StateUpdate{State: acp.StateIdle, StopReason: stop, Error: err})
+	s.flush()
 }
 
 // insert adds the user message to the conversation and acknowledges the
 // prompt, unless it was cancelled first. The prompt response precedes the
 // user_message update on the wire.
 func (s *Session) insert(ctx context.Context, sub *submission) bool {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ctx.Err() != nil || sub.ctx.Err() != nil {
 		sub.reply.Reject(acp.ErrRequestCancelled())
 		return false
 	}
+	if s.lost {
+		sub.reply.Reject(errSessionLost())
+		return false
+	}
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt)})
+	user := llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt)}
+	updated := time.Now()
+	// Until the transaction commits, neither replay nor the model may see
+	// the prompt. Cancellation remains available while SQLite is busy.
+	saveCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(sub.ctx, cancel)
+	defer stop()
+	defer cancel()
+	if err := s.claimTurn(saveCtx, msg, user, updated); err != nil {
+		sub.reply.Reject(err)
+		return false
+	}
+	s.history = append(s.history, user)
 	s.transcript = append(s.transcript, msg)
+	s.dirty[len(s.transcript)-1] = true
 	first := s.title == ""
 	if first {
 		s.title = title(sub.prompt)
 	}
-	s.updatedAt = time.Now()
+	s.updatedAt = updated
 	sub.reply.Resolve(acp.PromptResponse{MessageID: msg.MessageID})
 	s.send(msg)
 	if first {
@@ -330,6 +351,8 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 		// session/list already reports the title.
 		s.send(acp.SessionInfoUpdate{Title: s.title, UpdatedAt: s.updatedAt.UTC().Format(time.RFC3339Nano)})
 	}
+	s.state = acp.StateUpdate{State: acp.StateRunning}
+	s.send(s.state)
 	return true
 }
 

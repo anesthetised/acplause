@@ -74,6 +74,17 @@ func (r CloseSessionRequest) Validate() error { return requireSessionID(r.Sessio
 // CloseSessionResponse is the empty result of session/close.
 type CloseSessionResponse struct{}
 
+// DeleteSessionRequest is the params of session/delete.
+type DeleteSessionRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// Validate implements jsonrpc's params validation.
+func (r DeleteSessionRequest) Validate() error { return requireSessionID(r.SessionID) }
+
+// DeleteSessionResponse is the empty result of session/delete.
+type DeleteSessionResponse struct{}
+
 // CancelSessionNotification is the params of session/cancel.
 type CancelSessionNotification struct {
 	SessionID string `json:"sessionId"`

@@ -20,6 +20,7 @@ import (
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
+	"github.com/anesthetised/acplause/internal/store"
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
@@ -45,6 +46,7 @@ type Config struct {
 	MaxRounds int // model requests per turn; default 25
 	Tools     tools.Options
 	Log       *slog.Logger
+	Store     Store // required: where sessions are kept
 }
 
 const (
@@ -63,7 +65,8 @@ type Agent struct {
 	cancel      context.CancelFunc
 
 	mu       sync.Mutex
-	sessions map[string]*Session
+	sessions map[string]*Session // open in this process
+	lost     map[string]bool     // taken over by another process
 }
 
 // New creates an agent and starts loading the model catalog.
@@ -75,10 +78,11 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &Agent{
 		cfg:      cfg,
-		deps:     deps{out: out, model: model, maxRounds: cfg.MaxRounds, tools: cfg.Tools, log: cfg.Log},
+		deps:     deps{out: out, model: model, maxRounds: cfg.MaxRounds, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
 		ctx:      ctx,
 		cancel:   cancel,
 		sessions: make(map[string]*Session),
+		lost:     make(map[string]bool),
 	}
 	a.catalog = sync.OnceValues(func() (*catalog, error) {
 		ctx, cancel := context.WithTimeout(ctx, catalogTimeout)
@@ -94,7 +98,51 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 		return c, nil
 	})
 	go a.catalog()
+	go a.renewLeases()
 	return a
+}
+
+// renewLeases keeps this process's sessions its own and drops those another
+// process took over (ADR 0004).
+func (a *Agent) renewLeases() {
+	t := time.NewTicker(store.LeaseRenewal)
+	defer t.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-t.C:
+		}
+		a.mu.Lock()
+		ids := slices.Collect(maps.Keys(a.sessions))
+		a.mu.Unlock()
+		if len(ids) == 0 {
+			continue
+		}
+		lost, err := a.cfg.Store.Renew(a.ctx, ids)
+		if err != nil {
+			a.cfg.Log.Warn("renewing session leases", "err", err)
+			continue
+		}
+		for _, id := range lost {
+			a.drop(id)
+		}
+	}
+}
+
+// drop forgets a session another process now owns, ending its work here
+// without writing to it again.
+func (a *Agent) drop(id string) {
+	a.mu.Lock()
+	s := a.sessions[id]
+	delete(a.sessions, id)
+	a.lost[id] = true
+	a.mu.Unlock()
+	if s != nil {
+		a.cfg.Log.Info("session taken over by another process", "session", id)
+		s.markLost()
+		go s.Close()
+	}
 }
 
 // Methods returns the agent's JSON-RPC handlers.
@@ -107,6 +155,7 @@ func (a *Agent) Methods() jsonrpc.Methods {
 		acp.MethodSessionList:      a.ready(jsonrpc.Handle(a.listSessions)),
 		acp.MethodSessionResume:    a.ready(jsonrpc.Handle(a.resumeSession)),
 		acp.MethodSessionClose:     a.ready(jsonrpc.Handle(a.closeSession)),
+		acp.MethodSessionDelete:    a.ready(jsonrpc.Handle(a.deleteSession)),
 		acp.MethodSessionSetConfig: a.ready(jsonrpc.Handle(a.setConfigOption)),
 	}
 }
@@ -120,7 +169,10 @@ func (a *Agent) Shutdown() {
 
 	var wg sync.WaitGroup
 	for _, s := range sessions {
-		wg.Go(s.Close)
+		wg.Go(func() {
+			s.Close()
+			a.release(s)
+		})
 	}
 	wg.Wait()
 	a.cancel()
@@ -148,6 +200,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 			Session: &acp.SessionCapabilities{
 				Prompt:                &acp.PromptCapabilities{EmbeddedContext: &acp.Supported{}},
 				AdditionalDirectories: &acp.Supported{},
+				Delete:                &acp.Supported{},
 			},
 		},
 	}, nil
@@ -166,6 +219,11 @@ func (a *Agent) newSession(_ context.Context, req acp.NewSessionRequest) (any, e
 		s, err := newSession(a.ctx, a.deps, c, req.Cwd, req.AdditionalDirectories)
 		if err != nil {
 			reply.Reject(acp.ErrInvalidParams("cannot open workspace: %v", err))
+			return
+		}
+		if err := a.cfg.Store.Create(a.ctx, s.record()); err != nil {
+			s.Close()
+			reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot store the session: %v", err))
 			return
 		}
 		a.mu.Lock()
@@ -193,56 +251,110 @@ func (a *Agent) cancelSession(_ context.Context, n acp.CancelSessionNotification
 	return nil, nil
 }
 
+// listSessions reads the store, which holds the sessions of every process.
 func (a *Agent) listSessions(_ context.Context, req acp.ListSessionsRequest) (any, error) {
 	offset, err := decodeCursor(req.Cursor)
 	if err != nil {
 		return nil, err
 	}
-
-	a.mu.Lock()
-	var infos []acp.SessionInfo
-	for _, s := range a.sessions {
-		if info := s.Info(); req.Cwd == "" || info.Cwd == req.Cwd {
-			infos = append(infos, info)
+	reply := jsonrpc.NewReply()
+	go func() {
+		sessions, more, err := a.cfg.Store.List(a.ctx, req.Cwd, offset, listPageSize)
+		if err != nil {
+			reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot list sessions: %v", err))
+			return
 		}
-	}
-	a.mu.Unlock()
-
-	// Most recently active first; RFC 3339 UTC timestamps sort as strings.
-	slices.SortFunc(infos, func(x, y acp.SessionInfo) int {
-		return cmp.Or(cmp.Compare(y.UpdatedAt, x.UpdatedAt), cmp.Compare(x.SessionID, y.SessionID))
-	})
-	resp := acp.ListSessionsResponse{Sessions: []acp.SessionInfo{}}
-	if offset < len(infos) {
-		end := min(offset+listPageSize, len(infos))
-		resp.Sessions = infos[offset:end]
-		if end < len(infos) {
-			resp.NextCursor = encodeCursor(end)
+		resp := acp.ListSessionsResponse{Sessions: []acp.SessionInfo{}}
+		for _, sess := range sessions {
+			resp.Sessions = append(resp.Sessions, acp.SessionInfo{
+				SessionID:             sess.ID,
+				Cwd:                   sess.Cwd,
+				AdditionalDirectories: sess.Dirs,
+				Title:                 sess.Title,
+				UpdatedAt:             sess.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			})
 		}
-	}
-	return resp, nil
+		if more {
+			resp.NextCursor = encodeCursor(offset + len(sessions))
+		}
+		reply.Resolve(resp)
+	}()
+	return reply, nil
 }
 
+// resumeSession takes the session over in the store, which also renews this
+// process's own lease, and loads it unless it is already open here.
 func (a *Agent) resumeSession(_ context.Context, req acp.ResumeSessionRequest) (any, error) {
-	s, err := a.session(req.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	if req.Cwd != s.cwd {
-		return nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", req.Cwd, s.cwd)
-	}
 	replay := req.ReplayFrom != nil
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
 		return nil, acp.ErrInvalidParams("unsupported replayFrom type %q", req.ReplayFrom.Type)
 	}
-	if err := s.Resume(req.AdditionalDirectories, replay); err != nil {
-		return nil, acp.ErrInvalidParams("cannot open workspace: %v", err)
+	reply := jsonrpc.NewReply()
+	go func() {
+		s, err := a.open(req.SessionID, req.Cwd)
+		if err != nil {
+			reply.Reject(err)
+			return
+		}
+		if err := s.Resume(req.AdditionalDirectories, replay); err != nil {
+			reply.Reject(acp.ErrInvalidParams("cannot open workspace: %v", err))
+			return
+		}
+		reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions()})
+	}()
+	return reply, nil
+}
+
+// open acquires a session for this process and returns it, loading it from
+// the store if it is not open here.
+func (a *Agent) open(id, cwd string) (*Session, error) {
+	l, err := a.cfg.Store.Acquire(a.ctx, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, acp.ErrSessionNotFound(id)
+	case errors.Is(err, store.ErrBusy):
+		return nil, errSessionBusy()
+	case err != nil:
+		return nil, jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot load the session: %v", err)
 	}
-	return acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions()}, nil
+	a.mu.Lock()
+	s := a.sessions[id]
+	a.mu.Unlock()
+	if l.Cwd != cwd {
+		if s == nil {
+			a.releaseID(id)
+		}
+		return nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
+	}
+	if s != nil {
+		return s, nil
+	}
+
+	c, err := a.catalog()
+	if err != nil {
+		a.releaseID(id)
+		return nil, turnError(err)
+	}
+	if s, err = restoreSession(a.ctx, a.deps, c, l); err != nil {
+		a.releaseID(id)
+		return nil, acp.ErrInvalidParams("cannot restore the session: %v", err)
+	}
+	a.mu.Lock()
+	if open := a.sessions[id]; open != nil { // a concurrent resume won
+		a.mu.Unlock()
+		s.Close()
+		return open, nil
+	}
+	a.sessions[id] = s
+	delete(a.lost, id)
+	a.mu.Unlock()
+	s.flush() // store a repair and the idle state
+	return s, nil
 }
 
 // closeSession cancels the session's work at once, to keep ordering with
-// later messages, and answers after the work has wound down.
+// later messages, and answers after the work has wound down and the session
+// is released for other processes.
 func (a *Agent) closeSession(_ context.Context, req acp.CloseSessionRequest) (any, error) {
 	a.mu.Lock()
 	s, ok := a.sessions[req.SessionID]
@@ -256,9 +368,55 @@ func (a *Agent) closeSession(_ context.Context, req acp.CloseSessionRequest) (an
 	reply := jsonrpc.NewReply()
 	go func() {
 		s.Close()
+		a.release(s)
 		reply.Resolve(acp.CloseSessionResponse{})
 	}()
 	return reply, nil
+}
+
+// deleteSession removes local access in arrival order, then waits for any
+// work to finish before removing the stored session and its history.
+func (a *Agent) deleteSession(_ context.Context, req acp.DeleteSessionRequest) (any, error) {
+	a.mu.Lock()
+	s := a.sessions[req.SessionID]
+	delete(a.sessions, req.SessionID)
+	delete(a.lost, req.SessionID)
+	a.mu.Unlock()
+	if s != nil {
+		s.Cancel()
+	}
+	reply := jsonrpc.NewReply()
+	go func() {
+		if s != nil {
+			s.Close()
+		}
+		if err := a.cfg.Store.Delete(a.ctx, req.SessionID); err != nil {
+			if s != nil {
+				a.release(s)
+			}
+			if errors.Is(err, store.ErrBusy) {
+				reply.Reject(errSessionBusy())
+			} else {
+				reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot delete the session: %v", err))
+			}
+			return
+		}
+		reply.Resolve(acp.DeleteSessionResponse{})
+	}()
+	return reply, nil
+}
+
+// release gives a closed session's lease back, unless it was lost.
+func (a *Agent) release(s *Session) {
+	if !s.isLost() {
+		a.releaseID(s.id)
+	}
+}
+
+func (a *Agent) releaseID(id string) {
+	if err := a.cfg.Store.Release(context.WithoutCancel(a.ctx), id); err != nil {
+		a.cfg.Log.Warn("releasing session", "session", id, "err", err)
+	}
 }
 
 func (a *Agent) setConfigOption(_ context.Context, req acp.SetConfigOptionRequest) (any, error) {
@@ -277,6 +435,9 @@ func (a *Agent) session(id string) (*Session, error) {
 	defer a.mu.Unlock()
 	if s, ok := a.sessions[id]; ok {
 		return s, nil
+	}
+	if a.lost[id] {
+		return nil, errSessionLost()
 	}
 	return nil, acp.ErrSessionNotFound(id)
 }

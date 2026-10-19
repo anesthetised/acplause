@@ -8,18 +8,21 @@
 //	ACPLAUSE_MAX_ROUNDS     model requests per turn; default 25
 //	ACPLAUSE_BASH_TIMEOUT   bash tool timeout; default 2m
 //	ACPLAUSE_LOG_LEVEL      debug, info, warn or error; default info
+//	ACPLAUSE_DATA_DIR       session store directory; default ~/.acplause
 //
 // stdout carries only protocol messages; logs go to stderr.
 package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"syscall"
 
@@ -27,6 +30,7 @@ import (
 	"github.com/anesthetised/acplause/internal/agent"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
+	"github.com/anesthetised/acplause/internal/store"
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
@@ -55,15 +59,30 @@ func run() error {
 			"X-OpenRouter-Title": {"acplause"},
 		},
 	})
+	dir := cfg.DataDir
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("finding the data directory: %w; set ACPLAUSE_DATA_DIR", err)
+		}
+		dir = filepath.Join(home, ".acplause")
+	}
+	st, err := store.Open(dir, processID())
+	if err != nil {
+		return fmt.Errorf("opening the session store: %w", err)
+	}
+	defer st.Close()
+
 	conn := jsonrpc.NewConn(os.Stdin, os.Stdout, log)
 	ag := agent.New(agent.Config{
 		Info:      acp.Implementation{Name: "acplause", Version: version()},
 		MaxRounds: cfg.MaxRounds,
 		Tools:     tools.Options{BashTimeout: cfg.BashTimeout},
 		Log:       log,
+		Store:     st,
 	}, conn, client, client.Models)
 
-	log.Info("serving", "base_url", cfg.BaseURL)
+	log.Info("serving", "base_url", cfg.BaseURL, "data_dir", dir)
 	err = conn.Serve(ctx, ag.Methods())
 	ag.Shutdown()
 	_ = conn.Close()
@@ -71,6 +90,11 @@ func run() error {
 		return nil
 	}
 	return err
+}
+
+// processID tells this process's session leases from other processes'.
+func processID() string {
+	return fmt.Sprintf("%d-%s", os.Getpid(), rand.Text())
 }
 
 func version() string {
