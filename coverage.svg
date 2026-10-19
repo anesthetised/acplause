@@ -1,12 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="132" height="20" role="img" aria-label="coverage: 75.7%">
-  <title>coverage: 75.7%</title>
-  <clipPath id="r"><rect width="132" height="20" rx="3"/></clipPath>
+<svg xmlns="http://www.w3.org/2000/svg" width="142" height="20" role="img" aria-label="Go coverage: 84.7%">
+  <title>Go coverage: 84.7%</title>
+  <clipPath id="r"><rect width="142" height="20" rx="3"/></clipPath>
   <g clip-path="url(#r)">
-    <path fill="#555" d="M0 0h70v20H0z"/>
-    <path fill="#007ec6" d="M70 0h62v20H70z"/>
+    <path fill="#555" d="M0 0h80v20H0z"/>
+    <path fill="#007ec6" d="M80 0h62v20H80z"/>
   </g>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11">
-    <text x="35" y="14">coverage</text>
-    <text x="101" y="14">75.7%</text>
+    <text x="40" y="14">Go coverage</text>
+    <text x="111" y="14">84.7%</text>
   </g>
 </svg>
