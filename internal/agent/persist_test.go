@@ -146,6 +146,26 @@ func TestPromptOwnershipLossRevokesMCPImmediately(t *testing.T) {
 	}
 }
 
+// A background save can find the session lost after its prompt was queued.
+// Losing ownership also cancels the turn, but the client must learn why.
+func TestQueuedPromptReportsLossNotCancellation(t *testing.T) {
+	s, err := newSession(context.Background(), deps{out: make(recorder, 8)}, newCatalog(nil), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	turn, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+	s.markLost()
+	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("mine?")}, reply: jsonrpc.NewReply()}
+	if s.insert(turn, sub) {
+		t.Fatal("lost prompt was inserted")
+	}
+	if _, rpcErr := settledReply(t, sub.reply); rpcErr == nil || rpcErr.Message != store.ErrLost.Error() {
+		t.Fatalf("lost prompt rejected with %+v", rpcErr)
+	}
+}
+
 func (s saveStore) Save(ctx context.Context, sess store.Session, h, t []store.Row) error {
 	return s.save(ctx, sess, h, t)
 }

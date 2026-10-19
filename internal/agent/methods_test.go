@@ -79,7 +79,6 @@ type notification struct {
 type acpClient struct {
 	t       *testing.T
 	agent   *Agent
-	store   *store.Store
 	in      *io.PipeWriter
 	updates chan notification
 
@@ -103,7 +102,7 @@ func startAgent(t *testing.T, dir string, model Model, list ListModels) *acpClie
 	if list == nil {
 		list = func(context.Context) ([]llm.Model, error) { return testModels, nil }
 	}
-	c := &acpClient{t: t, store: st, in: agentIn, updates: make(chan notification, 256), pending: make(map[int]chan rpcResponse)}
+	c := &acpClient{t: t, in: agentIn, updates: make(chan notification, 256), pending: make(map[int]chan rpcResponse)}
 	c.agent = New(Config{Info: acp.Implementation{Name: "test", Version: "1"}, Store: st}, conn, model, list)
 
 	served := make(chan struct{})
@@ -555,25 +554,12 @@ func TestResumeTakesOverFromAnotherProcess(t *testing.T) {
 	a.initialize()
 	sid := a.newSession(cwd)
 	a.selectModel(sid, "m")
-	// Let the selection's background save finish before the takeover, so the
-	// prompt below is what finds the session lost.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
-		l, err := a.store.Acquire(context.Background(), sid) // still ours
-		if err != nil {
-			t.Fatal(err)
-		}
-		if l.Model == "m" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("selection not saved")
-		}
-	}
 
 	b := startAgent(t, dir, modelB, nil)
 	b.initialize()
 	b.ok(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{}}, nil)
 	b.untilIdle(sid)
+	b.selectModel(sid, "m") // A may not have saved its selection yet
 
 	// The first process learns of the takeover when it next saves.
 	if e := a.fails(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "mine?"}}}, jsonrpc.CodeInternalError); !strings.Contains(e.Message, store.ErrLost.Error()) {
@@ -587,7 +573,9 @@ func TestResumeTakesOverFromAnotherProcess(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	b.await(b.prompt(sid, "think"))
+	if r := b.await(b.prompt(sid, "think")); r.Error != nil {
+		t.Fatalf("prompt: %+v", r.Error)
+	}
 	<-started
 	b.waitFor(sid, func(n notification) bool { return n.Update.State == string(acp.StateRunning) })
 	a.fails(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{}}, jsonrpc.CodeInternalError)

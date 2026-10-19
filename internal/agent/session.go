@@ -359,12 +359,13 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	defer s.flushMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if ctx.Err() != nil || sub.ctx.Err() != nil {
-		sub.reply.Reject(acp.ErrRequestCancelled())
-		return false
-	}
+	// Loss cancels the turn too; report the cause, not the cancellation.
 	if s.lost {
 		sub.reply.Reject(errSessionLost())
+		return false
+	}
+	if ctx.Err() != nil || sub.ctx.Err() != nil {
+		sub.reply.Reject(acp.ErrRequestCancelled())
 		return false
 	}
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
