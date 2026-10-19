@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestMCPHTTPRelayAndResume(t *testing.T) {
+func TestMCPHTTPRelaySurvivesFailureAndResume(t *testing.T) {
 	t.Parallel()
 	var sessions atomic.Int32
 	var calls atomic.Int32
@@ -48,6 +48,10 @@ func TestMCPHTTPRelayAndResume(t *testing.T) {
 			result = map[string]any{"tools": []any{map[string]any{"name": "schedule_task", "description": "fixture:schedule_task", "inputSchema": map[string]string{"type": "object"}}}}
 		case "tools/call":
 			calls.Add(1)
+			if strings.Contains(string(req.Params), `"fail":true`) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			if r.Header.Get("Mcp-Session-Id") == "" || r.Header.Get("MCP-Protocol-Version") != "2025-11-25" {
 				t.Error("missing MCP headers")
 			}
@@ -67,25 +71,37 @@ func TestMCPHTTPRelayAndResume(t *testing.T) {
 	}))
 	defer srv.Close()
 	llm := newMockLLM(t)
-	llm.enqueue(mcpCall(t, "http", "schedule_task", `{"schedule":{"type":"interval","everyMs":3600000}}`), reply("done"), mcpCall(t, "http", "schedule_task", `{"taskId":"opaque"}`), reply("done"))
+	llm.enqueue(mcpCall(t, "http", "schedule_task", `{"fail":true}`), mcpCall(t, "http", "schedule_task", `{"schedule":{"type":"interval","everyMs":3600000}}`), reply("done"), mcpCall(t, "http", "schedule_task", `{"taskId":"opaque"}`), reply("done"))
 	a := start(t, llm)
 	a.initialize()
 	cwd := t.TempDir()
 	cfg := map[string]any{"type": "http", "name": "http", "url": srv.URL, "headers": []any{map[string]string{"name": "X-Fixture", "value": "configured"}}}
 	sid := mcpSession(t, a, cwd, cfg)
 	a.accepted(a.prompt(sid, "schedule"))
-	a.untilIdle(sid)
+	updates := a.untilIdle(sid)
+	failures, completed := 0, 0
+	for _, u := range updates {
+		if u.Status == "failed" {
+			failures++
+		}
+		if u.Status == "completed" {
+			completed++
+		}
+	}
+	if failures != 1 || completed != 1 {
+		t.Fatalf("wrong HTTP tool lifecycle: %v", kinds(updates))
+	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{cfg}, "replayFrom": map[string]string{"type": "start"}}, nil)
 	// Discard the resume state before consuming a new turn's idle.
 	a.updateWhere(sid, func(u update) bool { return u.is("state_update") && u.State == "idle" })
 	a.accepted(a.prompt(sid, "use reference"))
 	a.untilIdle(sid)
-	msgs := llm.request(1).Messages
+	msgs := llm.request(2).Messages
 	if !strings.Contains(msgs[len(msgs)-1]["content"].(string), `"schedule":{"type":"interval","everyMs":3600000}`) {
 		t.Fatal("HTTP nested args lost")
 	}
 	a.ok("session/close", map[string]string{"sessionId": sid}, nil)
-	if sessions.Load() != 1 || calls.Load() != 2 {
+	if sessions.Load() != 1 || calls.Load() != 3 {
 		t.Fatalf("unchanged resume reconnected: sessions=%d calls=%d", sessions.Load(), calls.Load())
 	}
 }

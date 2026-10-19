@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMCPResumeRevokesPendingPermission(t *testing.T) {
@@ -65,6 +66,17 @@ func TestMCPCancelAndLateResponse(t *testing.T) {
 	updates := a.untilIdle(sid)
 	if updates[len(updates)-1].StopReason != "cancelled" {
 		t.Fatal(kinds(updates))
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, _ := os.ReadFile(log)
+		if strings.Contains(string(data), `"name":"notifications/cancelled"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("MCP cancellation never reached server: %s", data)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	llm.enqueue(mcpCall(t, "alpha", "delegate_task", `{}`), reply("done"))
 	a.accepted(a.prompt(sid, "again"))

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -16,6 +15,7 @@ import (
 type writeItem struct {
 	ctx  context.Context
 	data []byte
+	done chan error
 }
 type stdioTransport struct {
 	p       *peer
@@ -42,7 +42,8 @@ func startStdio(p *peer, cfg Config, cwd string) (*stdioTransport, error) {
 	cmd.Env = processEnvironment(cfg.Env)
 	cmd.Stdin = inR
 	cmd.Stdout = outW
-	cmd.Stderr = io.Discard
+	// A nil stderr uses the null device directly, without an exec copy goroutine.
+	// Detached descendants cannot keep cmd.Wait blocked on an inherited pipe.
 	configureProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		inR.Close()
@@ -70,12 +71,14 @@ func (t *stdioTransport) start() {
 		for {
 			select {
 			case item := <-t.writes:
-				if item.ctx.Err() != nil {
+				if err := item.ctx.Err(); err != nil {
+					item.done <- err
 					continue
 				}
 				stop := context.AfterFunc(item.ctx, func() { t.p.fail(errors.New("MCP write interrupted; operation outcome unknown")) })
 				_, err := t.in.Write(append(item.data, '\n'))
 				stop()
+				item.done <- err
 				if err != nil {
 					t.p.fail(errClosed)
 					return
@@ -93,9 +96,19 @@ func (t *stdioTransport) Send(ctx context.Context, b []byte) error {
 		return t.p.err()
 	default:
 	}
+	item := writeItem{ctx: ctx, data: b, done: make(chan error, 1)}
 	select {
-	case t.writes <- writeItem{ctx, b}:
-		return nil
+	case t.writes <- item:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.p.ctx.Done():
+		return t.p.err()
+	}
+	// Send owns the write's context until delivery, including notifications
+	// whose callers cancel their short timeout immediately after it returns.
+	select {
+	case err := <-item.done:
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-t.p.ctx.Done():

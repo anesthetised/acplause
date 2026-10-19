@@ -63,13 +63,20 @@ type transport interface {
 	Initialized(string)
 }
 
+// callResponse carries either a JSON-RPC reply or a request-local transport
+// failure. HTTP request failures do not have to retire unrelated calls.
+type callResponse struct {
+	message wire
+	err     error
+}
+
 type peer struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	t       transport
 	mu      sync.Mutex
 	next    uint64
-	calls   map[string]chan wire
+	calls   map[string]chan callResponse
 	failure error
 	changed chan struct{}
 	replies chan wire
@@ -77,7 +84,7 @@ type peer struct {
 
 func newPeer(parent context.Context) *peer {
 	ctx, cancel := context.WithCancel(parent)
-	p := &peer{ctx: ctx, cancel: cancel, calls: map[string]chan wire{}, changed: make(chan struct{}, 1), replies: make(chan wire, 16)}
+	p := &peer{ctx: ctx, cancel: cancel, calls: map[string]chan callResponse{}, changed: make(chan struct{}, 1), replies: make(chan wire, 16)}
 	go func() {
 		for {
 			select {
@@ -128,7 +135,7 @@ func (p *peer) call(ctx context.Context, method string, params, result any) erro
 	p.mu.Lock()
 	p.next++
 	id := fmt.Sprintf("acplause-%d", p.next)
-	done := make(chan wire, 1)
+	done := make(chan callResponse, 1)
 	p.calls[id] = done
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.calls, id); p.mu.Unlock() }()
@@ -145,17 +152,11 @@ func (p *peer) call(ctx context.Context, method string, params, result any) erro
 		return errors.New("MCP request exceeds 8 MiB")
 	}
 	if err = p.t.Send(ctx, msg); err != nil {
-		return err
+		p.complete(id, callResponse{err: err})
 	}
+	var response callResponse
 	select {
-	case response := <-done:
-		if response.Error != nil {
-			return response.Error
-		}
-		if err := json.Unmarshal(response.Result, result); err != nil {
-			return fmt.Errorf("invalid MCP %s result", method)
-		}
-		return nil
+	case response = <-done:
 	case <-ctx.Done():
 		// A cancelled call is retired before notifying; notification delivery cannot
 		// hold up local cancellation or let a late result enter a later turn.
@@ -171,7 +172,34 @@ func (p *peer) call(ctx context.Context, method string, params, result any) erro
 		}
 		return fmt.Errorf("MCP call stopped: %w; the operation may have completed", ctx.Err())
 	case <-p.ctx.Done():
-		return p.err()
+		// A reply delivered before EOF/failure is definitive even when both
+		// channels become ready before the caller is scheduled.
+		select {
+		case response = <-done:
+		default:
+			return p.err()
+		}
+	}
+	if response.err != nil {
+		return response.err
+	}
+	if response.message.Error != nil {
+		return response.message.Error
+	}
+	if json.Unmarshal(response.message.Result, result) != nil {
+		return fmt.Errorf("invalid MCP %s result", method)
+	}
+	return nil
+}
+
+// complete publishes before releasing the pending-map lock so a later peer
+// failure cannot overtake a response already received by the transport.
+func (p *peer) complete(id string, response callResponse) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if done := p.calls[id]; done != nil {
+		delete(p.calls, id)
+		done <- response
 	}
 }
 func (p *peer) receive(b []byte) {
@@ -211,13 +239,7 @@ func (p *peer) receive(b []byte) {
 		p.fail(errors.New("invalid MCP response"))
 		return
 	}
-	p.mu.Lock()
-	done := p.calls[id]
-	delete(p.calls, id)
-	p.mu.Unlock()
-	if done != nil {
-		done <- msg
-	}
+	p.complete(id, callResponse{message: msg})
 }
 
 func (p *peer) initialize(ctx context.Context) (bool, error) {
@@ -243,7 +265,9 @@ func (p *peer) initialize(ctx context.Context) (bool, error) {
 	return result.Capabilities.Tools != nil, nil
 }
 
-func objectArguments(args string) (json.RawMessage, error) {
+// ObjectArguments validates and normalizes arguments without decoding JSON
+// values, preserving nesting and numbers before permission or transport use.
+func ObjectArguments(args string) (json.RawMessage, error) {
 	raw := bytes.TrimSpace([]byte(args))
 	if len(raw) == 0 {
 		raw = []byte(`{}`)

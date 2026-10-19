@@ -195,6 +195,11 @@ func TestMCPHTTPExpiredSessionRecoversForFutureCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := m.Snapshot()[0]
+	pending, err := m.Prepare(ctx, []Config{{Type: "http", Name: "s", URL: srv.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pending.Discard()
 	if _, err = old.Call(ctx, `{}`); err == nil {
 		t.Fatal("expired session succeeded")
 	}
@@ -202,6 +207,13 @@ func TestMCPHTTPExpiredSessionRecoversForFutureCall(t *testing.T) {
 		t.Fatal("expired operation repeated")
 	}
 	m.Recover(ctx)
+	recovered := m.Snapshot()[0]
+	if err := pending.Commit(); err != nil {
+		t.Fatalf("recovery invalidated valid configuration: %v", err)
+	}
+	if m.Snapshot()[0].server != recovered.server {
+		t.Fatal("commit restored obsolete connection")
+	}
 	if initialized.Load() != 2 {
 		t.Fatalf("no new session: %d", initialized.Load())
 	}
@@ -211,5 +223,84 @@ func TestMCPHTTPExpiredSessionRecoversForFutureCall(t *testing.T) {
 	result, err := m.Snapshot()[0].Call(ctx, `{}`)
 	if err != nil || string(result.StructuredContent) != `{"taskId":"new-session"}` || calls.Load() != 2 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, calls.Load())
+	}
+}
+
+func TestMCPHTTPFailureDoesNotRevokeOtherCalls(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(405)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(204)
+			return
+		}
+		var req wire
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.ID == nil {
+			w.WriteHeader(202)
+			return
+		}
+		var result any
+		switch req.Method {
+		case "initialize":
+			result = map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{"tools": map[string]any{}}}
+		case "tools/list":
+			result = map[string]any{"tools": []any{map[string]any{"name": "tool", "inputSchema": map[string]string{"type": "object"}}}}
+		case "tools/call":
+			calls.Add(1)
+			if strings.Contains(string(req.Params), `"slow":true`) {
+				close(started)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			if strings.Contains(string(req.Params), `"fail":true`) {
+				w.WriteHeader(500)
+				return
+			}
+			result = map[string]any{"content": []any{}, "structuredContent": map[string]bool{"ok": true}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer srv.Close()
+	m := New(context.Background(), t.TempDir(), nil)
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	change, err := m.Prepare(ctx, []Config{{Type: "http", Name: "s", URL: srv.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	tool := m.Snapshot()[0]
+	done := make(chan error, 1)
+	go func() { _, err := tool.Call(ctx, `{"slow":true}`); done <- err }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("slow call not started")
+	}
+	_, badErr := tool.Call(ctx, `{"fail":true}`)
+	close(release)
+	if badErr == nil {
+		t.Fatal("HTTP 500 succeeded")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("unrelated in-flight call failed: %v", err)
+	}
+	if _, err := tool.Call(ctx, `{}`); err != nil {
+		t.Fatalf("later call failed: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("calls repeated or dropped: %d", calls.Load())
 	}
 }

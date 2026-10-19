@@ -112,7 +112,14 @@ func (t *httpTransport) Send(ctx context.Context, data []byte) error {
 	done, err := t.launch(ctx, func(ctx context.Context) error {
 		err := t.post(ctx, data, msg, isCall)
 		if err != nil && ctx.Err() == nil {
-			t.p.fail(err)
+			if errors.Is(err, errSessionExpired) {
+				t.p.fail(err)
+			}
+			if isCall {
+				var id string
+				_ = json.Unmarshal(msg.ID, &id)
+				t.p.complete(id, callResponse{err: err})
+			}
 		}
 		return err
 	})

@@ -43,7 +43,7 @@ func (t Tool) Context() context.Context { return t.ctx }
 // Call preserves argument JSON and never retries an operation after delivery.
 func (t Tool) Call(ctx context.Context, args string) (Result, error) {
 	var result Result
-	raw, err := objectArguments(args)
+	raw, err := ObjectArguments(args)
 	if err != nil {
 		return result, err
 	}
@@ -162,7 +162,7 @@ func (s *server) refresh(ctx context.Context) error {
 				return errors.New("MCP tool names must be nonempty and unique")
 			}
 			names[t.Name] = true
-			if _, err := objectArguments(string(t.InputSchema)); err != nil || len(t.InputSchema) == 0 {
+			if _, err := ObjectArguments(string(t.InputSchema)); err != nil || len(t.InputSchema) == 0 {
 				return errors.New("MCP inputSchema must be a JSON object")
 			}
 			size += len(t.InputSchema) + len(t.Description) + len(t.Name)
@@ -239,7 +239,7 @@ type Manager struct {
 	cwd       string
 	mu        sync.Mutex
 	servers   []*server
-	revision  uint64
+	revision  uint64 // desired configuration; HTTP recovery only changes connections
 	closed    bool
 }
 
@@ -295,10 +295,8 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 	}
 	for i, cfg := range configs {
 		var found *server
-		key, _ := json.Marshal(cfg)
 		for _, s := range old {
-			other, _ := json.Marshal(s.cfg)
-			if string(key) == string(other) && s.peer.ctx.Err() == nil {
+			if sameConfig(cfg, s.cfg) && s.peer.ctx.Err() == nil {
 				found = s
 				break
 			}
@@ -370,6 +368,20 @@ func (c *Change) Commit() error {
 	if c.settled || m.closed || m.revision != c.revision || c.ctx.Err() != nil {
 		m.mu.Unlock()
 		return errClosed
+	}
+	// Recovery may replace a borrowed connection during preparation without
+	// changing desired configuration. Keep its current generation, never put
+	// the retired connection back or invalidate a valid resume for recovery.
+	for i, s := range c.servers {
+		if slices.Contains(c.created, s) || slices.Contains(m.servers, s) {
+			continue
+		}
+		for _, current := range m.servers {
+			if sameConfig(current.cfg, s.cfg) {
+				c.servers[i] = current
+				break
+			}
+		}
 	}
 	old := m.servers
 	m.servers = c.servers
@@ -485,8 +497,14 @@ func (m *Manager) Recover(ctx context.Context) {
 		}
 		m.resources[next] = true
 		m.servers[index] = next
-		m.revision++
 		m.mu.Unlock()
 		go m.closeResource(old)
 	}
+}
+
+// sameConfig ignores map iteration order without exposing credential values.
+func sameConfig(a, b Config) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
 }
