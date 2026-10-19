@@ -71,50 +71,58 @@ func (b ContentBlock) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements json.Unmarshaler.
 func (b *ContentBlock) UnmarshalJSON(data []byte) error {
-	var fields struct {
+	var discriminator struct {
 		Type string `json:"type"`
-		Text string `json:"text"`
-		URI  string `json:"uri"`
-		Name string `json:"name"`
-
-		Resource json.RawMessage `json:"resource"`
 	}
-	if err := json.Unmarshal(data, &fields); err != nil {
+	if err := json.Unmarshal(data, &discriminator); err != nil {
 		return err
 	}
-	// Only resource blocks are held to the resource shape, so other and
-	// future block types may carry a field of that name.
-	var resource *Resource
-	if fields.Type == ContentResource && fields.Resource != nil {
-		if err := json.Unmarshal(fields.Resource, &resource); err != nil {
-			return err
-		}
-	}
-	// Image payload fields belong only to the known image variant; future
-	// block types may use the same field names with different shapes.
-	var image struct {
-		Data     string `json:"data"`
-		MimeType string `json:"mimeType"`
-	}
-	if fields.Type == ContentImage {
-		if err := json.Unmarshal(data, &image); err != nil {
-			return err
-		}
-	}
-	if fields.Type == "" {
+	if discriminator.Type == "" {
 		return errors.New("content block type is required")
 	}
-	*b = ContentBlock{
-		Type:     fields.Type,
-		Text:     fields.Text,
-		URI:      fields.URI,
-		Name:     fields.Name,
-		Data:     image.Data,
-		MimeType: image.MimeType,
-
-		Resource: resource,
-		raw:      append(json.RawMessage(nil), data...),
+	parsed := ContentBlock{Type: discriminator.Type}
+	switch discriminator.Type {
+	case ContentText:
+		var fields struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return err
+		}
+		parsed.Text = fields.Text
+	case ContentResourceLink:
+		var fields struct {
+			URI  string `json:"uri"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return err
+		}
+		parsed.URI, parsed.Name = fields.URI, fields.Name
+	case ContentImage:
+		var fields struct {
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
+		}
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return err
+		}
+		parsed.Data, parsed.MimeType = fields.Data, fields.MimeType
+	case ContentResource:
+		var fields struct {
+			Resource json.RawMessage `json:"resource"`
+		}
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return err
+		}
+		if fields.Resource != nil {
+			if err := json.Unmarshal(fields.Resource, &parsed.Resource); err != nil {
+				return err
+			}
+		}
 	}
+	parsed.raw = append(json.RawMessage(nil), data...)
+	*b = parsed
 	return nil
 }
 
