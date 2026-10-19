@@ -57,7 +57,13 @@ count toward `ACPLAUSE_MAX_ROUNDS` when it is enabled. See
 [ADR 0008](docs/adr/0008-long-task-limits.md).
 
 The client receives the available models in `session/new` and selects one
-with `session/set_config_option`. New sessions reuse the last selected model
+with `session/set_config_option`. Catalogs with multiple model-ID namespaces
+use labeled groups (for example `openai/…` and `anthropic/…`); unprefixed IDs
+appear under "Other models". Single-group catalogs stay flat. Grouping changes
+presentation only; model IDs and selection behavior stay the same. See
+[ADR 0018](docs/adr/0018-group-model-options.md).
+
+New sessions reuse the last selected model
 and reasoning effort, remembered across restarts and editor windows in the
 same data directory. If there is no remembered selection or the model is no
 longer available, sessions show "Select a model"; prompts are rejected until
@@ -191,7 +197,8 @@ every connection. Clients without it receive no `ask_user` tool and the model ca
 ask in text. Malformed optional capability values are treated as unsupported,
 so they do not prevent initialization. This does not enable MCP server
 elicitation. See
-[ADR 0011](docs/adr/0011-structured-user-questions.md) and the
+[ADR 0011](docs/adr/0011-structured-user-questions.md),
+[ADR 0017](docs/adr/0017-multiselect-questions.md) and the
 [T3 form smoke procedure](docs/testing/t3-first-class-smoke.md). Native T3 form
 answers and turn cancellation were verified; the procedure distinguishes those
 observations from extended lifecycle cases covered only by automated tests.

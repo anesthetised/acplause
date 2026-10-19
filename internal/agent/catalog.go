@@ -2,7 +2,9 @@ package agent
 
 import (
 	"cmp"
+	"maps"
 	"slices"
+	"strings"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/llm"
@@ -30,6 +32,7 @@ var efforts = []acp.ConfigOptionValue{
 type catalog struct {
 	models  map[string]llm.Model
 	choices []acp.ConfigOptionValue
+	groups  []acp.ConfigOptionValue // nil when a flat list suffices
 }
 
 func newCatalog(listed []llm.Model) *catalog {
@@ -43,6 +46,22 @@ func newCatalog(listed []llm.Model) *catalog {
 		c.choices = append(c.choices, acp.ConfigOptionValue{Value: m.ID, Name: cmp.Or(m.Name, m.ID)})
 	}
 	slices.SortFunc(c.choices, func(x, y acp.ConfigOptionValue) int { return cmp.Compare(x.Value, y.Value) })
+	groups := map[string]acp.ConfigOptionValue{}
+	for _, choice := range c.choices {
+		id, name := "unqualified", "Other models"
+		if prefix, rest, found := strings.Cut(choice.Value, "/"); found && prefix != "" && rest != "" {
+			id, name = "provider:"+prefix, prefix
+		}
+		group := groups[id]
+		group.GroupID, group.Name = id, name
+		group.Options = append(group.Options, choice)
+		groups[id] = group
+	}
+	if len(groups) > 1 {
+		for _, id := range slices.Sorted(maps.Keys(groups)) {
+			c.groups = append(c.groups, groups[id])
+		}
+	}
 	return c
 }
 
@@ -74,9 +93,16 @@ func (c *catalog) reasons(model string) bool {
 // effort option only exists for models that reason.
 func (c *catalog) options(model, effort, mode string) []acp.ConfigOption {
 	choices := c.choices
+	if len(c.groups) > 0 {
+		choices = c.groups
+	}
 	if model == "" {
 		// ACP requires a currentValue even before the client selects a model.
-		choices = append([]acp.ConfigOptionValue{{Value: "", Name: "Select a model"}}, choices...)
+		placeholder := acp.ConfigOptionValue{Value: "", Name: "Select a model"}
+		if len(c.groups) > 0 {
+			placeholder = acp.ConfigOptionValue{GroupID: "selection", Name: "Model selection", Options: []acp.ConfigOptionValue{placeholder}}
+		}
+		choices = append([]acp.ConfigOptionValue{placeholder}, choices...)
 	}
 	options := []acp.ConfigOption{{
 		ConfigID:     configModel,
