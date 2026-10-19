@@ -34,7 +34,7 @@ func TestPromptLifecycle(t *testing.T) {
 	messageID, resp := a.accepted(id)
 	updates := a.untilIdle(sid)
 
-	want := []string{"user_message", "state_update running", "agent_thought_chunk", "agent_message_chunk", "usage_update", "state_update idle end_turn"}
+	want := []string{"user_message", "session_info_update", "state_update running", "agent_thought_chunk", "agent_message_chunk", "usage_update", "state_update idle end_turn"}
 	if got := kinds(updates); !slices.Equal(got, want) {
 		t.Fatalf("updates:\n got %v\nwant %v", got, want)
 	}

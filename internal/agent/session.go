@@ -318,12 +318,18 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt)})
 	s.transcript = append(s.transcript, msg)
-	if s.title == "" {
+	first := s.title == ""
+	if first {
 		s.title = title(sub.prompt)
 	}
 	s.updatedAt = time.Now()
 	sub.reply.Resolve(acp.PromptResponse{MessageID: msg.MessageID})
 	s.send(msg)
+	if first {
+		// Not in the transcript: replay is conversation history, and
+		// session/list already reports the title.
+		s.send(acp.SessionInfoUpdate{Title: s.title, UpdatedAt: s.updatedAt.UTC().Format(time.RFC3339Nano)})
+	}
 	return true
 }
 

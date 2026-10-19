@@ -72,6 +72,11 @@ prompt, read once when the session is created. Only that file, with no
 nothing; one that is not a regular text file or exceeds 32 KiB is skipped
 with a log line.
 
+A session is titled after the first line of its first prompt. The title is
+sent once, as a `session_info_update`, when that prompt is accepted, and is
+returned by `session/list`. It is not replayed on resume: replay is
+conversation history, and the title is metadata that `session/list` reports.
+
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
 already running keeps its roots until it finishes.

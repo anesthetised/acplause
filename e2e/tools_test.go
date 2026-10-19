@@ -27,7 +27,7 @@ func TestToolLoop(t *testing.T) {
 	a.accepted(a.prompt(sid, "what is this?"))
 	updates := a.untilIdle(sid)
 	want := []string{
-		"user_message", "state_update running",
+		"user_message", "session_info_update", "state_update running",
 		"usage_update", "tool_call_update in_progress", "tool_call_update completed",
 		"agent_message_chunk", "usage_update", "state_update idle end_turn",
 	}
