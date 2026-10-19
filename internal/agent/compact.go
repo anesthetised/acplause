@@ -164,15 +164,28 @@ func joinLines(a, b string) string {
 // request never persists. Images go before text is trimmed: their removal is
 // reversible, and trimming is not.
 func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRound, error) {
+	round, _, err := s.prepareModelRequest(ctx, remaining, false)
+	return round, err
+}
+
+// prepareModelRequest shares the automatic and forced paths. A forced command needs no
+// answer request or MCP recovery, and reports whether there was work to do.
+func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force bool) (modelRound, bool, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return modelRound{}, err
+			return modelRound{}, false, err
 		}
-		s.mcp.Recover(ctx)
+		if !force {
+			s.mcp.Recover(ctx)
+		}
 		round := s.request()
 		req := &round.Request
 		window := s.catalog.contextLength(req.Model)
 		budget := window - window/4
+		user, keep := latest(req.Messages)
+		if force && (window == 0 || user <= 1) {
+			return round, false, nil
+		}
 		if window > 0 {
 			req.MaxTokens = max(1, min(window/4, 8192))
 			if limit := s.catalog.outputLimit(req.Model); limit > 0 {
@@ -183,15 +196,19 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRoun
 		fits := func(r llm.Request) bool { return window == 0 || requestSize(r) <= budget }
 		sent, err := projectImages(*req, fits)
 		if err != nil {
-			return round, err
+			return round, false, err
 		}
-		if fits(sent) {
+		withinBudget := fits(sent)
+		if withinBudget && !force {
 			round.Request = sent
-			return round, nil
+			return round, false, nil
 		}
 
 		trimmed := false
 		for i, m := range req.Messages {
+			if withinBudget {
+				break
+			}
 			if m.Role != llm.RoleTool || len(m.Content) <= 2048 {
 				continue
 			}
@@ -210,9 +227,8 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRoun
 		}
 		// Keep the latest user prompt and the most recent assistant exchange,
 		// including every tool result. Older exchanges in this turn may shrink.
-		user, keep := latest(req.Messages)
 		if user == 0 || keep <= 1 {
-			return round, fmt.Errorf("context window is too small for the system instructions, tools and latest prompt")
+			return round, false, fmt.Errorf("context window is too small for the system instructions, tools and latest prompt")
 		}
 		retained := slices.Clone(req.Messages[keep:])
 		if user < keep {
@@ -221,9 +237,13 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRoun
 		prefix := req.Messages[1:keep]
 		// Sizes compare with what would be sent; the summary keeps the
 		// history's images in the retained messages.
-		_, err = s.compact(ctx, sent, prefix, retained, budget, remaining)
+		messages, err := s.compact(ctx, sent, prefix, retained, budget, remaining, force)
 		if err != nil {
-			return round, err
+			return round, false, err
+		}
+		if force {
+			round.Messages = messages
+			return round, true, nil
 		}
 		// A config change during compaction applies to the next request.
 	}
@@ -245,7 +265,7 @@ func trimToolOutput(text string) string {
 
 // compact publishes one lifecycle even when several bounded summary calls
 // are needed. Its commit and terminal transcript snapshot share s.mu.
-func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained []llm.Message, budget uint64, remaining *int) (messages []llm.Message, err error) {
+func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained []llm.Message, budget uint64, remaining *int, force bool) (messages []llm.Message, err error) {
 	u := acp.CompactionUpdate{CompactionID: newID(), Status: acp.CompactionInProgress}
 	s.mu.Lock()
 	entry := len(s.transcript)
@@ -276,7 +296,11 @@ func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained
 		s.flush()
 	}()
 
-	summary, err := s.summarize(ctx, req, prefix, budget, remaining)
+	reserve := 1 // automatic compaction leaves a request for the answer
+	if force {
+		reserve = 0
+	}
+	summary, err := s.summarize(ctx, req, prefix, budget, remaining, reserve)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +318,7 @@ func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained
 // messages are JSON data, so archived tool calls cannot become new requests
 // to execute tools. Reasoning is excluded from the user-displayable summary,
 // and images are described rather than encoded.
-func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.Message, budget uint64, remaining *int) (string, error) {
+func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.Message, budget uint64, remaining *int, reserve int) (string, error) {
 	prefix = slices.Clone(prefix)
 	for i := range prefix {
 		prefix[i].Reasoning, prefix[i].ReasoningDetails = "", nil
@@ -305,7 +329,7 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if remaining != nil && *remaining <= 1 { // leave a request for the actual answer
+		if remaining != nil && *remaining <= reserve {
 			return "", errRoundLimit
 		}
 		var chunk llm.Request

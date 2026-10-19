@@ -305,7 +305,7 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 		}
 		a.sessions[s.id] = s
 		a.mu.Unlock()
-		reply.Resolve(acp.NewSessionResponse{SessionID: s.id, ConfigOptions: s.ConfigOptions()})
+		reply.Resolve(acp.NewSessionResponse{SessionID: s.id, ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()})
 	}()
 	return reply, nil
 }
@@ -404,7 +404,7 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 		if err := s.Resume(ctx, req.AdditionalDirectories, req.MCPServers, replay); err != nil {
 			return acp.ErrInvalidParams("cannot configure session: %v", err)
 		}
-		op.reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions()})
+		op.reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()})
 		return nil
 	})
 	return op.reply, nil

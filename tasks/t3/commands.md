@@ -1,13 +1,15 @@
 # Execution plan: Advertise and execute a deterministic /compact command
 
-Status: planned. Baseline: acplause `d9c99f1`, 2026-10-19.
+Status: implemented with automated protocol tests; actual T3 acceptance remains pending under #38.
+Planning baseline: acplause `d9c99f1`, 2026-10-19.
 Tracker: [#25](https://github.com/anesthetised/acplause/issues/25); task checkboxes live in GitHub Issues.
 Contract: [ADR 0015](../../docs/adr/0015-compact-slash-command.md).
 Read the [roadmap](../plan.md) for ordering and shared acceptance gates.
 
 ## Execution rules
 
-This is a planning deliverable; no feature is implemented by this document.
+The implementation follows this execution contract; runtime client acceptance
+is recorded separately under #38.
 Use GitHub issues as the authoritative task checklist. Each issue below is one
 bounded execution task; do not implement the whole roadmap in one run.
 

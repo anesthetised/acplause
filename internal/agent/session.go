@@ -376,7 +376,13 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	if !s.insert(ctx, sub) {
 		return
 	}
-	stop, err := s.converse(ctx)
+	var stop acp.StopReason
+	var err *jsonrpc.Error
+	if isCompactCommand(sub.prompt) {
+		stop, err = s.compactCommand(ctx)
+	} else {
+		stop, err = s.converse(ctx)
+	}
 	if ctx.Err() != nil {
 		stop, err = acp.StopCancelled, nil
 	}

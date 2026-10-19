@@ -23,8 +23,15 @@ func (r NewSessionRequest) Validate() error {
 
 // NewSessionResponse is the result of session/new.
 type NewSessionResponse struct {
-	SessionID     string         `json:"sessionId"`
-	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+	SessionID         string             `json:"sessionId"`
+	ConfigOptions     []ConfigOption     `json:"configOptions,omitempty"`
+	AvailableCommands []AvailableCommand `json:"availableCommands,omitempty"`
+}
+
+// AvailableCommand advertises an agent command without arguments.
+type AvailableCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // ResumeSessionRequest is the params of session/resume.
@@ -61,7 +68,8 @@ const ReplayFromStart = "start"
 
 // ResumeSessionResponse is the result of session/resume.
 type ResumeSessionResponse struct {
-	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+	ConfigOptions     []ConfigOption     `json:"configOptions,omitempty"`
+	AvailableCommands []AvailableCommand `json:"availableCommands,omitempty"`
 }
 
 // CloseSessionRequest is the params of session/close.
