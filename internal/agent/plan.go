@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -9,7 +10,45 @@ import (
 	"unicode/utf8"
 
 	"github.com/anesthetised/acplause/internal/acp"
+	"github.com/anesthetised/acplause/internal/jsonrpc"
+	"github.com/anesthetised/acplause/internal/llm"
 )
+
+var updatePlanTool = llm.FunctionTool("update_plan", "Publish or replace the execution plan for the current user turn. Send the complete list of entries on every update, with at most one in_progress entry. The agent assigns the planId; earlier turns' plans cannot be edited. This only reports progress and does not execute any action.", json.RawMessage(`{
+ "type":"object","properties":{
+  "entries":{"type":"array","minItems":1,"maxItems":20,"items":{
+   "type":"object","properties":{
+    "content":{"type":"string","minLength":1,"maxLength":1000},
+    "priority":{"type":"string","enum":["high","medium","low"]},
+    "status":{"type":"string","enum":["pending","in_progress","completed"]}
+   },"required":["content","priority","status"]
+  }}
+ },"required":["entries"]
+}`))
+
+// preparePlan validates before publishing so malformed arguments leave the
+// current snapshot and its identity unchanged.
+func (s *Session) preparePlan(args string) (*preparedTool, error) {
+	var input struct {
+		Entries []acp.PlanEntry `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		return nil, fmt.Errorf("invalid update_plan arguments: %w", err)
+	}
+	if err := validatePlan(input.Entries); err != nil {
+		return nil, err
+	}
+	return &preparedTool{Title: "Update plan", run: func(ctx context.Context) toolOutput {
+		id, err := s.updatePlan(ctx, input.Entries)
+		if err != nil {
+			return toolOutput{Output: "Error: " + err.Error(), Failed: true}
+		}
+		encoded, _ := jsonrpc.Marshal(struct {
+			PlanID string `json:"planId"`
+		}{id})
+		return toolOutput{Output: string(encoded), RawOutput: encoded}
+	}}, nil
+}
 
 // updatePlan publishes a full snapshot at the plan's first transcript
 // position. Only an accepted turn may allocate an ID; resume and live

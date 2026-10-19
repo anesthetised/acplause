@@ -65,6 +65,7 @@ func (s *Session) request() modelRound {
 	for _, spec := range s.toolbox.Specs() {
 		req.Tools = append(req.Tools, llm.FunctionTool(spec.Name, spec.Description, spec.Parameters))
 	}
+	req.Tools = append(req.Tools, updatePlanTool)
 	if s.supportsForms() {
 		req.Tools = append(req.Tools, askUserTool)
 	}
@@ -101,7 +102,9 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 	entry := -1
 	var prepared *preparedTool
 	var err error
-	if name == "ask_user" && s.supportsForms() {
+	if name == "update_plan" {
+		prepared, err = s.preparePlan(call.Function.Arguments)
+	} else if name == "ask_user" && s.supportsForms() {
 		var req acp.ElicitationRequest
 		req, err = parseQuestions(call.Function.Arguments)
 		req.SessionID, req.ToolCallID = s.id, update.ToolCallID
