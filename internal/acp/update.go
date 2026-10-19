@@ -224,6 +224,13 @@ type UsageUpdate struct {
 	Cost *Cost  `json:"cost,omitempty"`
 }
 
+// SessionInfoUpdate patches session metadata. Only what acplause sets is
+// modelled; omitted fields mean "unchanged".
+type SessionInfoUpdate struct {
+	Title     string `json:"title,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
 // Cost is an amount of money in an ISO 4217 currency.
 type Cost struct {
 	Amount   float64 `json:"amount"`
@@ -238,3 +245,4 @@ func (AgentThoughtChunk) sessionUpdate() string { return "agent_thought_chunk" }
 func (StateUpdate) sessionUpdate() string       { return "state_update" }
 func (ToolCallUpdate) sessionUpdate() string    { return "tool_call_update" }
 func (UsageUpdate) sessionUpdate() string       { return "usage_update" }
+func (SessionInfoUpdate) sessionUpdate() string { return "session_info_update" }

@@ -13,7 +13,6 @@ first, and works in your workspace through tools.
 - Prompt queue, cancellation that aborts the HTTP stream and kills
   everything a command started, session list/resume/close.
 - Model and reasoning effort selection from OpenRouter's model list.
-- Go standard library only.
 
 ## Install
 
@@ -42,7 +41,7 @@ models with tool support, session creation fails.
 
 | Tool          | Kind      |                                                   |
 | ------------- | --------- | ------------------------------------------------- |
-| `read_file`   | `read`    | text files up to 1 MiB                            |
+| `read_file`   | `read`    | text files up to 1 MiB; `offset`, `limit` lines   |
 | `list_dir`    | `read`    | tree, 3 levels, 200 entries                       |
 | `search_code` | `search`  | plain-text search, 50 matches                     |
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
@@ -66,6 +65,22 @@ sandboxed.
 Read, write and edit operations accept regular files only; pipes and devices
 are rejected. `write_file.content` and `edit.new_text` must be explicit
 strings: an empty string is valid, but an omitted or null value is an error.
+
+`AGENTS.md` at the root of the session's `cwd` is appended to the system
+prompt, read once when the session is created. Only that file, with no
+`CLAUDE.md` fallback and no parent directories. A missing file changes
+nothing; one that is not a regular text file or exceeds 32 KiB is skipped
+with a log line.
+
+A session is titled after the first line of its first prompt. The title is
+sent once, as a `session_info_update`, when that prompt is accepted, and is
+returned by `session/list`. It is not replayed on resume: replay is
+conversation history, and the title is metadata that `session/list` reports.
+
+Prompts may embed resources (`session.prompt.embeddedContext`). A text
+resource reaches the model as `<resource uri="...">` with its contents; a blob
+resource is replaced by a one-line note naming its URI. The client still gets
+every block echoed back unchanged. Images and audio are not supported.
 
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call

@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 type sessionInfo struct {
@@ -235,4 +236,25 @@ func values(o configOption) []string {
 		vs = append(vs, v.Value)
 	}
 	return vs
+}
+
+func TestSessionInfoUpdateReportsTheTitleOnce(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(reply("one"), reply("two"))
+	a, sid, _ := started(t, llm)
+
+	a.accepted(a.prompt(sid, "First question\nwith detail"))
+	first := filter(a.untilIdle(sid), "session_info_update")
+	if len(first) != 1 || first[0].Title != "First question" {
+		t.Fatalf("first turn: %+v", first)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, first[0].UpdatedAt); err != nil {
+		t.Fatalf("updatedAt %q: %v", first[0].UpdatedAt, err)
+	}
+
+	a.accepted(a.prompt(sid, "Second question"))
+	if second := filter(a.untilIdle(sid), "session_info_update"); len(second) != 0 {
+		t.Fatalf("later prompt changed the title: %+v", second)
+	}
 }

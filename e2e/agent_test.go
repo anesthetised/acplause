@@ -75,6 +75,7 @@ type update struct {
 	Status        string          `json:"status"`
 	Name          string          `json:"name"`
 	Title         string          `json:"title"`
+	UpdatedAt     string          `json:"updatedAt"`
 	Kind          string          `json:"kind"`
 	RawInput      json.RawMessage `json:"rawInput"`
 	Locations     []struct {

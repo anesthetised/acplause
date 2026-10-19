@@ -47,7 +47,7 @@ func TestSessionNotificationPutsDiscriminatorFirst(t *testing.T) {
 }
 
 func TestContentBlockRoundTripsUnknownBlocks(t *testing.T) {
-	in := `[{"type":"text","text":"hi","annotations":{"priority":1}},{"type":"_custom","payload":[1,2]},{"type":"resource_link","uri":"file:///a.go","name":"a.go"}]`
+	in := `[{"type":"text","text":"hi","annotations":{"priority":1}},{"type":"_custom","payload":[1,2],"resource":"not an object"},{"type":"resource_link","uri":"file:///a.go","name":"a.go"}]`
 	var blocks []ContentBlock
 	if err := json.Unmarshal([]byte(in), &blocks); err != nil {
 		t.Fatal(err)

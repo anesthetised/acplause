@@ -15,11 +15,29 @@ import (
 )
 
 const (
-	maxReadSize  = 1 << 20 // read_file and search_code skip larger files
-	maxWriteSize = 5 << 20
-	maxListDepth = 3
-	maxListItems = 200
+	maxReadSize         = 1 << 20 // read_file and search_code skip larger files
+	maxWriteSize        = 5 << 20
+	maxInstructionsSize = 32 << 10 // AGENTS.md is prompt overhead on every request
+	maxListDepth        = 3
+	maxListItems        = 200
 )
+
+// Instructions returns the contents of AGENTS.md at the working directory
+// root, or "" when there is none. A file that is not a regular text file or
+// exceeds the size cap is an error, for the caller to log and skip.
+func (tb *Toolbox) Instructions(ctx context.Context) (string, error) {
+	t := tb.roots.within(tb.roots.roots[0], "AGENTS.md")
+	data, err := t.readFile(ctx, maxInstructionsSize)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case err != nil:
+		return "", err
+	case !utf8.Valid(data):
+		return "", errors.New("AGENTS.md is not a text file")
+	}
+	return strings.TrimSpace(string(data)), nil
+}
 
 // ignored names noise that list_dir and search_code skip.
 func ignored(name string) bool {
@@ -33,17 +51,48 @@ var readFileSpec = Spec{
 	Parameters: []byte(`{
 		"type": "object",
 		"properties": {
-			"path": {"type": "string", "description": "File path, relative to the working directory or absolute (e.g. 'src/main.go')"}
+			"path": {"type": "string", "description": "File path, relative to the working directory or absolute (e.g. 'src/main.go')"},
+			"offset": {"type": "integer", "description": "First line to read, 1-based (default 1)"},
+			"limit": {"type": "integer", "description": "Maximum number of lines to read (default: to the end of the file)"}
 		},
 		"required": ["path"]
 	}`),
 }
 
 type readFileArgs struct {
-	Path string `json:"path"`
+	Path   string `json:"path"`
+	Offset *int   `json:"offset"` // pointers tell omitted from zero, which is invalid
+	Limit  *int   `json:"limit"`
+}
+
+// lineRange cuts text to the requested lines and says which it kept, so the
+// model can page through a large file.
+func lineRange(text string, offset, limit *int) (string, error) {
+	lines := strings.SplitAfter(text, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	first := 1
+	if offset != nil {
+		first = *offset
+	}
+	if first > len(lines) {
+		return "", fmt.Errorf("offset %d is beyond the end of the file (%d lines)", first, len(lines))
+	}
+	last := len(lines)
+	if limit != nil && *limit < last-first+1 { // compared, not added: limit may be huge
+		last = first - 1 + *limit
+	}
+	return fmt.Sprintf("[lines %d-%d of %d]\n%s", first, last, len(lines), strings.Join(lines[first-1:last], "")), nil
 }
 
 func (tb *Toolbox) readFile(args readFileArgs) (*Call, error) {
+	if args.Offset != nil && *args.Offset < 1 {
+		return nil, fmt.Errorf("offset must be at least 1, got %d", *args.Offset)
+	}
+	if args.Limit != nil && *args.Limit < 1 {
+		return nil, fmt.Errorf("limit must be at least 1, got %d", *args.Limit)
+	}
 	t, err := tb.roots.resolve(args.Path)
 	if err != nil {
 		return nil, err
@@ -68,7 +117,10 @@ func (tb *Toolbox) readFile(args readFileArgs) (*Call, error) {
 			if !utf8.Valid(data) {
 				return "", fmt.Errorf("%s is not a text file", args.Path)
 			}
-			return string(data), nil
+			if args.Offset == nil && args.Limit == nil {
+				return string(data), nil
+			}
+			return lineRange(string(data), args.Offset, args.Limit)
 		},
 	}, nil
 }
