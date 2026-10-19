@@ -91,7 +91,8 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 ## Tests
 
 - New behaviour needs a test. Protocol-visible behaviour needs an e2e test.
-- Total Go statement coverage must stay at or above 80%; check it with
+- Total Go statement coverage must stay at or above 80%, and CI fails below
+  it. Check it with
   `just test -coverprofile=cover.out && go tool cover -func=cover.out | tail -1`.
   The e2e binary is not measured, so code reached only through e2e tests
   also needs in-package tests (`internal/agent/methods_test.go` drives the
