@@ -13,9 +13,10 @@ import (
 )
 
 type writeItem struct {
-	ctx  context.Context
-	data []byte
-	done chan error
+	ctx      context.Context
+	data     []byte
+	done     chan error
+	dispatch *dispatch
 }
 type stdioTransport struct {
 	p       *peer
@@ -75,6 +76,12 @@ func (t *stdioTransport) start() {
 					item.done <- err
 					continue
 				}
+				if item.dispatch != nil {
+					if err := item.dispatch.admit(); err != nil {
+						item.done <- err
+						continue
+					}
+				}
 				stop := context.AfterFunc(item.ctx, func() { t.p.fail(errors.New("MCP write interrupted; operation outcome unknown")) })
 				_, err := t.in.Write(append(item.data, '\n'))
 				stop()
@@ -91,28 +98,47 @@ func (t *stdioTransport) start() {
 	go func() { <-t.p.ctx.Done(); _ = t.Close() }()
 }
 func (t *stdioTransport) Send(ctx context.Context, b []byte) error {
+	return t.sendRequest(ctx, b, nil)
+}
+
+func (t *stdioTransport) sendRequest(ctx context.Context, b []byte, dispatch *dispatch) error {
 	select {
 	case <-t.p.ctx.Done():
 		return t.p.err()
 	default:
 	}
-	item := writeItem{ctx: ctx, data: b, done: make(chan error, 1)}
+	pending := ctx
+	var pendingDone <-chan struct{}
+	if dispatch != nil {
+		pending = dispatch.pending
+		pendingDone = pending.Done()
+	}
+	item := writeItem{ctx: ctx, data: b, done: make(chan error, 1), dispatch: dispatch}
 	select {
 	case t.writes <- item:
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-pending.Done():
+		return pending.Err()
 	case <-t.p.ctx.Done():
 		return t.p.err()
 	}
 	// Send owns the write's context until delivery, including notifications
 	// whose callers cancel their short timeout immediately after it returns.
-	select {
-	case err := <-item.done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.p.ctx.Done():
-		return t.p.err()
+	for {
+		select {
+		case err := <-item.done:
+			return err
+		case <-pendingDone:
+			select {
+			case <-dispatch.admitted:
+				pendingDone = nil
+			default:
+				return pending.Err()
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.p.ctx.Done():
+			return t.p.err()
+		}
 	}
 }
 func (t *stdioTransport) Initialized(string) {}

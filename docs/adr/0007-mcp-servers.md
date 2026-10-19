@@ -90,6 +90,14 @@ difficult.
    definitions invalidate not-yet-dispatched old bindings. Calls already
    dispatched to the same connection may complete under their old definition.
 
+   Dispatch admission and catalog publication share a short critical section.
+   The transport invokes admission after acquiring an HTTP slot or selecting a
+   stdio write, immediately before I/O. Admission validates the captured binding
+   and live caller/peer, then transfers the call to execution lifetime. Queue
+   waiting remains definition-revocable; execution retains caller deadlines and
+   peer cancellation. No catalog lock spans network or pipe I/O. This is local
+   dispatch ownership, not an acknowledgement of remote receipt or completion.
+
 8. **Explicit permission for every external tool.** MCP annotations are
    untrusted hints. `readOnlyHint` may select a display kind; it never skips
    ACP permission. Reuse allow-once/reject-once and the existing

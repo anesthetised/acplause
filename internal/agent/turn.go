@@ -125,10 +125,12 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 	} else {
 		prepared, err = prepareBuiltin(toolbox, name, call.Function.Arguments)
 	}
-	callCtx, stopCall := context.WithCancel(ctx)
-	defer stopCall()
+	permissionCtx, stopPermission := context.WithCancel(ctx)
+	defer stopPermission()
 	if prepared != nil && prepared.binding != nil {
-		stopBinding := context.AfterFunc(prepared.binding, stopCall)
+		// Definition revocation stops permission waiting. The MCP transport
+		// separately admits dispatch; execution must not inherit this context.
+		stopBinding := context.AfterFunc(prepared.binding, stopPermission)
 		defer stopBinding()
 		if prepared.binding.Err() != nil {
 			err = errors.New("MCP tool binding was revoked")
@@ -141,7 +143,7 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 			update.Status = acp.ToolPending
 			entry = s.reportTool(entry, update)
 		} else if prepared.permission {
-			entry, err = s.requestPermission(callCtx, ctx, entry, &update, prepared)
+			entry, err = s.requestPermission(permissionCtx, ctx, entry, &update, prepared)
 		}
 	}
 	if err != nil {
@@ -157,10 +159,10 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 		if name != "ask_user" && prepared.observeShell == nil {
 			entry = s.reportTool(entry, patch)
 		}
-		runCtx := callCtx
+		runCtx := ctx
 		if prepared.binding != nil && s.deps.mcpTimeout > 0 {
 			var cancel context.CancelFunc
-			runCtx, cancel = context.WithTimeout(callCtx, s.deps.mcpTimeout)
+			runCtx, cancel = context.WithTimeout(ctx, s.deps.mcpTimeout)
 			defer cancel()
 		}
 		result = s.executeTool(runCtx, prepared, entry, update.ToolCallID)

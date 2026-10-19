@@ -246,6 +246,14 @@ explicit ACP permission, including tools marked read-only. Nested arguments,
 structured-only output and opaque IDs remain JSON; the current model API
 receives structured output as text, and ACP `rawOutput` retains its structure.
 
+Catalog refresh revokes changed or removed definitions while a call awaits
+permission or transport capacity. Dispatch is admitted atomically with refresh,
+after an HTTP slot is acquired or the stdio writer selects the call, immediately
+before I/O. An admitted call may finish on its original connection even if its
+definition changes or disappears. Turn cancellation, timeout, connection
+replacement, session close/delete and ownership loss still stop it. Admission
+does not imply that the remote server received or completed the operation.
+
 Resume replaces the entire MCP configuration; an omitted or empty list
 removes all servers. Healthy unchanged connections are reused. Failed setup
 preserves the previous configuration; later prompts wait for setup before
@@ -256,8 +264,9 @@ Tool results follow the normal conversation storage policy.
 
 Setup allows 30 seconds, with at most four connections starting together;
 discovery/refresh allows 15 seconds per server. `ACPLAUSE_MCP_TIMEOUT` starts
-after permission, independently of the bash timeout. Cancellation stops local
-waiting promptly and sends a best-effort MCP cancellation notification. A
+after permission and covers dispatch waiting and the response, independently
+of the bash timeout. Cancellation stops local waiting promptly and sends a
+best-effort MCP cancellation notification. A
 remote side effect may still complete. Calls are never automatically repeated
 after an ambiguous failure. Crashed stdio servers restart on explicit resume;
 an expired HTTP session gets one recovery attempt for future model requests.

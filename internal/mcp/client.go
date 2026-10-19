@@ -58,9 +58,20 @@ func (e *rpcError) Error() string {
 }
 
 type transport interface {
-	Send(context.Context, []byte) error
+	// sendRequest admits a tool after queue waiting, before I/O. Other MCP
+	// messages pass nil; an admission failure must send no bytes.
+	sendRequest(context.Context, []byte, *dispatch) error
 	Close() error
 	Initialized(string)
+}
+
+// dispatch separates revocable queue waiting from execution. admit closes
+// admitted under the catalog publication lock, so a late pending cancellation
+// cannot make a writer abandon an already admitted operation.
+type dispatch struct {
+	pending  context.Context
+	admitted chan struct{}
+	admit    func() error
 }
 
 // callResponse carries either a JSON-RPC reply or a request-local transport
@@ -91,7 +102,7 @@ func newPeer(parent context.Context) *peer {
 			case response := <-p.replies:
 				ctx, cancel := context.WithTimeout(p.ctx, time.Second)
 				raw, _ := jsonrpc.Marshal(response)
-				_ = p.t.Send(ctx, raw)
+				_ = p.t.sendRequest(ctx, raw, nil)
 				cancel()
 			case <-p.ctx.Done():
 				return
@@ -126,9 +137,13 @@ func (p *peer) notify(ctx context.Context, method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return p.t.Send(ctx, msg)
+	return p.t.sendRequest(ctx, msg, nil)
 }
 func (p *peer) call(ctx context.Context, method string, params, result any) error {
+	return p.callDispatch(ctx, method, params, result, nil)
+}
+
+func (p *peer) callDispatch(ctx context.Context, method string, params, result any, dispatch *dispatch) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -151,7 +166,7 @@ func (p *peer) call(ctx context.Context, method string, params, result any) erro
 	if len(msg) > maxMessage {
 		return errors.New("MCP request exceeds 8 MiB")
 	}
-	if err = p.t.Send(ctx, msg); err != nil {
+	if err = p.t.sendRequest(ctx, msg, dispatch); err != nil {
 		p.complete(id, callResponse{err: err})
 	}
 	var response callResponse
