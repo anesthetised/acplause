@@ -38,6 +38,7 @@ type Tool struct {
 }
 
 // Context is cancelled when the connection or this definition is revoked.
+// It governs permission and dispatch waiting, not an admitted call's lifetime.
 func (t Tool) Context() context.Context { return t.ctx }
 
 // Call preserves argument JSON and never retries an operation after delivery.
@@ -47,14 +48,32 @@ func (t Tool) Call(ctx context.Context, args string) (Result, error) {
 	if err != nil {
 		return result, err
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	pending, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(t.ctx, cancel)
 	defer stop()
 	if t.ctx.Err() != nil {
 		return result, errors.New("MCP tool binding was revoked")
 	}
-	err = t.server.peer.call(ctx, "tools/call", map[string]any{"name": t.OriginalName, "arguments": raw}, &result)
+	d := &dispatch{pending: pending, admitted: make(chan struct{})}
+	d.admit = func() error {
+		t.server.mu.Lock()
+		defer t.server.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := t.server.peer.ctx.Err(); err != nil {
+			return err
+		}
+		if t.ctx.Err() != nil {
+			return errors.New("MCP tool binding was revoked")
+		}
+		// This is the dispatch linearization point. Refresh can revoke queue
+		// waiting, but cannot cancel execution once transport owns the call.
+		close(d.admitted)
+		return nil
+	}
+	err = t.server.peer.callDispatch(ctx, "tools/call", map[string]any{"name": t.OriginalName, "arguments": raw}, &result, d)
 	if err != nil {
 		return result, err
 	}

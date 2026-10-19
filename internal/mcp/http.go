@@ -38,7 +38,7 @@ func newHTTP(p *peer, cfg Config) *httpTransport {
 }
 func (t *httpTransport) start()                     { go func() { <-t.p.ctx.Done(); _ = t.Close() }() }
 func (t *httpTransport) Initialized(version string) { t.mu.Lock(); t.version = version; t.mu.Unlock() }
-func (t *httpTransport) request(ctx context.Context, method string, data []byte, cursor string) (*http.Response, error) {
+func (t *httpTransport) request(ctx context.Context, method string, data []byte, cursor string, dispatch *dispatch) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, t.cfg.URL, bytes.NewReader(data))
 	if err != nil {
 		return nil, errors.New("invalid MCP HTTP endpoint")
@@ -65,6 +65,11 @@ func (t *httpTransport) request(ctx context.Context, method string, data []byte,
 	if cursor != "" {
 		req.Header.Set("Last-Event-ID", cursor)
 	}
+	if dispatch != nil {
+		if err := dispatch.admit(); err != nil {
+			return nil, err
+		}
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, errors.New("MCP HTTP connection failed; operation outcome may be unknown")
@@ -75,11 +80,11 @@ func (t *httpTransport) request(ctx context.Context, method string, data []byte,
 	}
 	return resp, nil
 }
-func (t *httpTransport) launch(ctx context.Context, work func(context.Context) error) (<-chan error, error) {
+func (t *httpTransport) launch(ctx, pending context.Context, work func(context.Context) error) (<-chan error, error) {
 	select {
 	case t.slots <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-pending.Done():
+		return nil, pending.Err()
 	case <-t.p.ctx.Done():
 		return nil, t.p.err()
 	}
@@ -103,14 +108,18 @@ func (t *httpTransport) launch(ctx context.Context, work func(context.Context) e
 	}()
 	return done, nil
 }
-func (t *httpTransport) Send(ctx context.Context, data []byte) error {
+func (t *httpTransport) sendRequest(ctx context.Context, data []byte, dispatch *dispatch) error {
 	var msg wire
 	if json.Unmarshal(data, &msg) != nil {
 		return errors.New("invalid outbound MCP message")
 	}
 	isCall := msg.Method != "" && msg.ID != nil
-	done, err := t.launch(ctx, func(ctx context.Context) error {
-		err := t.post(ctx, data, msg, isCall)
+	pending := ctx
+	if dispatch != nil {
+		pending = dispatch.pending
+	}
+	done, err := t.launch(ctx, pending, func(ctx context.Context) error {
+		err := t.post(ctx, data, msg, isCall, dispatch)
 		if err != nil && ctx.Err() == nil {
 			if errors.Is(err, errSessionExpired) {
 				t.p.fail(err)
@@ -141,8 +150,8 @@ func (t *httpTransport) Send(ctx context.Context, data []byte) error {
 		return t.p.err()
 	}
 }
-func (t *httpTransport) post(ctx context.Context, data []byte, msg wire, isCall bool) error {
-	resp, err := t.request(ctx, http.MethodPost, data, "")
+func (t *httpTransport) post(ctx context.Context, data []byte, msg wire, isCall bool, dispatch *dispatch) error {
+	resp, err := t.request(ctx, http.MethodPost, data, "", dispatch)
 	if err != nil {
 		return err
 	}
@@ -218,7 +227,7 @@ func (t *httpTransport) post(ctx context.Context, data []byte, msg wire, isCall 
 		}
 		// Resume a response stream by GET. Repeating the POST could execute the
 		// operation twice even when the first response never reached this client.
-		resp, err = t.request(ctx, http.MethodGet, nil, cursor)
+		resp, err = t.request(ctx, http.MethodGet, nil, cursor, nil)
 		if err != nil {
 			return err
 		}
@@ -256,11 +265,11 @@ func (t *httpTransport) stream(ctx context.Context, resp *http.Response, request
 }
 func (t *httpTransport) startGET() {
 	t.getOnce.Do(func() {
-		_, _ = t.launch(t.p.ctx, func(ctx context.Context) error {
+		_, _ = t.launch(t.p.ctx, t.p.ctx, func(ctx context.Context) error {
 			cursor := ""
 			retry := time.Second
 			for ctx.Err() == nil {
-				resp, err := t.request(ctx, http.MethodGet, nil, cursor)
+				resp, err := t.request(ctx, http.MethodGet, nil, cursor, nil)
 				if errors.Is(err, errSessionExpired) {
 					t.p.fail(err)
 					return err
@@ -300,7 +309,7 @@ func (t *httpTransport) Close() error {
 		t.jobs.Wait()
 		if session != "" && !errors.Is(t.p.err(), errSessionExpired) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			resp, err := t.request(ctx, http.MethodDelete, nil, "")
+			resp, err := t.request(ctx, http.MethodDelete, nil, "", nil)
 			if err == nil {
 				resp.Body.Close()
 			}
