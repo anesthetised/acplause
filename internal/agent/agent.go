@@ -571,13 +571,20 @@ func (a *Agent) setConfigOption(_ context.Context, req acp.SetConfigOptionReques
 	if err != nil {
 		return nil, err
 	}
-	if err := s.SetConfigOption(req.ConfigID, req.Type, req.Value); err != nil {
+	// Hold the setup reservation lock through mode admission. Session.mu
+	// simultaneously fences queued prompts, including pre-insertion work.
+	a.mu.Lock()
+	err = s.setConfigOption(req.ConfigID, req.Type, req.Value, a.operations[req.SessionID] != nil)
+	a.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	model, effort := s.model, s.effort
 	s.mu.Unlock()
-	a.rememberSelection(model, effort)
+	if req.ConfigID != configMode {
+		a.rememberSelection(model, effort)
+	}
 	return acp.SetConfigOptionResponse{ConfigOptions: s.ConfigOptions()}, nil
 }
 

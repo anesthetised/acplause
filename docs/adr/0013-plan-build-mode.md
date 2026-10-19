@@ -1,6 +1,6 @@
 # ADR 0013: Expose a restrictive Plan mode through session configuration
 
-- Status: proposed; implementation contract prepared for the requested roadmap
+- Status: accepted; implemented with schema-validated tests; real-T3 validation pending (#38)
 - Date: 2026-10-19
 - Issues: [#33](https://github.com/anesthetised/acplause/issues/33), [#34](https://github.com/anesthetised/acplause/issues/34)
 - Scope change: Extends session config; retains ADR 0003 client-owned approval policy
@@ -40,5 +40,5 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
-Execution plan: [modes](../../tasks/t3/modes.md). The roadmap's request is to prepare this design, not implement it. Mark accepted when implementation is authorized; do not silently revise the contract in a small execution task.
+Execution plan: [modes](../../tasks/t3/modes.md). Issues #33 and #34 implement this contract. Automated tests cover both toggle directions, restart/resume, stale forbidden calls, queued work, pending setup and permission. The actual T3 client gate remains pending under #38; fake-client tests do not satisfy it.
 

@@ -1,13 +1,14 @@
 # Execution plan: Expose a restrictive Plan mode through session configuration
 
-Status: planned. Baseline: acplause `d9c99f1`, 2026-10-19.
+Status: implemented for #33/#34 with automated coverage; real-T3 gate (#38) pending.
+Baseline: acplause `d9c99f1`, 2026-10-19.
 Tracker: [#25](https://github.com/anesthetised/acplause/issues/25); task checkboxes live in GitHub Issues.
 Contract: [ADR 0013](../../docs/adr/0013-plan-build-mode.md).
 Read the [roadmap](../plan.md) for ordering and shared acceptance gates.
 
 ## Execution rules
 
-This is a planning deliverable; no feature is implemented by this document.
+This document records the implementation contract and verification workflow.
 Use GitHub issues as the authoritative task checklist. Each issue below is one
 bounded execution task; do not implement the whole roadmap in one run.
 

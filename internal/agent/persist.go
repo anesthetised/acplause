@@ -173,8 +173,18 @@ func (s *Session) flush() {
 	s.deps.log.Warn("saving session", "session", s.id, "err", err)
 }
 
-// flushAsync saves without blocking a handler on the read loop.
-func (s *Session) flushAsync() { go s.flush() }
+// flushAsync saves without blocking a handler on the read loop. Requires
+// s.mu so Close cannot release ownership before an admitted save finishes.
+func (s *Session) flushAsync() {
+	if s.closed {
+		return
+	}
+	s.saves.Add(1)
+	go func() {
+		defer s.saves.Done()
+		s.flush()
+	}()
+}
 
 // restoreSession rebuilds a session from the store. A session its last
 // process left mid-turn is repaired so every tool call has a result.
@@ -184,6 +194,7 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 		return nil, err
 	}
 	s.mode = cmp.Or(l.Mode, modeBuild)
+	s.history[0].Content = systemPrompt(s.cwd, s.dirs, s.instructions, s.mode)
 	s.id, s.title, s.updatedAt, s.cost = l.ID, l.Title, l.UpdatedAt, l.Cost
 	if c.has(l.Model) {
 		s.model = l.Model

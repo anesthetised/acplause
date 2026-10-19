@@ -10,6 +10,7 @@ import (
 
 // Config option ids.
 const (
+	configMode   = "mode"
 	configModel  = "model"
 	configEffort = "reasoning_effort"
 )
@@ -71,7 +72,7 @@ func (c *catalog) reasons(model string) bool {
 
 // options lists the config options for a session's current settings. The
 // effort option only exists for models that reason.
-func (c *catalog) options(model, effort string) []acp.ConfigOption {
+func (c *catalog) options(model, effort, mode string) []acp.ConfigOption {
 	choices := c.choices
 	if model == "" {
 		// ACP requires a currentValue even before the client selects a model.
@@ -95,7 +96,10 @@ func (c *catalog) options(model, effort string) []acp.ConfigOption {
 			Options:      efforts,
 		})
 	}
-	return options
+	return append(options, acp.ConfigOption{
+		ConfigID: configMode, Name: "Mode", Category: "mode", Type: acp.ConfigTypeSelect, CurrentValue: mode,
+		Options: []acp.ConfigOptionValue{{Value: modeBuild, Name: "Build"}, {Value: modePlan, Name: "Plan"}},
+	})
 }
 
 func validEffort(effort string) bool {

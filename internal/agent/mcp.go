@@ -21,6 +21,7 @@ import (
 // A later resume cannot redirect a response from this request to a new server.
 type modelRound struct {
 	llm.Request
+	mode     string // execution policy at the time tools were advertised
 	bindings map[string]mcp.Tool
 }
 

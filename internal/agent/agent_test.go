@@ -175,7 +175,7 @@ func TestCatalog(t *testing.T) {
 	if want := []string{"a/plain", "b/reasons", "d/unknown"}; !slices.Equal(ids, want) {
 		t.Fatalf("choices %v, want %v", ids, want)
 	}
-	if len(c.options("b/reasons", effortDefault)) != 2 || len(c.options("a/plain", effortDefault)) != 1 || len(c.options("d/unknown", effortDefault)) != 1 {
+	if len(c.options("b/reasons", effortDefault, modeBuild)) != 3 || len(c.options("a/plain", effortDefault, modeBuild)) != 2 || len(c.options("d/unknown", effortDefault, modeBuild)) != 2 {
 		t.Fatal("reasoning effort must be offered only for models known to reason")
 	}
 	if c.contextLength("b/reasons") != 100 || c.contextLength("d/unknown") != 0 {

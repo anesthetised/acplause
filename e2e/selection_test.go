@@ -44,7 +44,7 @@ func TestRememberLastSelection(t *testing.T) {
 	b.ok("session/close", map[string]any{"sessionId": selected.SessionID}, nil)
 	b.ok("session/delete", map[string]any{"sessionId": old}, nil)
 	latest := b.newSession(cwd)
-	if len(latest.ConfigOptions) != 1 || latest.ConfigOptions[0].CurrentValue != "test/plain" {
+	if len(latest.ConfigOptions) != 2 || latest.ConfigOptions[0].CurrentValue != "test/plain" {
 		t.Fatalf("last selection was overwritten: %+v", latest.ConfigOptions)
 	}
 }
@@ -66,7 +66,7 @@ func TestRememberedModelUnavailable(t *testing.T) {
 			b.initialize()
 			session := b.newSession(t.TempDir())
 			model := configByID(t, session.ConfigOptions, "model")
-			if len(session.ConfigOptions) != 1 || model.CurrentValue != "" || model.Options[0].Name != "Select a model" {
+			if len(session.ConfigOptions) != 2 || model.CurrentValue != "" || model.Options[0].Name != "Select a model" {
 				t.Fatalf("unavailable remembered model: %+v", session.ConfigOptions)
 			}
 			b.fails("session/prompt", map[string]any{"sessionId": session.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "do not pick a default"}}}, -32602)

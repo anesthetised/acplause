@@ -74,9 +74,10 @@ type Session struct {
 	// Persistence (persist.go). flushMu serialises saves and is taken
 	// before mu.
 	flushMu sync.Mutex
-	saved   int          // history messages after the system prompt already stored
-	dirty   map[int]bool // transcript entries changed since the last save
-	lost    bool         // another process took the session over
+	saves   sync.WaitGroup // admitted under mu; Close waits before releasing ownership
+	saved   int            // history messages after the system prompt already stored
+	dirty   map[int]bool   // transcript entries changed since the last save
+	lost    bool           // another process took the session over
 }
 
 // submission is a prompt waiting for insertion.
@@ -111,7 +112,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		mode:         modeBuild,
 		effort:       effortDefault,
 		updatedAt:    time.Now(),
-		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions)}},
+		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions, modeBuild)}},
 		state:        acp.StateUpdate{State: acp.StateIdle},
 		dirty:        map[int]bool{},
 		planIndex:    map[string]int{},
@@ -180,6 +181,7 @@ func (s *Session) Close() {
 		<-worker
 	}
 	s.cancel()
+	s.saves.Wait()
 	s.closeToolbox(s.toolbox)
 }
 
@@ -224,7 +226,7 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 	if changed {
 		old = s.toolbox
 		s.toolbox, s.dirs = toolbox, dirs
-		s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions)
+		s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions, s.mode)
 		if old == s.activeToolbox {
 			old = nil
 		}
@@ -271,11 +273,17 @@ func (s *Session) closeToolbox(tb *tools.Toolbox) {
 func (s *Session) ConfigOptions() []acp.ConfigOption {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.catalog.options(s.model, s.effort)
+	return s.catalog.options(s.model, s.effort, s.mode)
 }
 
-// SetConfigOption changes a setting; the next model request uses it.
+// SetConfigOption changes a setting; mode transitions additionally require an
+// idle session. Protocol handlers also fence lifecycle setup reservations.
 func (s *Session) SetConfigOption(id, valueType string, raw json.RawMessage) error {
+	return s.setConfigOption(id, valueType, raw, false)
+}
+
+// setConfigOption admits a mode change under the same locks as setup and prompts.
+func (s *Session) setConfigOption(id, valueType string, raw json.RawMessage, setupPending bool) error {
 	var value string
 	if valueType != acp.ConfigValueID || json.Unmarshal(raw, &value) != nil {
 		return acp.ErrInvalidParams("%s takes an id value", id)
@@ -283,6 +291,21 @@ func (s *Session) SetConfigOption(id, valueType string, raw json.RawMessage) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch id {
+	case configMode:
+		if value != modeBuild && value != modePlan {
+			return acp.ErrInvalidParams("unknown execution mode %q", value)
+		}
+		if s.mode == value {
+			return nil
+		}
+		if setupPending || s.worker != nil || len(s.queue) > 0 || s.state.State != acp.StateIdle {
+			return acp.ErrInvalidParams("cannot change mode while the session is busy; cancel or wait for work and setup to finish, then retry")
+		}
+		if s.closed || s.lost {
+			return acp.ErrInvalidParams("cannot change mode on a closed or lost session")
+		}
+		s.mode = value
+		s.history[0].Content = systemPrompt(s.cwd, s.dirs, s.instructions, s.mode)
 	case configModel:
 		if !s.catalog.has(value) {
 			return acp.ErrInvalidParams("unknown model %q", value)
