@@ -44,6 +44,22 @@ func collect(t *testing.T, c *Client) (*Completion, []Delta, error) {
 	return comp, deltas, err
 }
 
+func TestChatOutputBudget(t *testing.T) {
+	for _, limit := range []uint64{0, 4096} {
+		body, err := json.Marshal(newChatBody(Request{MaxTokens: limit}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(body, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if limit == 0 && wire["max_tokens"] != nil || limit != 0 && wire["max_tokens"] != float64(limit) {
+			t.Fatalf("max_tokens=%d: %s", limit, body)
+		}
+	}
+}
+
 func TestChatStreamsTextReasoningAndUsage(t *testing.T) {
 	var body map[string]any
 	c := serve(t, func(w http.ResponseWriter, r *http.Request) {

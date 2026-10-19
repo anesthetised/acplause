@@ -18,6 +18,8 @@ type Request struct {
 	Model    string
 	Messages []Message
 	Tools    []Tool
+	// MaxTokens caps output, including reasoning. Zero leaves the provider default.
+	MaxTokens uint64
 	// ReasoningEffort is sent as reasoning.effort when non-empty.
 	ReasoningEffort string
 }
