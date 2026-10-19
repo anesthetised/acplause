@@ -40,6 +40,10 @@ func requestSize(req llm.Request) uint64 {
 // replace history. The current user prompt is never shortened.
 func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRound, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return modelRound{}, err
+		}
+		s.mcp.Recover(ctx)
 		round := s.request()
 		req := &round.Request
 		window := s.catalog.contextLength(req.Model)

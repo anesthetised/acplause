@@ -65,6 +65,7 @@ func (t Tool) Call(ctx context.Context, args string) (Result, error) {
 }
 
 type server struct {
+	recoveryAttempted bool
 	cfg               Config
 	peer              *peer
 	hasTools          bool
@@ -89,6 +90,8 @@ func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *s
 	switch cfg.Type {
 	case "stdio":
 		t, err = startStdio(p, cfg, cwd)
+	case "http":
+		t = newHTTP(p, cfg)
 	default:
 		err = errors.New("unsupported MCP transport")
 	}
@@ -99,6 +102,8 @@ func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *s
 	p.t = t
 	switch t := t.(type) {
 	case *stdioTransport:
+		t.start()
+	case *httpTransport:
 		t.start()
 	}
 	s := &server{cfg: cfg, peer: p, log: log}
@@ -439,3 +444,47 @@ func (m *Manager) Close() {
 	close(m.closeDone)
 }
 
+// Recover gives an expired HTTP session one bounded recovery attempt for future
+// rounds. Existing bindings remain revoked, even if their aliases reappear.
+func (m *Manager) Recover(ctx context.Context) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	var expired []*server
+	for _, s := range m.servers {
+		if s.cfg.Type == "http" && !s.recoveryAttempted && errors.Is(s.peer.err(), errSessionExpired) {
+			s.recoveryAttempted = true
+			expired = append(expired, s)
+		}
+	}
+	if len(expired) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	m.preparing.Add(1)
+	m.mu.Unlock()
+	defer m.preparing.Done()
+	for _, old := range expired {
+		setup, cancel := context.WithTimeout(ctx, discoveryTimeout)
+		next, err := connectServer(setup, m.ctx, old.cfg, m.cwd, m.log)
+		cancel()
+		if err != nil {
+			m.log.Warn("MCP HTTP session recovery failed", "server", old.cfg.Name)
+			continue
+		}
+		m.mu.Lock()
+		index := slices.Index(m.servers, old)
+		if m.closed || index < 0 || ctx.Err() != nil {
+			m.mu.Unlock()
+			next.close()
+			continue
+		}
+		m.resources[next] = true
+		m.servers[index] = next
+		m.revision++
+		m.mu.Unlock()
+		go m.closeResource(old)
+	}
+}
