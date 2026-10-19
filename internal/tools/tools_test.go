@@ -227,6 +227,35 @@ func TestWriteFileAndEdit(t *testing.T) {
 	}
 }
 
+func TestWriteArgumentsRequireExplicitContent(t *testing.T) {
+	for _, tc := range []struct{ name, args string }{
+		{"write_file", `{"path":"a.txt"}`},
+		{"write_file", `{"path":"a.txt","content":null}`},
+		{"edit", `{"path":"a.txt","old_text":"keep"}`},
+		{"edit", `{"path":"a.txt","old_text":"keep","new_text":null}`},
+	} {
+		t.Run(tc.name+tc.args, func(t *testing.T) {
+			w := newWorkspace(t, Options{})
+			p := w.write("a.txt", "keep")
+			if call, err := w.tb.Prepare(tc.name, tc.args); err == nil {
+				t.Errorf("accepted missing content: %+v", call.Run(context.Background()))
+			}
+			if data, err := os.ReadFile(p); err != nil || string(data) != "keep" {
+				t.Fatalf("invalid call changed file: %q, %v", data, err)
+			}
+		})
+	}
+	w := newWorkspace(t, Options{})
+	w.ok("write_file", map[string]string{"path": "empty.txt", "content": ""})
+	w.write("a.txt", "keep")
+	w.ok("edit", map[string]string{"path": "a.txt", "old_text": "keep", "new_text": ""})
+	for _, name := range []string{"empty.txt", "a.txt"} {
+		if data, err := os.ReadFile(filepath.Join(w.cwd, name)); err != nil || len(data) != 0 {
+			t.Errorf("explicit empty content: %q, %v", data, err)
+		}
+	}
+}
+
 func TestBash(t *testing.T) {
 	w := newWorkspace(t, Options{})
 	if got := w.ok("bash", map[string]string{"command": "pwd; echo err >&2"}); got != w.cwd+"\nerr\n" && got != "/private"+w.cwd+"\nerr\n" {
