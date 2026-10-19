@@ -59,6 +59,10 @@ func (c *catalog) outputLimit(model string) uint64 {
 	return c.models[model].TopProvider.MaxCompletionTokens
 }
 
+// vision reports whether the model is known to accept images. Unlike
+// parameters, missing modality metadata is unknown, not support (ADR 0009).
+func (c *catalog) vision(model string) bool { return c.models[model].Vision() }
+
 // reasons reports whether the model is known to take a reasoning effort.
 func (c *catalog) reasons(model string) bool {
 	m := c.models[model]
