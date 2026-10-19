@@ -66,8 +66,8 @@ func TestPrepareTrimsOldToolOutputFirst(t *testing.T) {
 	if len(req.Messages[3].Content) > 2048 || !strings.Contains(req.Messages[3].Content, "omitted") || req.Messages[5].Content != latest {
 		t.Fatal("did not trim the oldest result first")
 	}
-	if requestSize(req) > 12000 || req.MaxTokens != 4000 || remaining != 3 || len(out) != 0 {
-		t.Fatalf("unexpected budget or summary: size=%d, remaining=%d", requestSize(req), remaining)
+	if requestSize(req.Request) > 12000 || req.MaxTokens != 4000 || remaining != 3 || len(out) != 0 {
+		t.Fatalf("unexpected budget or summary: size=%d, remaining=%d", requestSize(req.Request), remaining)
 	}
 	assertToolPairs(t, req.Messages)
 	if !reflect.DeepEqual(s.history, req.Messages) {
@@ -102,8 +102,8 @@ func TestCompactionKeepsLatestPromptAndToolExchange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls < 2 || remaining != 10-calls || requestSize(req) > 12000 {
-		t.Fatalf("chunked compaction: calls=%d remaining=%d size=%d", calls, remaining, requestSize(req))
+	if calls < 2 || remaining != 10-calls || requestSize(req.Request) > 12000 {
+		t.Fatalf("chunked compaction: calls=%d remaining=%d size=%d", calls, remaining, requestSize(req.Request))
 	}
 	if req.Messages[1].Role != llm.RoleAssistant || !strings.Contains(req.Messages[1].Content, "Remember") || !reflect.DeepEqual(req.Messages[2:], keep) {
 		t.Fatalf("retained history: %+v", req.Messages)
@@ -189,7 +189,7 @@ func TestCompactionUsesNewConfigAfterSummary(t *testing.T) {
 		if err := s.SetConfigOption(configModel, acp.ConfigValueID, []byte(`"other"`)); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Resume([]string{t.TempDir()}, false); err != nil {
+		if err := s.Resume(context.Background(), []string{t.TempDir()}, nil, false); err != nil {
 			t.Fatal(err)
 		}
 		return &llm.Completion{Content: "summary", FinishReason: llm.FinishStop}, nil

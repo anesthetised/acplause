@@ -22,6 +22,7 @@ import (
 const timeout = 10 * time.Second
 
 var binary string
+var mcpBinary string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "acplause-e2e")
@@ -37,6 +38,13 @@ func TestMain(m *testing.M) {
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "building acplause:", err)
+		os.Exit(1)
+	}
+	mcpBinary = filepath.Join(dir, "mcp-fixture")
+	build = exec.Command("go", "build", "-o", mcpBinary, "./testdata/mcp")
+	build.Stdout, build.Stderr = os.Stderr, os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "building MCP fixture:", err)
 		os.Exit(1)
 	}
 	code := m.Run()

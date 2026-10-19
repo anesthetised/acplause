@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -13,17 +14,19 @@ import (
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
+	"github.com/anesthetised/acplause/internal/mcp"
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
 // deps is what sessions share with the agent.
 type deps struct {
-	out       Client
-	model     Model
-	maxRounds int
-	tools     tools.Options
-	log       *slog.Logger
-	store     Store // nil keeps sessions in memory only
+	out        Client
+	model      Model
+	maxRounds  int
+	mcpTimeout time.Duration
+	tools      tools.Options
+	log        *slog.Logger
+	store      Store // nil keeps sessions in memory only
 }
 
 // Session is one conversation. Prompts queue up and run one turn at a time
@@ -41,6 +44,7 @@ type Session struct {
 
 	mu            sync.Mutex
 	dirs          []string
+	mcp           *mcp.Manager
 	toolbox       *tools.Toolbox
 	activeToolbox *tools.Toolbox // retained by the single worker until its current tool returns
 	model         string
@@ -92,6 +96,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		cancel:       cancel,
 		dirs:         dirs,
 		toolbox:      toolbox,
+		mcp:          mcp.New(ctx, cwd),
 		effort:       effortDefault,
 		updatedAt:    time.Now(),
 		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions)}},
@@ -152,6 +157,7 @@ func (s *Session) Close() {
 	s.mu.Unlock()
 
 	s.Cancel()
+	s.mcp.Close()
 	if worker != nil {
 		<-worker
 	}
@@ -161,19 +167,48 @@ func (s *Session) Close() {
 
 // Resume reattaches the client: it replaces the additional directories,
 // optionally replays the history, and reports the current state.
-func (s *Session) Resume(dirs []string, replay bool) error {
+func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPServer, replay bool) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !slices.Equal(dirs, s.dirs) {
-		toolbox, err := tools.New(s.cwd, dirs, s.deps.tools)
+	changed := !slices.Equal(dirs, s.dirs)
+	s.mu.Unlock()
+	var toolbox *tools.Toolbox
+	var err error
+	if changed {
+		toolbox, err = tools.New(s.cwd, dirs, s.deps.tools)
 		if err != nil {
 			return err
 		}
-		old := s.toolbox
+	}
+	change, err := s.mcp.Prepare(ctx, mcpConfigs(servers))
+	if err != nil {
+		if toolbox != nil {
+			s.closeToolbox(toolbox)
+		}
+		return err
+	}
+	defer change.Discard()
+	s.mu.Lock()
+	if s.closed || s.lost || ctx.Err() != nil {
+		s.mu.Unlock()
+		if toolbox != nil {
+			s.closeToolbox(toolbox)
+		}
+		return errors.New("session setup was cancelled")
+	}
+	if err = change.Commit(); err != nil {
+		s.mu.Unlock()
+		if toolbox != nil {
+			s.closeToolbox(toolbox)
+		}
+		return err
+	}
+	var old *tools.Toolbox
+	if changed {
+		old = s.toolbox
 		s.toolbox, s.dirs = toolbox, dirs
 		s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions)
-		if old != s.activeToolbox {
-			s.closeToolbox(old)
+		if old == s.activeToolbox {
+			old = nil
 		}
 		s.flushAsync()
 	}
@@ -183,6 +218,10 @@ func (s *Session) Resume(dirs []string, replay bool) error {
 		}
 	}
 	s.send(s.state)
+	s.mu.Unlock()
+	if old != nil {
+		s.closeToolbox(old)
+	}
 	return nil
 }
 

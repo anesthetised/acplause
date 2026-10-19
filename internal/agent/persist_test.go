@@ -99,7 +99,7 @@ func TestPromptSaveDoesNotBlockSessionHandlers(t *testing.T) {
 			done <- err
 			return
 		}
-		if err := s.Resume(nil, true); err != nil {
+		if err := s.Resume(context.Background(), nil, nil, true); err != nil {
 			done <- err
 			return
 		}

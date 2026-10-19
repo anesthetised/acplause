@@ -42,11 +42,12 @@ type ListModels func(ctx context.Context) ([]llm.Model, error)
 
 // Config configures an Agent. Zero values select defaults.
 type Config struct {
-	Info      acp.Implementation
-	MaxRounds int // model requests per turn; default 25
-	Tools     tools.Options
-	Log       *slog.Logger
-	Store     Store // required: where sessions are kept
+	Info       acp.Implementation
+	MaxRounds  int            // model requests per turn; default 25
+	MCPTimeout *time.Duration // nil selects 10m; zero disables the tool deadline
+	Tools      tools.Options
+	Log        *slog.Logger
+	Store      Store // required: where sessions are kept
 }
 
 const (
@@ -77,9 +78,13 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	mcpTimeout := 10 * time.Minute
+	if cfg.MCPTimeout != nil {
+		mcpTimeout = *cfg.MCPTimeout
+	}
 	a := &Agent{
 		cfg:      cfg,
-		deps:     deps{out: out, model: model, maxRounds: cfg.MaxRounds, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
+		deps:     deps{out: out, model: model, maxRounds: cfg.MaxRounds, mcpTimeout: mcpTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
 		ctx:      ctx,
 		cancel:   cancel,
 		sessions: make(map[string]*Session),
@@ -202,6 +207,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 		Info:            a.cfg.Info,
 		Capabilities: acp.AgentCapabilities{
 			Session: &acp.SessionCapabilities{
+				MCP:                   &acp.MCPCapabilities{Stdio: &acp.Supported{}},
 				Prompt:                &acp.PromptCapabilities{EmbeddedContext: &acp.Supported{}},
 				AdditionalDirectories: &acp.Supported{},
 				Delete:                &acp.Supported{},
@@ -212,7 +218,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 
 // newSession waits for the catalog and earlier model selections off the
 // read loop, then creates a session with the last available user choice.
-func (a *Agent) newSession(_ context.Context, req acp.NewSessionRequest) (any, error) {
+func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any, error) {
 	reply := jsonrpc.NewReply()
 	saved := a.pendingSelection()
 	go func() {
@@ -227,6 +233,15 @@ func (a *Agent) newSession(_ context.Context, req acp.NewSessionRequest) (any, e
 		s, err := newSession(a.ctx, a.deps, c, req.Cwd, req.AdditionalDirectories)
 		if err != nil {
 			reply.Reject(acp.ErrInvalidParams("cannot open workspace: %v", err))
+			return
+		}
+		change, err := s.mcp.Prepare(ctx, mcpConfigs(req.MCPServers))
+		if err == nil {
+			err = change.Commit()
+		}
+		if err != nil {
+			s.Close()
+			reply.Reject(acp.ErrInvalidParams("cannot configure MCP servers: %v", err))
 			return
 		}
 		model, effort, err := a.cfg.Store.Selection(a.ctx)
@@ -301,7 +316,7 @@ func (a *Agent) listSessions(_ context.Context, req acp.ListSessionsRequest) (an
 
 // resumeSession takes the session over in the store, which also renews this
 // process's own lease, and loads it unless it is already open here.
-func (a *Agent) resumeSession(_ context.Context, req acp.ResumeSessionRequest) (any, error) {
+func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest) (any, error) {
 	replay := req.ReplayFrom != nil
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
 		return nil, acp.ErrInvalidParams("unsupported replayFrom type %q", req.ReplayFrom.Type)
@@ -313,7 +328,7 @@ func (a *Agent) resumeSession(_ context.Context, req acp.ResumeSessionRequest) (
 			reply.Reject(err)
 			return
 		}
-		if err := s.Resume(req.AdditionalDirectories, replay); err != nil {
+		if err := s.Resume(ctx, req.AdditionalDirectories, req.MCPServers, replay); err != nil {
 			reply.Reject(acp.ErrInvalidParams("cannot open workspace: %v", err))
 			return
 		}
