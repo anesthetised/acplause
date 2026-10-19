@@ -16,10 +16,14 @@ Paths are relative to the working directory unless absolute. Keep answers concis
 
 Working directory: %s`
 
-func systemPrompt(cwd string, dirs []string) string {
+// systemPrompt appends the workspace's AGENTS.md, when there is one.
+func systemPrompt(cwd string, dirs []string, instructions string) string {
 	prompt := fmt.Sprintf(systemTemplate, cwd)
 	if len(dirs) > 0 {
 		prompt += "\nAdditional directories: " + strings.Join(dirs, ", ")
+	}
+	if instructions != "" {
+		prompt += "\n\nProject instructions (AGENTS.md):\n\n" + instructions
 	}
 	return prompt
 }

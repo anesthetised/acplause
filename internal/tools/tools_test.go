@@ -274,3 +274,32 @@ func TestBash(t *testing.T) {
 		t.Fatalf("title: %q", call.Title)
 	}
 }
+
+func TestInstructions(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	ctx := context.Background()
+	if got, err := w.tb.Instructions(ctx); got != "" || err != nil {
+		t.Fatalf("missing file: %q, %v", got, err)
+	}
+	w.write("AGENTS.md", "Use tabs.\n")
+	if got, err := w.tb.Instructions(ctx); got != "Use tabs." || err != nil {
+		t.Fatalf("present file: %q, %v", got, err)
+	}
+	w.write("AGENTS.md", strings.Repeat("x", maxInstructionsSize+1))
+	if _, err := w.tb.Instructions(ctx); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("oversized file: %v", err)
+	}
+	w.write("AGENTS.md", "\xff\xfe")
+	if _, err := w.tb.Instructions(ctx); err == nil {
+		t.Fatal("binary file accepted")
+	}
+	if err := os.Remove(filepath.Join(w.cwd, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(w.cwd, "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.tb.Instructions(ctx); err == nil {
+		t.Fatal("directory accepted")
+	}
+}

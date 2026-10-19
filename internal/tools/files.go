@@ -15,11 +15,29 @@ import (
 )
 
 const (
-	maxReadSize  = 1 << 20 // read_file and search_code skip larger files
-	maxWriteSize = 5 << 20
-	maxListDepth = 3
-	maxListItems = 200
+	maxReadSize         = 1 << 20 // read_file and search_code skip larger files
+	maxWriteSize        = 5 << 20
+	maxInstructionsSize = 32 << 10 // AGENTS.md is prompt overhead on every request
+	maxListDepth        = 3
+	maxListItems        = 200
 )
+
+// Instructions returns the contents of AGENTS.md at the working directory
+// root, or "" when there is none. A file that is not a regular text file or
+// exceeds the size cap is an error, for the caller to log and skip.
+func (tb *Toolbox) Instructions(ctx context.Context) (string, error) {
+	t := tb.roots.within(tb.roots.roots[0], "AGENTS.md")
+	data, err := t.readFile(ctx, maxInstructionsSize)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case err != nil:
+		return "", err
+	case !utf8.Valid(data):
+		return "", errors.New("AGENTS.md is not a text file")
+	}
+	return strings.TrimSpace(string(data)), nil
+}
 
 // ignored names noise that list_dir and search_code skip.
 func ignored(name string) bool {

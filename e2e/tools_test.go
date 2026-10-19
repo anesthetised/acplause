@@ -304,3 +304,34 @@ func TestFileToolsReportDiffs(t *testing.T) {
 		t.Errorf("failed edit must not report a diff: %+v", failed)
 	}
 }
+
+func TestAgentsMDJoinsTheSystemPrompt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, content string
+		want          bool
+	}{
+		{"present", "Always use tabs.\n", true},
+		{"oversized", strings.Repeat("x", 64<<10), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			llm := newMockLLM(t)
+			llm.enqueue(reply("ok"))
+			a := start(t, llm)
+			a.initialize()
+			cwd := t.TempDir()
+			if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sid := a.newSession(cwd).SessionID
+			a.ok("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": "test/model"}, nil)
+			a.accepted(a.prompt(sid, "hi"))
+			a.untilIdle(sid)
+			system, _ := llm.request(0).Messages[0]["content"].(string)
+			if got := strings.Contains(system, "Project instructions (AGENTS.md)"); got != tc.want || got != strings.Contains(system, strings.TrimSpace(tc.content)) {
+				t.Fatalf("instructions in system prompt = %v, want %v:\n%s", got, tc.want, system)
+			}
+		})
+	}
+}

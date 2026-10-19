@@ -66,6 +66,12 @@ Read, write and edit operations accept regular files only; pipes and devices
 are rejected. `write_file.content` and `edit.new_text` must be explicit
 strings: an empty string is valid, but an omitted or null value is an error.
 
+`AGENTS.md` at the root of the session's `cwd` is appended to the system
+prompt, read once when the session is created. Only that file, with no
+`CLAUDE.md` fallback and no parent directories. A missing file changes
+nothing; one that is not a regular text file or exceeds 32 KiB is skipped
+with a log line.
+
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
 already running keeps its roots until it finishes.
