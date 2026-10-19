@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -109,6 +111,40 @@ func TestCancelledTurnEndsIdleCancelled(t *testing.T) {
 	updates := out.untilIdle(t)
 	if idle := updates[len(updates)-1].(acp.StateUpdate); idle.StopReason != acp.StopCancelled || idle.Error != nil {
 		t.Fatalf("idle: %+v", idle)
+	}
+}
+
+func TestResumeRetainsRootsUntilActiveToolFinishes(t *testing.T) {
+	s, _ := testSession(t, nil)
+	if err := os.WriteFile(filepath.Join(s.cwd, "a.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	active := s.acquireToolbox()
+	call, err := active.Prepare("read_file", `{"path":"a.txt"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Several resumes must retain only the roots still used by this call.
+	for range 2 {
+		if err := s.Resume([]string{t.TempDir()}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := call.Run(context.Background()); got.Failed || got.Output != "content" {
+		t.Fatalf("resume interrupted a prepared tool: %+v", got)
+	}
+	s.releaseToolbox(active)
+	if got := call.Run(context.Background()); !got.Failed {
+		t.Fatal("retired roots remain open after tool completion")
+	}
+	current := s.acquireToolbox()
+	defer s.releaseToolbox(current)
+	call, err = current.Prepare("read_file", `{"path":"a.txt"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := call.Run(context.Background()); got.Failed || got.Output != "content" {
+		t.Fatalf("current roots were closed: %+v", got)
 	}
 }
 

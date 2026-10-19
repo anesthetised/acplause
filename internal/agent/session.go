@@ -36,21 +36,22 @@ type Session struct {
 	ctx    context.Context // cancelled by Close
 	cancel context.CancelFunc
 
-	mu         sync.Mutex
-	dirs       []string
-	toolbox    *tools.Toolbox
-	model      string
-	effort     string
-	title      string
-	updatedAt  time.Time
-	cost       float64         // cumulative USD
-	history    []llm.Message   // what the model sees
-	transcript []acp.Update    // what the client saw, for replay
-	state      acp.StateUpdate // last reported foreground state
-	queue      []*submission   // prompts not yet inserted
-	worker     chan struct{}   // closed when the running worker exits; nil when idle
-	stopTurn   context.CancelFunc
-	closed     bool
+	mu            sync.Mutex
+	dirs          []string
+	toolbox       *tools.Toolbox
+	activeToolbox *tools.Toolbox // retained by the single worker until its current tool returns
+	model         string
+	effort        string
+	title         string
+	updatedAt     time.Time
+	cost          float64         // cumulative USD
+	history       []llm.Message   // what the model sees
+	transcript    []acp.Update    // what the client saw, for replay
+	state         acp.StateUpdate // last reported foreground state
+	queue         []*submission   // prompts not yet inserted
+	worker        chan struct{}   // closed when the running worker exits; nil when idle
+	stopTurn      context.CancelFunc
+	closed        bool
 }
 
 // submission is a prompt waiting for insertion.
@@ -135,9 +136,7 @@ func (s *Session) Close() {
 		<-worker
 	}
 	s.cancel()
-	if err := s.toolbox.Close(); err != nil {
-		s.deps.log.Warn("closing workspace", "session", s.id, "err", err)
-	}
+	s.closeToolbox(s.toolbox)
 }
 
 // Resume reattaches the client: it replaces the additional directories,
@@ -153,8 +152,8 @@ func (s *Session) Resume(dirs []string, replay bool) error {
 		old := s.toolbox
 		s.toolbox, s.dirs = toolbox, dirs
 		s.history[0].Content = systemPrompt(s.cwd, dirs)
-		if err := old.Close(); err != nil {
-			s.deps.log.Warn("closing workspace", "session", s.id, "err", err)
+		if old != s.activeToolbox {
+			s.closeToolbox(old)
 		}
 	}
 	if replay {
@@ -164,6 +163,30 @@ func (s *Session) Resume(dirs []string, replay bool) error {
 	}
 	s.send(s.state)
 	return nil
+}
+
+// acquireToolbox pins the current roots for one tool, not for an entire
+// model request. Resume can change the roots while the model is streaming.
+func (s *Session) acquireToolbox() *tools.Toolbox {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeToolbox = s.toolbox
+	return s.toolbox
+}
+
+func (s *Session) releaseToolbox(tb *tools.Toolbox) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeToolbox = nil
+	if tb != s.toolbox {
+		s.closeToolbox(tb)
+	}
+}
+
+func (s *Session) closeToolbox(tb *tools.Toolbox) {
+	if err := tb.Close(); err != nil {
+		s.deps.log.Warn("closing workspace", "session", s.id, "err", err)
+	}
 }
 
 // Info describes the session for session/list.
