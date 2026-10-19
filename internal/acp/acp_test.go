@@ -51,7 +51,7 @@ func TestSessionNotificationPutsDiscriminatorFirst(t *testing.T) {
 }
 
 func TestContentBlockRoundTripsUnknownBlocks(t *testing.T) {
-	in := `[{"type":"text","text":"hi","annotations":{"priority":1}},{"type":"_custom","payload":[1,2],"resource":"not an object"},{"type":"resource_link","uri":"file:///a.go","name":"a.go"}]`
+	in := `[{"type":"text","text":"hi","annotations":{"priority":1}},{"type":"_custom","payload":[1,2],"resource":"not an object","data":{},"mimeType":[]},{"type":"resource_link","uri":"file:///a.go","name":"a.go"},{"type":"image","data":"YWJj","mimeType":"image/png","uri":"file:///a.png","_future":true}]`
 	var blocks []ContentBlock
 	if err := json.Unmarshal([]byte(in), &blocks); err != nil {
 		t.Fatal(err)
@@ -59,12 +59,26 @@ func TestContentBlockRoundTripsUnknownBlocks(t *testing.T) {
 	if blocks[0].Text != "hi" || blocks[1].Type != "_custom" || blocks[2].URI != "file:///a.go" {
 		t.Fatalf("unexpected parse: %+v", blocks)
 	}
+	if blocks[3].Data != "YWJj" || blocks[3].MimeType != "image/png" {
+		t.Fatal("image fields were not parsed")
+	}
 	out, err := json.Marshal(blocks)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(out) != in {
 		t.Fatalf("round trip changed blocks:\n got %s\nwant %s", out, in)
+	}
+}
+
+func TestContentImageEncoding(t *testing.T) {
+	b, err := jsonrpc.Marshal(ContentBlock{Type: ContentImage, Data: "YWJj", MimeType: "image/png"})
+	if err != nil || string(b) != `{"type":"image","data":"YWJj","mimeType":"image/png"}` {
+		t.Fatalf("image encoding = %s, %v", b, err)
+	}
+	var block ContentBlock
+	if err := json.Unmarshal([]byte(`{"type":"image","data":{},"mimeType":"image/png"}`), &block); err == nil {
+		t.Fatal("malformed image fields accepted")
 	}
 }
 

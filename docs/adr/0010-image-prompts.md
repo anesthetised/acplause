@@ -1,14 +1,16 @@
 # ADR 0010: Accept user image prompts, including T3 clipboard attachments
 
-- Status: proposed; implementation contract prepared for the requested roadmap
+- Status: accepted; ACP prompt path implemented in #28, actual T3 smoke pending #38
 - Date: 2026-10-19
 - Issues: [#28](https://github.com/anesthetised/acplause/issues/28)
-- Scope change: ADR 0001 text-only prompt scope for validated PNG/JPEG images, when implemented
+- Scope change: ADR 0001 text-only prompt scope for validated PNG/JPEG images
 - Baseline: acplause `d9c99f1`; ACP `2.0.0-alpha.9` at `3be9cfc8ea2dfe5a28973b461fd956b4045f24d3`
 
 ## Context
 
-T3 can turn a pasted clipboard screenshot into an ACP image block. acplause currently omits image capability and promptText skips such blocks. Tool images (#23) do not enable clipboard or uploaded user attachments.
+T3 can turn a pasted clipboard screenshot into an ACP image block. Before
+#28, acplause omitted image capability and promptText skipped such blocks.
+Tool images (#23) do not enable clipboard or uploaded user attachments.
 
 ## Decisions
 
@@ -38,5 +40,9 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
-Execution plan: [prompts](../../tasks/t3/prompts.md). The roadmap's request is to prepare this design, not implement it. Mark accepted when implementation is authorized; do not silently revise the contract in a small execution task.
+Execution plan: [prompts](../../tasks/t3/prompts.md). #28 implements admission,
+projection, capability advertisement and restart/replay, with schema-valid e2e
+and in-package coverage. Actual T3 clipboard and upload observations remain
+unverified under [#38](https://github.com/anesthetised/acplause/issues/38);
+automated tests are not evidence of the real-client gate.
 

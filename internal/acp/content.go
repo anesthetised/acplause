@@ -10,6 +10,7 @@ import (
 // Content block types acplause understands. Others are carried opaquely.
 const (
 	ContentText         = "text"
+	ContentImage        = "image"
 	ContentResourceLink = "resource_link"
 	ContentResource     = "resource"
 )
@@ -18,10 +19,12 @@ const (
 // their exact JSON, so echoing a user's prompt back preserves unknown types
 // and fields; the parsed fields cover what the agent reads.
 type ContentBlock struct {
-	Type string
-	Text string // text
-	URI  string // resource_link
-	Name string // resource_link
+	Type     string
+	Text     string // text
+	URI      string // resource_link
+	Name     string // resource_link
+	Data     string // image, base64-encoded
+	MimeType string // image
 
 	Resource *Resource // resource
 
@@ -56,6 +59,12 @@ func (b ContentBlock) MarshalJSON() ([]byte, error) {
 			URI  string `json:"uri"`
 			Name string `json:"name"`
 		}{b.Type, b.URI, b.Name})
+	case ContentImage:
+		return jsonrpc.Marshal(struct {
+			Type     string `json:"type"`
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
+		}{b.Type, b.Data, b.MimeType})
 	}
 	return nil, errors.New("acp: cannot encode content block of type " + b.Type)
 }
@@ -81,14 +90,27 @@ func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 			return err
 		}
 	}
+	// Image payload fields belong only to the known image variant; future
+	// block types may use the same field names with different shapes.
+	var image struct {
+		Data     string `json:"data"`
+		MimeType string `json:"mimeType"`
+	}
+	if fields.Type == ContentImage {
+		if err := json.Unmarshal(data, &image); err != nil {
+			return err
+		}
+	}
 	if fields.Type == "" {
 		return errors.New("content block type is required")
 	}
 	*b = ContentBlock{
-		Type: fields.Type,
-		Text: fields.Text,
-		URI:  fields.URI,
-		Name: fields.Name,
+		Type:     fields.Type,
+		Text:     fields.Text,
+		URI:      fields.URI,
+		Name:     fields.Name,
+		Data:     image.Data,
+		MimeType: image.MimeType,
 
 		Resource: resource,
 		raw:      append(json.RawMessage(nil), data...),

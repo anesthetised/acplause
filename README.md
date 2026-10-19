@@ -17,6 +17,7 @@ first, and works in your workspace through tools.
   everything a command started, session list/resume/close/delete.
 - Sessions survive restarts and can move between editor windows.
 - Model and reasoning effort selection from OpenRouter's model list.
+- PNG/JPEG prompt attachments for models known to accept images.
 - Session-owned MCP tools over stdio and Streamable HTTP.
 
 ## Install
@@ -98,7 +99,24 @@ conversation history, and the title is metadata that `session/list` reports.
 Prompts may embed resources (`session.prompt.embeddedContext`). A text
 resource reaches the model as `<resource uri="...">` with its contents; a blob
 resource is replaced by a one-line note naming its URI. The client still gets
-every block echoed back unchanged. Images and audio are not supported.
+every block echoed back unchanged.
+
+In T3, select a model whose provider metadata explicitly lists image input,
+then paste a screenshot into the composer or upload a PNG/JPEG attachment
+and send the prompt. T3 supplies the image bytes over ACP; a file path in a
+text prompt does not attach its pixels. Image-only prompts and multiple
+images are accepted. A session without a textual title is named "Image prompt".
+Actual T3 clipboard/upload interoperability is still awaiting the runtime
+checks in [#38](https://github.com/anesthetised/acplause/issues/38); automated
+tests cover the ACP-to-provider path. See [ADR 0010](docs/adr/0010-image-prompts.md).
+
+Images are limited to 4 MiB decoded bytes and 16 million pixels each, four
+images and 8 MiB decoded total per prompt. Invalid images, no model selection,
+and models with text-only or missing image metadata fail before the prompt
+is accepted. The agent never switches models on your behalf. Switching an
+existing image conversation to a non-vision model sends explicit omission
+markers for historical images; switching back restores their pixels in model
+requests. Audio and other image formats are not supported.
 
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
@@ -198,8 +216,10 @@ Sessions are stored in `~/.acplause/acplause.db`; `ACPLAUSE_DATA_DIR` selects
 another directory. acplause creates the directory with permissions `0700`
 and the database with `0600`. The database holds prompts, model output and
 tool output in plain text, along with workspace paths, titles, timestamps,
-model and effort selections, and accumulated cost. See
-[ADR 0004](docs/adr/0004-sqlite-storage.md).
+model and effort selections, and accumulated cost. Prompt images are stored
+inline in model history and the original ACP transcript until session deletion;
+these copies increase database size, and there is no session-wide storage
+quota. See [ADR 0004](docs/adr/0004-sqlite-storage.md).
 
 `session/list` includes stored sessions from every process using that data
 directory. `session/resume` restores their conversation history and settings.

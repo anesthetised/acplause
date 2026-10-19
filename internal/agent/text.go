@@ -2,6 +2,7 @@ package agent
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
+	"github.com/anesthetised/acplause/internal/media"
 )
 
 const systemTemplate = `You are acplause, a coding agent working in the user's workspace through tools.
@@ -30,11 +32,14 @@ func systemPrompt(cwd string, dirs []string, instructions string) string {
 }
 
 // promptText renders a prompt for the model. Content beyond text, resource
-// links and embedded resources is not advertised and is skipped.
+// links and embedded resources is skipped; validated images travel separately.
 func promptText(blocks []acp.ContentBlock) string {
 	var parts []string
+	hasImage := false
 	for _, b := range blocks {
 		switch b.Type {
+		case acp.ContentImage:
+			hasImage = true
 		case acp.ContentText:
 			parts = append(parts, b.Text)
 		case acp.ContentResourceLink:
@@ -47,11 +52,47 @@ func promptText(blocks []acp.ContentBlock) string {
 			}
 		}
 	}
-	return cmp.Or(strings.Join(parts, "\n\n"), "(empty message)")
+	if text := strings.Join(parts, "\n\n"); strings.TrimSpace(text) != "" || !hasImage {
+		return cmp.Or(text, "(empty message)")
+	}
+	return "Image prompt"
+}
+
+// promptImages decodes untrusted pixels before taking session or persistence
+// locks. Unknown content variants remain opaque, including their payloads.
+func promptImages(ctx context.Context, blocks []acp.ContentBlock) ([]media.Image, error) {
+	var images []media.Image
+	count := 0
+	for _, b := range blocks {
+		if b.Type == acp.ContentImage {
+			count++
+		}
+	}
+	if count > media.MaxImages {
+		return nil, fmt.Errorf("%d images exceed the limit of %d", count, media.MaxImages)
+	}
+	for _, b := range blocks {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if b.Type != acp.ContentImage {
+			continue
+		}
+		img, err := media.New(b.MimeType, b.Data)
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, img)
+		if err := media.CheckSet(images); err != nil {
+			return nil, err
+		}
+	}
+	return images, nil
 }
 
 // title names a session after the first line of its first prompt's text
-// and links; embedded resources would title it after their markup.
+// and links; embedded resources would title it after their markup. With no
+// textual title, images use a fixed label rather than their bytes or URI.
 func title(blocks []acp.ContentBlock) string {
 	const width = 80
 	blocks = slices.DeleteFunc(slices.Clone(blocks), func(b acp.ContentBlock) bool { return b.Type == acp.ContentResource })

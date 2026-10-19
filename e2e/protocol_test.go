@@ -35,7 +35,7 @@ func TestInitialize(t *testing.T) {
 	if res.ProtocolVersion != 2 || res.Info["name"] != "acplause" || res.AuthMethods != nil {
 		t.Fatalf("unexpected initialize result: %+v", res)
 	}
-	assertJSON(t, res.Capabilities, `{"session":{"mcp":{"stdio":{},"http":{}},"prompt":{"embeddedContext":{}},"additionalDirectories":{},"delete":{}}}`)
+	assertJSON(t, res.Capabilities, `{"session":{"mcp":{"stdio":{},"http":{}},"prompt":{"embeddedContext":{},"image":{}},"additionalDirectories":{},"delete":{}}}`)
 }
 
 func TestJSONRPCErrors(t *testing.T) {
