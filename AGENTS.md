@@ -25,6 +25,7 @@ internal/acp/      ACP v2 wire types, only those acplause uses
 internal/agent/    sessions, prompt queue, lifecycle, cancellation, tool loop
 internal/llm/      Chat Completions client: SSE, retries, models list
 internal/tools/    tools and the os.Root sandbox
+internal/store/    SQLite sessions, migrations and ownership leases
 e2e/               tests of the built binary over stdio
 testdata/schema/v2 pinned ACP schema; see VERSION
 ```
@@ -93,7 +94,9 @@ testdata/schema/v2 pinned ACP schema; see VERSION
   `waitFor`, or a custom `script`) and consume output with `take`,
   `untilIdle` and `updateWhere`. Messages a `take` skips stay available.
 - E2E tests run in parallel. Each has its own agent process, mock server and
-  temp directories; never share them or reassign `agent.t`.
+  temp directories; never share them or reassign `agent.t`. Each agent gets
+  its own data directory; use `withDataDir` explicitly for tests of shared
+  storage or restarts.
 - Unix-only tests (process groups, `syscall.Kill`) go in files built with
   `//go:build unix`.
 
