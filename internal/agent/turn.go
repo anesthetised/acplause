@@ -97,6 +97,8 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 		result.Output = "Cancelled by the user."
 	case result.Failed:
 		final.Status = acp.ToolFailed
+	case result.Diff != nil:
+		final.Content = []acp.ToolCallContent{*result.Diff, final.Content[0]}
 	}
 	if update.Status == "" { // never reported: send everything at once
 		final = update.Merge(final)

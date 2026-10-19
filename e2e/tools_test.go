@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -229,5 +230,80 @@ func assertProcessGone(t *testing.T, pidFile string) {
 			t.Fatalf("process %d started by bash survived cancellation", pid)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type diffBlock struct {
+	Type    string
+	Changes []struct{ Operation, Path, FileType string }
+	Patch   *struct{ Format, Text string }
+}
+
+// diffContent returns the diff blocks of a tool call update.
+func diffContent(t *testing.T, u update) (diffs []diffBlock) {
+	t.Helper()
+	var blocks []diffBlock
+	if err := json.Unmarshal(u.Content, &blocks); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range blocks {
+		if b.Type == "diff" {
+			diffs = append(diffs, b)
+		}
+	}
+	return diffs
+}
+
+func TestFileToolsReportDiffs(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(
+		callTool("edit", `{"path":"a.txt","old_text":"two","new_text":"TWO"}`),
+		callTool("write_file", `{"path":"a.txt","content":"one\nTWO\nthree\nfour\n"}`),
+		callTool("write_file", `{"path":"sub/b.txt","content":"new\n"}`),
+		callTool("edit", `{"path":"a.txt","old_text":"nope","new_text":"x"}`),
+		reply("Done."),
+	)
+	a, sid, cwd := started(t, llm)
+	if err := os.WriteFile(filepath.Join(cwd, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.accepted(a.prompt(sid, "edit"))
+	var done []update
+	for _, u := range filter(a.untilIdle(sid), "tool_call_update") {
+		if u.Status != "in_progress" {
+			done = append(done, u)
+		}
+	}
+	if len(done) != 4 {
+		t.Fatalf("tool calls: %v", done)
+	}
+	abs := filepath.Join(cwd, "a.txt")
+	want := []struct{ op, path, patch string }{
+		{"modify", abs, "diff --git " + abs + " " + abs + "\n--- " + abs + "\n+++ " + abs + "\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"},
+		{"modify", abs, "diff --git " + abs + " " + abs + "\n--- " + abs + "\n+++ " + abs + "\n@@ -1,3 +1,4 @@\n one\n TWO\n three\n+four\n"},
+		{"add", filepath.Join(cwd, "sub", "b.txt"), ""},
+	}
+	for i, w := range want {
+		diffs := diffContent(t, done[i])
+		if done[i].Status != "completed" || len(diffs) != 1 || len(diffs[0].Changes) != 1 {
+			t.Fatalf("call %d: %+v", i, done[i])
+		}
+		c := diffs[0].Changes[0]
+		if c.Operation != w.op || c.Path != w.path || c.FileType != "text" {
+			t.Errorf("call %d change: %+v", i, c)
+		}
+		if w.patch != "" && (diffs[0].Patch == nil || diffs[0].Patch.Format != "git_patch" || diffs[0].Patch.Text != w.patch) {
+			t.Errorf("call %d patch: %+v", i, diffs[0].Patch)
+		}
+		if i == 2 && (diffs[0].Patch == nil || !strings.Contains(diffs[0].Patch.Text, "new file mode 100644\n--- /dev/null\n")) {
+			t.Errorf("add patch: %+v", diffs[0].Patch)
+		}
+		if !strings.Contains(done[i].text(), abs[:len(cwd)]) {
+			t.Errorf("call %d lost its text result: %q", i, done[i].text())
+		}
+	}
+	if failed := done[3]; failed.Status != "failed" || len(diffContent(t, failed)) != 0 {
+		t.Errorf("failed edit must not report a diff: %+v", failed)
 	}
 }
