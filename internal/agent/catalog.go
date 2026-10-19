@@ -53,6 +53,12 @@ func (c *catalog) has(model string) bool {
 // contextLength is the model's context window, or 0 if unknown.
 func (c *catalog) contextLength(model string) uint64 { return c.models[model].ContextLength }
 
+// outputLimit is the advertised output ceiling, which can be much smaller
+// than the context window. Zero means the provider did not publish a limit.
+func (c *catalog) outputLimit(model string) uint64 {
+	return c.models[model].TopProvider.MaxCompletionTokens
+}
+
 // reasons reports whether the model is known to take a reasoning effort.
 func (c *catalog) reasons(model string) bool {
 	m := c.models[model]

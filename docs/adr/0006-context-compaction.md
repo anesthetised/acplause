@@ -18,8 +18,9 @@ user saw. No tokenizer is shared by all supported models.
 
 1. **Check before every model request.** Use the selected model's advertised
    context length. Budget 75% for input and reserve 25% for output; send
-   `max_tokens` capped at 8192. Count serialized message and tool-definition
-   bytes as tokens, plus framing overhead. This deliberately conservative
+   `max_tokens` capped at 8192 and the catalog's nonzero
+   `top_provider.max_completion_tokens` ceiling. Count serialized message and
+   tool-definition bytes as tokens, plus framing overhead. This deliberately conservative
    estimate includes arguments and reasoning, works without a tokenizer
    dependency, and can compact earlier than necessary. It is not an exact
    provider token count. An unknown context length leaves existing behavior

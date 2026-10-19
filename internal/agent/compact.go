@@ -47,6 +47,9 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (llm.Reque
 		}
 		budget := window - window/4
 		req.MaxTokens = max(1, min(window/4, 8192))
+		if limit := s.catalog.outputLimit(req.Model); limit > 0 {
+			req.MaxTokens = min(req.MaxTokens, limit)
+		}
 		if requestSize(req) <= budget {
 			return req, nil
 		}
@@ -176,6 +179,9 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		var chunk llm.Request
 		end := 0
 		for next := 1; next <= len(prefix); {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 			for next < len(prefix) && prefix[next].Role == llm.RoleTool {
 				next++
 			}

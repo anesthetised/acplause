@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const compactionModels = `{"data":[{"id":"test/model","context_length":32000,"supported_parameters":["tools"]}]}`
+const compactionModels = `{"data":[{"id":"test/model","context_length":32000,"top_provider":{"max_completion_tokens":4096},"supported_parameters":["tools"]}]}`
 
 // seedCompaction leaves enough history that the next prompt needs a summary.
 func seedCompaction(t *testing.T, llm *mockLLM, opts ...option) (*agent, string, string) {
@@ -30,7 +30,7 @@ func assertBoundedChat(t *testing.T, req chatRequest) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.MaxTokens == 0 || uint64(len(wire))+req.MaxTokens > 32000 {
+	if req.MaxTokens != 4096 || uint64(len(wire))+req.MaxTokens > 32000 {
 		t.Fatalf("request does not fit: %d input bytes, %d output tokens", len(wire), req.MaxTokens)
 	}
 	pending := map[string]bool{}

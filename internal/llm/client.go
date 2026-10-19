@@ -80,6 +80,10 @@ type Model struct {
 	Name                string   `json:"name"`
 	ContextLength       uint64   `json:"context_length"`
 	SupportedParameters []string `json:"supported_parameters"`
+	// TopProvider supplies OpenRouter's advertised output ceiling; zero is unknown.
+	TopProvider struct {
+		MaxCompletionTokens uint64 `json:"max_completion_tokens"`
+	} `json:"top_provider"`
 }
 
 // Supports reports whether the model accepts a request parameter, such as
