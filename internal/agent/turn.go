@@ -65,6 +65,9 @@ func (s *Session) request() modelRound {
 	for _, spec := range s.toolbox.Specs() {
 		req.Tools = append(req.Tools, llm.FunctionTool(spec.Name, spec.Description, spec.Parameters))
 	}
+	if s.supportsForms() {
+		req.Tools = append(req.Tools, askUserTool)
+	}
 	if s.catalog.reasons(s.model) && s.effort != effortDefault {
 		req.ReasoningEffort = s.effort
 	}
@@ -98,7 +101,12 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 	entry := -1
 	var prepared *preparedTool
 	var err error
-	if binding, ok := round.bindings[name]; ok {
+	if name == "ask_user" && s.supportsForms() {
+		var req acp.ElicitationRequest
+		req, err = parseQuestions(call.Function.Arguments)
+		req.SessionID, req.ToolCallID = s.id, update.ToolCallID
+		prepared = &preparedTool{Title: req.Message, run: func(ctx context.Context) toolOutput { return s.askUser(ctx, req) }}
+	} else if binding, ok := round.bindings[name]; ok {
 		if binding.ReadOnly {
 			update.Kind = acp.ToolRead
 		}
@@ -118,7 +126,10 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 	if err == nil {
 		update.Title = prepared.Title
 		update.Locations = locations(prepared.Locations)
-		if prepared.permission {
+		if name == "ask_user" {
+			update.Status = acp.ToolPending
+			entry = s.reportTool(entry, update)
+		} else if prepared.permission {
 			entry, err = s.requestPermission(callCtx, ctx, entry, &update, prepared)
 		}
 	}
@@ -131,7 +142,9 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 			patch.Status = acp.ToolInProgress
 		}
 		update.Status = acp.ToolInProgress
-		entry = s.reportTool(entry, patch)
+		if name != "ask_user" {
+			entry = s.reportTool(entry, patch)
+		}
 		runCtx := callCtx
 		if prepared.binding != nil && s.deps.mcpTimeout > 0 {
 			var cancel context.CancelFunc

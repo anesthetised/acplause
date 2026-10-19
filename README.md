@@ -19,6 +19,7 @@ first, and works in your workspace through tools.
 - Model and reasoning effort selection from OpenRouter's model list.
 - PNG/JPEG prompt attachments and MCP tool images for models known to accept images.
 - Session-owned MCP tools over stdio and Streamable HTTP.
+- Structured user questions on clients advertising ACP form elicitation.
 
 ## Install
 
@@ -66,6 +67,7 @@ support, session creation fails. See [ADR 0005](docs/adr/0005-remember-model-sel
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
 | `edit`        | `edit`    | replace one exact occurrence                      |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
+| `ask_user`    | `other`   | one to three text/choice questions, when supported |
 
 `write_file` and `edit` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
@@ -117,6 +119,29 @@ is accepted. The agent never switches models on your behalf. Switching an
 existing image conversation to a non-vision model sends explicit omission
 markers for historical images; switching back restores their pixels in model
 requests. Audio and other image formats are not supported.
+
+Clients advertising `capabilities.elicitation.form: {}` enable the agent-owned
+`ask_user` tool. It sends `elicitation/create` with one to three required string
+fields, optionally with single-choice options. Only a complete accepted answer
+with the requested keys and valid values reaches the model as answers; decline,
+cancel, malformed responses and request failures become failed tool results.
+While waiting, the tool stays pending and the session reports `requires_action`.
+The tool instructs the model never to request secrets or credentials, including
+passwords and API keys. When access needs configuring, the user should do so
+outside the conversation and report only whether setup is complete.
+Answers request information; file writes and commands still require permission.
+
+Cancelling, closing or deleting the session stops waiting and sends best-effort
+`$/cancel_request`. Late replies cannot restart work. Same-connection resume
+replays the pending tool without reissuing the form; a process restart restores
+finished results or fails interrupted questions. Form support is renegotiated on
+every connection. Clients without it receive no `ask_user` tool and the model can
+ask in text. Malformed optional capability values are treated as unsupported,
+so they do not prevent initialization. This does not enable MCP server
+elicitation. See
+[ADR 0011](docs/adr/0011-structured-user-questions.md) and the
+[T3 form smoke procedure](docs/testing/t3-first-class-smoke.md). Actual T3 question
+card acceptance remains pending [#38](https://github.com/anesthetised/acplause/issues/38).
 
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
@@ -244,8 +269,8 @@ already deleted session succeeds. Nothing expires automatically.
 
 Two editor windows can work on different sessions at the same time. Resuming
 or deleting a session owned by another window is allowed while it is idle,
-and refused while it is working or waiting for permission. After a takeover
-or deletion, the old window loses access at its next write or lease renewal
+and refused while it is working or waiting for permission or form answers.
+After a takeover or deletion, the old window loses access at its next write or lease renewal
 (every 10 seconds). A crashed process's lease expires within 30 seconds;
 a resumed session then starts idle, with unfinished tool calls marked failed
 and matching results added to the model history.

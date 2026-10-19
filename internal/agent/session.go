@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
@@ -20,6 +21,7 @@ import (
 
 // deps is what sessions share with the agent.
 type deps struct {
+	forms      *atomic.Bool // negotiated capabilities belong to this connection, never the store
 	out        Client
 	model      Model
 	maxRounds  int

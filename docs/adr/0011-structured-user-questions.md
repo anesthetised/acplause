@@ -1,6 +1,6 @@
 # ADR 0011: Ask structured questions through ACP form elicitation
 
-- Status: accepted; outbound cancellation implemented in #29, form elicitation pending #30
+- Status: accepted; outbound cancellation and form elicitation implemented in #29/#30; actual T3 acceptance pending #38
 - Date: 2026-10-19
 - Issues: [#29](https://github.com/anesthetised/acplause/issues/29), [#30](https://github.com/anesthetised/acplause/issues/30)
 - Scope change: No existing decision; outbound cancellation for questions is opt-in and preserves ADR 0003 permission behavior
@@ -8,7 +8,7 @@
 
 ## Context
 
-T3 renders elicitation/create as interactive question cards. acplause cannot currently negotiate elicitation or expose a question tool to its model.
+T3 renders elicitation/create as interactive question cards. Before this change, acplause could not negotiate elicitation or expose a question tool to its model.
 
 ## Decisions
 
@@ -42,7 +42,8 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
 Execution plan: [questions](../../tasks/t3/questions.md). The accepted design is
-implemented in separate slices: #29 adds opt-in transport cancellation without
-activating a client request; #30 supplies form elicitation and its protocol e2e
-coverage. Actual T3 acceptance remains tracked in #38.
+implemented in separate slices: #29 adds opt-in transport cancellation; #30
+supplies negotiated form elicitation and its protocol e2e coverage, including
+cancellation, replay and interrupted-question recovery. Actual T3 acceptance
+remains tracked in #38; see the [smoke procedure](../testing/t3-first-class-smoke.md).
 

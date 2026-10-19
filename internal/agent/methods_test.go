@@ -77,10 +77,12 @@ type notification struct {
 
 // acpClient drives an Agent over a jsonrpc.Conn, as an editor would.
 type acpClient struct {
-	t       *testing.T
-	agent   *Agent
-	in      *io.PipeWriter
-	updates chan notification
+	t             *testing.T
+	agent         *Agent
+	in            *io.PipeWriter
+	updates       chan notification
+	elicitations  chan clientElicitation
+	cancellations chan json.RawMessage
 
 	mu      sync.Mutex
 	nextID  int
@@ -102,7 +104,7 @@ func startAgent(t *testing.T, dir string, model Model, list ListModels) *acpClie
 	if list == nil {
 		list = func(context.Context) ([]llm.Model, error) { return testModels, nil }
 	}
-	c := &acpClient{t: t, in: agentIn, updates: make(chan notification, 256), pending: make(map[int]chan rpcResponse)}
+	c := &acpClient{t: t, in: agentIn, updates: make(chan notification, 256), pending: make(map[int]chan rpcResponse), elicitations: make(chan clientElicitation, 16), cancellations: make(chan json.RawMessage, 16)}
 	c.agent = New(Config{Info: acp.Implementation{Name: "test", Version: "1"}, Store: st}, conn, model, list)
 
 	served := make(chan struct{})
@@ -145,6 +147,10 @@ func (c *acpClient) read(r io.Reader) {
 			_ = json.Unmarshal(msg.Params, &raw)
 			n.Update.Raw = raw.Update
 			c.updates <- n
+		case msg.Method == acp.MethodElicitationCreate:
+			c.elicitations <- clientElicitation{ID: *msg.ID, Params: msg.Params}
+		case msg.Method == jsonrpc.CancelRequestMethod:
+			c.cancellations <- msg.Params
 		case msg.Method == acp.MethodSessionRequestPermission:
 			go c.permit(*msg.ID)
 		case msg.ID != nil:

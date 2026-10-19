@@ -65,7 +65,7 @@ var loadValidator = sync.OnceValues(func() (*validator, error) {
 		case def.Method == "":
 		case def.Side == "agent" && strings.HasSuffix(name, "Response"):
 			v.responses[def.Method] = name
-		case def.Side == "client" && (strings.HasSuffix(name, "Notification") || strings.HasSuffix(name, "Request")):
+		case (def.Side == "client" || def.Side == "protocol") && (strings.HasSuffix(name, "Notification") || strings.HasSuffix(name, "Request")):
 			v.params[def.Method] = name
 		}
 	}

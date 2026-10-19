@@ -1,15 +1,16 @@
 package acp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
 
-// InitializeRequest is the client's initialize params. Client capabilities
-// are not used: acplause calls nothing on the client.
+// InitializeRequest is the client's initialize params.
 type InitializeRequest struct {
-	ProtocolVersion *int            `json:"protocolVersion"`
-	Info            *Implementation `json:"info"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
+	ProtocolVersion *int               `json:"protocolVersion"`
+	Info            *Implementation    `json:"info"`
 }
 
 // Validate implements jsonrpc's params validation.
@@ -59,4 +60,46 @@ type SessionCapabilities struct {
 type PromptCapabilities struct {
 	EmbeddedContext *Supported `json:"embeddedContext,omitempty"`
 	Image           *Supported `json:"image,omitempty"`
+}
+
+// ClientCapabilities contains the client surfaces acplause uses.
+type ClientCapabilities struct {
+	Elicitation *ElicitationCapabilities `json:"elicitation"`
+}
+
+// UnmarshalJSON applies the pinned schema's default-on-error rules to both
+// the capabilities group and its optional elicitation capability.
+func (c *ClientCapabilities) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Elicitation json.RawMessage `json:"elicitation"`
+	}
+	*c = ClientCapabilities{}
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	if json.Unmarshal(raw.Elicitation, &c.Elicitation) != nil {
+		c.Elicitation = nil
+	}
+	return nil
+}
+
+// ElicitationCapabilities negotiates direct agent form requests.
+type ElicitationCapabilities struct {
+	Form *Supported `json:"form"`
+}
+
+// UnmarshalJSON treats a malformed optional form marker as unsupported,
+// rather than failing the initialization of an otherwise usable client.
+func (c *ElicitationCapabilities) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Form json.RawMessage `json:"form"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*c = ElicitationCapabilities{}
+	if json.Unmarshal(raw.Form, &c.Form) != nil {
+		c.Form = nil
+	}
+	return nil
 }
