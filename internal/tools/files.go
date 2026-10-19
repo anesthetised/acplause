@@ -51,7 +51,7 @@ func (tb *Toolbox) readFile(args readFileArgs) (*Call, error) {
 	return &Call{
 		Title:     "Read " + args.Path,
 		Locations: []string{t.abs},
-		run: func(context.Context) (string, error) {
+		run: func(ctx context.Context) (string, error) {
 			info, err := t.root.Stat(t.rel)
 			switch {
 			case err != nil:
@@ -61,7 +61,7 @@ func (tb *Toolbox) readFile(args readFileArgs) (*Call, error) {
 			case info.Size() > maxReadSize:
 				return "", fmt.Errorf("%s is too large (%d bytes, max %d)", args.Path, info.Size(), maxReadSize)
 			}
-			data, err := t.root.ReadFile(t.rel)
+			data, err := t.readFile(ctx, maxReadSize)
 			if err != nil {
 				return "", err
 			}
@@ -177,11 +177,11 @@ func (tb *Toolbox) writeFile(args writeFileArgs) (*Call, error) {
 	return &Call{
 		Title:     "Write " + args.Path,
 		Locations: []string{t.abs},
-		run: func(context.Context) (string, error) {
+		run: func(ctx context.Context) (string, error) {
 			if err := t.root.MkdirAll(filepath.Dir(t.rel), 0o755); err != nil {
 				return "", err
 			}
-			if err := t.root.WriteFile(t.rel, []byte(*args.Content), filePerm(t)); err != nil {
+			if err := t.writeFile(ctx, []byte(*args.Content)); err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("Wrote %d bytes to %s", len(*args.Content), t.abs), nil
@@ -224,8 +224,8 @@ func (tb *Toolbox) edit(args editArgs) (*Call, error) {
 	return &Call{
 		Title:     "Edit " + args.Path,
 		Locations: []string{t.abs},
-		run: func(context.Context) (string, error) {
-			data, err := t.root.ReadFile(t.rel)
+		run: func(ctx context.Context) (string, error) {
+			data, err := t.readFile(ctx, 0)
 			if err != nil {
 				return "", err
 			}
@@ -238,18 +238,10 @@ func (tb *Toolbox) edit(args editArgs) (*Call, error) {
 				return "", fmt.Errorf("old_text occurs %d times in %s; add context to make it unique", n, args.Path)
 			}
 			content = strings.Replace(content, args.OldText, *args.NewText, 1)
-			if err := t.root.WriteFile(t.rel, []byte(content), filePerm(t)); err != nil {
+			if err := t.writeFile(ctx, []byte(content)); err != nil {
 				return "", err
 			}
 			return "Edited " + t.abs, nil
 		},
 	}, nil
-}
-
-// filePerm keeps an existing file's permissions.
-func filePerm(t target) fs.FileMode {
-	if info, err := t.root.Stat(t.rel); err == nil {
-		return info.Mode().Perm()
-	}
-	return 0o644
 }
