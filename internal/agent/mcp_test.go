@@ -52,3 +52,18 @@ func TestMCPResultProjectionLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPProjectionDoesNotDuplicateStructuredJSON(t *testing.T) {
+	for _, text := range []string{`{"taskId":"opaque","n":9007199254740993}`, "{\n  \"taskId\": \"opaque\", \"n\": 9007199254740993\n}"} {
+		raw, _ := json.Marshal(map[string]string{"type": "text", "text": text})
+		out := projectMCPResult(mcp.Result{Content: []json.RawMessage{raw}, StructuredContent: json.RawMessage(`{"taskId":"opaque","n":9007199254740993}`)})
+		if out.Failed || strings.Count(out.Output, "taskId") != 1 || strings.Count(string(out.RawOutput), "taskId") != 1 {
+			t.Fatalf("duplicate JSON projection: %+v", out)
+		}
+	}
+	raw := json.RawMessage(`{"type":"text","text":"Task scheduled"}`)
+	out := projectMCPResult(mcp.Result{Content: []json.RawMessage{raw}, StructuredContent: json.RawMessage(`{"taskId":"opaque"}`)})
+	if !strings.Contains(out.Output, "Task scheduled") || !strings.Contains(out.Output, "opaque") {
+		t.Fatal("human text hid structured data")
+	}
+}

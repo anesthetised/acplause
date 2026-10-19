@@ -333,3 +333,20 @@ The test matrix above is the concrete implemented coverage; the scenario
 lists in the original slices describe the review scope, not a claim that
 every combination has a separate test. Images in #23 remain explicitly out
 of scope. The original delivery remains one branch and one PR.
+
+
+## PR #24 review follow-up
+
+The inline review's seven reported bugs were reproduced and fixed: stdio
+control-message delivery, delivered-response/disconnect ordering, prompt
+insertion cancellation, unpublished session cleanup, HTTP request failure
+isolation, detached stderr cleanup, and recovery overlapping a configuration
+commit. Regression tests exercise those paths; the stderr test was also run
+against the original copy-goroutine behavior and failed as expected.
+
+Structured JSON duplicated as a standalone text block is projected once;
+distinct human text and structured data are both retained. Lost-session
+cleanup, MCP argument admission and the default timeout share implementations;
+non-obvious lifecycle operations now explain their ordering and cancellation.
+The 16-server checks remain at ACP admission and the internal manager boundary
+so neither entry point depends on the other layer having validated its input.

@@ -1,9 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -60,12 +60,11 @@ func prepareBuiltin(tb *tools.Toolbox, name, args string) (*preparedTool, error)
 	return &preparedTool{Title: c.Title, Command: c.Command, Locations: c.Locations, permission: asksPermission(tb.Kind(name)), preview: c.Preview, run: func(ctx context.Context) toolOutput { return builtinOutput(c.Run(ctx)) }}, nil
 }
 func prepareMCP(t mcp.Tool, args string) (*preparedTool, error) {
-	if strings.TrimSpace(args) == "" {
-		args = "{}"
+	raw, err := mcp.ObjectArguments(args)
+	if err != nil {
+		return nil, err
 	}
-	if raw := strings.TrimSpace(args); raw[0] != '{' || !json.Valid([]byte(raw)) {
-		return nil, errors.New("MCP tool arguments must be a JSON object")
-	}
+	args = string(raw)
 	return &preparedTool{Title: t.Server + " / " + t.OriginalName, permission: true, binding: t.Context(), run: func(ctx context.Context) toolOutput {
 		result, err := t.Call(ctx, args)
 		if err != nil {
@@ -79,6 +78,10 @@ func prepareMCP(t mcp.Tool, args string) (*preparedTool, error) {
 // Transports retain blocks; only this presentation step omits binary payloads.
 func projectMCPResult(result mcp.Result) toolOutput {
 	var text strings.Builder
+	var structured bytes.Buffer
+	if result.StructuredContent != nil {
+		_ = json.Compact(&structured, result.StructuredContent)
+	}
 	usable, unsupported := false, false
 	for _, raw := range result.Content {
 		var tag struct {
@@ -99,6 +102,13 @@ func projectMCPResult(result mcp.Result) toolOutput {
 			}
 			part = v.Text
 			usable = true
+			// Servers commonly serialize structuredContent in a text block for
+			// older clients. Keep one JSON copy without hiding distinct prose
+			// or decoding numbers through float64.
+			var serialized bytes.Buffer
+			if structured.Len() > 0 && json.Compact(&serialized, []byte(v.Text)) == nil && bytes.Equal(serialized.Bytes(), structured.Bytes()) {
+				continue
+			}
 		case "resource_link":
 			var v struct{ URI, Name string }
 			if json.Unmarshal(raw, &v) != nil {
