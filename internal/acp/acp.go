@@ -23,6 +23,7 @@ const (
 	MethodSessionList      = "session/list"
 	MethodSessionResume    = "session/resume"
 	MethodSessionClose     = "session/close"
+	MethodSessionDelete    = "session/delete"
 	MethodSessionSetConfig = "session/set_config_option"
 	MethodSessionUpdate    = "session/update"
 

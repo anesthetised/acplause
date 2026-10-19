@@ -35,7 +35,7 @@ func TestInitialize(t *testing.T) {
 	if res.ProtocolVersion != 2 || res.Info["name"] != "acplause" || res.AuthMethods != nil {
 		t.Fatalf("unexpected initialize result: %+v", res)
 	}
-	assertJSON(t, res.Capabilities, `{"session":{"prompt":{"embeddedContext":{}},"additionalDirectories":{}}}`)
+	assertJSON(t, res.Capabilities, `{"session":{"prompt":{"embeddedContext":{}},"additionalDirectories":{},"delete":{}}}`)
 }
 
 func TestJSONRPCErrors(t *testing.T) {
@@ -47,7 +47,7 @@ func TestJSONRPCErrors(t *testing.T) {
 	if m := a.take(func(m *message) bool { return m.Error != nil }); m.Error.Code != -32700 || string(m.ID) != "null" {
 		t.Fatalf("parse error: %+v", m)
 	}
-	a.send(`{"jsonrpc":"2.0","id":"str-id","method":"session/delete","params":{"sessionId":"x"}}`)
+	a.send(`{"jsonrpc":"2.0","id":"str-id","method":"_unknown/method","params":{}}`)
 	if m := a.response(`"str-id"`); m.Error == nil || m.Error.Code != -32601 {
 		t.Fatalf("unknown method: %+v", m)
 	}

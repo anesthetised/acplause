@@ -162,6 +162,10 @@ func TestDelete(t *testing.T) {
 	if err := a.Delete(ctx, "s1"); err != nil {
 		t.Fatalf("already deleted: %v", err)
 	}
+	if lost, err := a.Renew(ctx, []string{"s1"}); err != nil || !slices.Equal(lost, []string{"s1"}) {
+		t.Fatalf("renew after delete: %v %v", lost, err)
+	}
+
 	db, err := sql.Open("sqlite", filepath.Join(dir, File))
 	if err != nil {
 		t.Fatal(err)

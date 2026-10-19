@@ -155,6 +155,7 @@ func (a *Agent) Methods() jsonrpc.Methods {
 		acp.MethodSessionList:      a.ready(jsonrpc.Handle(a.listSessions)),
 		acp.MethodSessionResume:    a.ready(jsonrpc.Handle(a.resumeSession)),
 		acp.MethodSessionClose:     a.ready(jsonrpc.Handle(a.closeSession)),
+		acp.MethodSessionDelete:    a.ready(jsonrpc.Handle(a.deleteSession)),
 		acp.MethodSessionSetConfig: a.ready(jsonrpc.Handle(a.setConfigOption)),
 	}
 }
@@ -199,6 +200,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 			Session: &acp.SessionCapabilities{
 				Prompt:                &acp.PromptCapabilities{EmbeddedContext: &acp.Supported{}},
 				AdditionalDirectories: &acp.Supported{},
+				Delete:                &acp.Supported{},
 			},
 		},
 	}, nil
@@ -368,6 +370,38 @@ func (a *Agent) closeSession(_ context.Context, req acp.CloseSessionRequest) (an
 		s.Close()
 		a.release(s)
 		reply.Resolve(acp.CloseSessionResponse{})
+	}()
+	return reply, nil
+}
+
+// deleteSession removes local access in arrival order, then waits for any
+// work to finish before removing the stored session and its history.
+func (a *Agent) deleteSession(_ context.Context, req acp.DeleteSessionRequest) (any, error) {
+	a.mu.Lock()
+	s := a.sessions[req.SessionID]
+	delete(a.sessions, req.SessionID)
+	delete(a.lost, req.SessionID)
+	a.mu.Unlock()
+	if s != nil {
+		s.Cancel()
+	}
+	reply := jsonrpc.NewReply()
+	go func() {
+		if s != nil {
+			s.Close()
+		}
+		if err := a.cfg.Store.Delete(a.ctx, req.SessionID); err != nil {
+			if s != nil {
+				a.release(s)
+			}
+			if errors.Is(err, store.ErrBusy) {
+				reply.Reject(errSessionBusy())
+			} else {
+				reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot delete the session: %v", err))
+			}
+			return
+		}
+		reply.Resolve(acp.DeleteSessionResponse{})
 	}()
 	return reply, nil
 }
