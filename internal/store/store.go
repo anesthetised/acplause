@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -91,8 +92,12 @@ func Open(dir, owner string) (*Store, error) {
 
 	// Immediate transactions take the write lock up front, so concurrent
 	// processes queue on busy_timeout instead of failing to upgrade a read.
-	dsn := "file:" + path + "?_txlock=immediate" +
-		"&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	dsn := (&url.URL{
+		Scheme:   "file",
+		OmitHost: true, // relative directories are paths, not URI authorities
+		Path:     path,
+		RawQuery: "_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)",
+	}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
