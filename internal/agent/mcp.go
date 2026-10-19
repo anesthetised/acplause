@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/anesthetised/acplause/internal/acp"
@@ -132,6 +133,7 @@ func projectMCPResult(result mcp.Result) toolOutput {
 		}
 		text.WriteString(part)
 	}
+	contentText := text.String()
 	if result.StructuredContent != nil {
 		if text.Len() > 0 {
 			text.WriteByte('\n')
@@ -155,7 +157,10 @@ func projectMCPResult(result mcp.Result) toolOutput {
 		Content    []acp.ContentBlock `json:"content"`
 		Structured json.RawMessage    `json:"structuredContent,omitempty"`
 		IsError    bool               `json:"isError,omitempty"`
-	}{[]acp.ContentBlock{acp.Text(output)}, result.StructuredContent, result.IsError})
+	}{[]acp.ContentBlock{acp.Text(contentText)}, result.StructuredContent, result.IsError})
+	if len(raw) > 256<<10 {
+		return toolOutput{Output: "Error: MCP result exceeds 256 KiB; the remote operation may have completed", Failed: true}
+	}
 	return toolOutput{Output: output, Failed: result.IsError || unsupported && !usable, Content: []acp.ToolCallContent{acp.ToolText(output)}, RawOutput: raw}
 }
 
@@ -170,7 +175,7 @@ func mcpConfigs(servers []acp.MCPServer) []mcp.Config {
 			c.Env[v.Name] = v.Value
 		}
 		for _, h := range s.Headers {
-			c.Headers[h.Name] = h.Value
+			c.Headers[http.CanonicalHeaderKey(h.Name)] = h.Value
 		}
 		configs = append(configs, c)
 	}

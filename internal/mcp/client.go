@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,7 +49,13 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-func (e *rpcError) Error() string { return fmt.Sprintf("MCP error %d: %s", e.Code, e.Message) }
+func (e *rpcError) Error() string {
+	message := e.Message
+	if len(message) > 8192 {
+		message = strings.ToValidUTF8(message[:8192], "�") + " [error truncated]"
+	}
+	return fmt.Sprintf("MCP error %d: %s", e.Code, message)
+}
 
 type transport interface {
 	Send(context.Context, []byte) error
@@ -65,11 +72,26 @@ type peer struct {
 	calls   map[string]chan wire
 	failure error
 	changed chan struct{}
+	replies chan wire
 }
 
 func newPeer(parent context.Context) *peer {
 	ctx, cancel := context.WithCancel(parent)
-	return &peer{ctx: ctx, cancel: cancel, calls: map[string]chan wire{}, changed: make(chan struct{}, 1)}
+	p := &peer{ctx: ctx, cancel: cancel, calls: map[string]chan wire{}, changed: make(chan struct{}, 1), replies: make(chan wire, 16)}
+	go func() {
+		for {
+			select {
+			case response := <-p.replies:
+				ctx, cancel := context.WithTimeout(p.ctx, time.Second)
+				raw, _ := jsonrpc.Marshal(response)
+				_ = p.t.Send(ctx, raw)
+				cancel()
+			case <-p.ctx.Done():
+				return
+			}
+		}
+	}()
+	return p
 }
 
 func (p *peer) fail(err error) {
@@ -135,6 +157,9 @@ func (p *peer) call(ctx context.Context, method string, params, result any) erro
 		// A cancelled call is retired before notifying; notification delivery cannot
 		// hold up local cancellation or let a late result enter a later turn.
 		if method != "initialize" {
+			p.mu.Lock()
+			delete(p.calls, id)
+			p.mu.Unlock()
 			go func() {
 				c, stop := context.WithTimeout(p.ctx, time.Second)
 				defer stop()
@@ -163,13 +188,13 @@ func (p *peer) receive(b []byte) {
 				response.Error = nil
 				response.Result = json.RawMessage(`{}`)
 			}
-			// The transport reader must never block on a server request's response.
-			go func() {
-				ctx, cancel := context.WithTimeout(p.ctx, time.Second)
-				defer cancel()
-				raw, _ := jsonrpc.Marshal(response)
-				_ = p.t.Send(ctx, raw)
-			}()
+			// Bound replies without blocking the transport reader or spawning a
+			// goroutine for every unsolicited server request.
+			select {
+			case p.replies <- response:
+			default:
+				p.fail(errors.New("too many MCP server requests"))
+			}
 		} else if msg.Method == "notifications/tools/list_changed" {
 			select {
 			case p.changed <- struct{}{}:

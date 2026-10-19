@@ -68,7 +68,10 @@ type Agent struct {
 	mu             sync.Mutex
 	sessions       map[string]*Session // open in this process
 	lost           map[string]bool     // taken over by another process
-	selectionSaved <-chan struct{}     // last queued selection write; nil before the first
+	operations     map[string]*sessionOperation
+	jobs           sync.WaitGroup
+	shuttingDown   bool
+	selectionSaved <-chan struct{} // last queued selection write; nil before the first
 }
 
 // New creates an agent and starts loading the model catalog.
@@ -83,12 +86,13 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 		mcpTimeout = *cfg.MCPTimeout
 	}
 	a := &Agent{
-		cfg:      cfg,
-		deps:     deps{out: out, model: model, maxRounds: cfg.MaxRounds, mcpTimeout: mcpTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
-		ctx:      ctx,
-		cancel:   cancel,
-		sessions: make(map[string]*Session),
-		lost:     make(map[string]bool),
+		cfg:        cfg,
+		deps:       deps{out: out, model: model, maxRounds: cfg.MaxRounds, mcpTimeout: mcpTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
+		ctx:        ctx,
+		cancel:     cancel,
+		sessions:   make(map[string]*Session),
+		lost:       make(map[string]bool),
+		operations: make(map[string]*sessionOperation),
 	}
 	a.catalog = sync.OnceValues(func() (*catalog, error) {
 		ctx, cancel := context.WithTimeout(ctx, catalogTimeout)
@@ -142,6 +146,9 @@ func (a *Agent) drop(id string) {
 	a.mu.Lock()
 	s := a.sessions[id]
 	delete(a.sessions, id)
+	for op := a.operations[id]; op != nil; op = op.previous {
+		op.cancel()
+	}
 	a.lost[id] = true
 	a.mu.Unlock()
 	if s != nil {
@@ -168,7 +175,12 @@ func (a *Agent) Methods() jsonrpc.Methods {
 
 // Shutdown cancels all work and closes every session.
 func (a *Agent) Shutdown() {
+	if saved := a.pendingSelection(); saved != nil {
+		<-saved
+	}
+	a.cancel()
 	a.mu.Lock()
+	a.shuttingDown = true
 	sessions := slices.Collect(maps.Values(a.sessions))
 	clear(a.sessions)
 	a.mu.Unlock()
@@ -181,10 +193,7 @@ func (a *Agent) Shutdown() {
 		})
 	}
 	wg.Wait()
-	if saved := a.pendingSelection(); saved != nil {
-		<-saved
-	}
-	a.cancel()
+	a.jobs.Wait()
 }
 
 // ready rejects session methods until initialize has succeeded.
@@ -221,9 +230,19 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any, error) {
 	reply := jsonrpc.NewReply()
 	saved := a.pendingSelection()
+	a.jobs.Add(1)
 	go func() {
+		defer a.jobs.Done()
 		if saved != nil {
-			<-saved
+			select {
+			case <-saved:
+			case <-ctx.Done():
+				reply.Reject(acp.ErrRequestCancelled())
+				return
+			case <-a.ctx.Done():
+				reply.Reject(acp.ErrRequestCancelled())
+				return
+			}
 		}
 		c, err := a.catalog()
 		if err != nil {
@@ -259,6 +278,13 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 			return
 		}
 		a.mu.Lock()
+		if a.shuttingDown || ctx.Err() != nil || a.ctx.Err() != nil {
+			a.mu.Unlock()
+			s.Close()
+			a.release(s)
+			reply.Reject(acp.ErrRequestCancelled())
+			return
+		}
 		a.sessions[s.id] = s
 		a.mu.Unlock()
 		reply.Resolve(acp.NewSessionResponse{SessionID: s.id, ConfigOptions: s.ConfigOptions()})
@@ -267,16 +293,39 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 }
 
 func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) {
-	s, err := a.session(req.SessionID)
-	if err != nil {
-		return nil, err
+	a.mu.Lock()
+	pending := a.operations[req.SessionID] != nil
+	a.mu.Unlock()
+	if !pending {
+		s, err := a.session(req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		return s.Submit(ctx, req.Prompt), nil
 	}
-	return s.Submit(ctx, req.Prompt), nil
+	op := a.reserveOperation(ctx, req.SessionID, false)
+	op.prompt = true
+	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		if op.previous != nil && op.previous.err != nil {
+			return op.previous.err
+		}
+		s, err := a.session(req.SessionID)
+		if err != nil {
+			return err
+		}
+		s.submit(ctx, req.Prompt, op.reply)
+		return nil
+	})
+	return op.reply, nil
 }
 
 func (a *Agent) cancelSession(_ context.Context, n acp.CancelSessionNotification) (any, error) {
+	waiting := a.cancelWaitingPrompts(n.SessionID)
 	s, err := a.session(n.SessionID)
 	if err != nil {
+		if waiting {
+			return nil, nil
+		}
 		return nil, err
 	}
 	s.Cancel()
@@ -321,26 +370,25 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
 		return nil, acp.ErrInvalidParams("unsupported replayFrom type %q", req.ReplayFrom.Type)
 	}
-	reply := jsonrpc.NewReply()
-	go func() {
-		s, err := a.open(req.SessionID, req.Cwd)
+	op := a.reserveOperation(ctx, req.SessionID, false)
+	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		s, err := a.open(ctx, req.SessionID, req.Cwd)
 		if err != nil {
-			reply.Reject(err)
-			return
+			return err
 		}
 		if err := s.Resume(ctx, req.AdditionalDirectories, req.MCPServers, replay); err != nil {
-			reply.Reject(acp.ErrInvalidParams("cannot open workspace: %v", err))
-			return
+			return acp.ErrInvalidParams("cannot configure session: %v", err)
 		}
-		reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions()})
-	}()
-	return reply, nil
+		op.reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions()})
+		return nil
+	})
+	return op.reply, nil
 }
 
 // open acquires a session for this process and returns it, loading it from
 // the store if it is not open here.
-func (a *Agent) open(id, cwd string) (*Session, error) {
-	l, err := a.cfg.Store.Acquire(a.ctx, id)
+func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
+	l, err := a.cfg.Store.Acquire(ctx, id)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return nil, acp.ErrSessionNotFound(id)
@@ -372,6 +420,12 @@ func (a *Agent) open(id, cwd string) (*Session, error) {
 		return nil, acp.ErrInvalidParams("cannot restore the session: %v", err)
 	}
 	a.mu.Lock()
+	if ctx.Err() != nil || a.shuttingDown || a.ctx.Err() != nil {
+		a.mu.Unlock()
+		s.Close()
+		a.releaseID(id)
+		return nil, acp.ErrRequestCancelled()
+	}
 	if open := a.sessions[id]; open != nil { // a concurrent resume won
 		a.mu.Unlock()
 		s.Close()
@@ -387,28 +441,33 @@ func (a *Agent) open(id, cwd string) (*Session, error) {
 // closeSession cancels the session's work at once, to keep ordering with
 // later messages, and answers after the work has wound down and the session
 // is released for other processes.
-func (a *Agent) closeSession(_ context.Context, req acp.CloseSessionRequest) (any, error) {
+func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (any, error) {
 	a.mu.Lock()
-	s, ok := a.sessions[req.SessionID]
+	s := a.sessions[req.SessionID]
+	pending := a.operations[req.SessionID] != nil
 	delete(a.sessions, req.SessionID)
 	a.mu.Unlock()
-	if !ok {
+	if s == nil && !pending {
 		return nil, acp.ErrSessionNotFound(req.SessionID)
 	}
-
-	s.Cancel()
-	reply := jsonrpc.NewReply()
-	go func() {
-		s.Close()
-		a.release(s)
-		reply.Resolve(acp.CloseSessionResponse{})
-	}()
-	return reply, nil
+	if s != nil {
+		s.Cancel()
+	}
+	op := a.reserveOperation(ctx, req.SessionID, true)
+	a.startOperation(req.SessionID, op, func(context.Context) error {
+		if s != nil {
+			s.Close()
+			a.release(s)
+		}
+		op.reply.Resolve(acp.CloseSessionResponse{})
+		return nil
+	})
+	return op.reply, nil
 }
 
-// deleteSession removes local access in arrival order, then waits for any
-// work to finish before removing the stored session and its history.
-func (a *Agent) deleteSession(_ context.Context, req acp.DeleteSessionRequest) (any, error) {
+// deleteSession invalidates local access immediately, then waits for earlier
+// setup cleanup before touching the stored record.
+func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest) (any, error) {
 	a.mu.Lock()
 	s := a.sessions[req.SessionID]
 	delete(a.sessions, req.SessionID)
@@ -417,25 +476,24 @@ func (a *Agent) deleteSession(_ context.Context, req acp.DeleteSessionRequest) (
 	if s != nil {
 		s.Cancel()
 	}
-	reply := jsonrpc.NewReply()
-	go func() {
+	op := a.reserveOperation(ctx, req.SessionID, true)
+	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		if s != nil {
 			s.Close()
 		}
-		if err := a.cfg.Store.Delete(a.ctx, req.SessionID); err != nil {
+		if err := a.cfg.Store.Delete(ctx, req.SessionID); err != nil {
 			if s != nil {
 				a.release(s)
 			}
 			if errors.Is(err, store.ErrBusy) {
-				reply.Reject(errSessionBusy())
-			} else {
-				reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot delete the session: %v", err))
+				return errSessionBusy()
 			}
-			return
+			return jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot delete the session: %v", err)
 		}
-		reply.Resolve(acp.DeleteSessionResponse{})
-	}()
-	return reply, nil
+		op.reply.Resolve(acp.DeleteSessionResponse{})
+		return nil
+	})
+	return op.reply, nil
 }
 
 // release gives a closed session's lease back, unless it was lost.

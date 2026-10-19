@@ -158,6 +158,8 @@ func (s *Session) flush() {
 	defer s.mu.Unlock()
 	if errors.Is(err, store.ErrLost) {
 		s.lost = true
+		s.cancel()
+		go s.mcp.Close()
 		return
 	}
 	if undo != nil {
@@ -301,6 +303,8 @@ func (s *Session) markLost() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lost = true
+	s.cancel()
+	go s.mcp.Close()
 }
 
 func (s *Session) isLost() bool {

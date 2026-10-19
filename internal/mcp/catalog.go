@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 )
@@ -63,16 +65,17 @@ func (t Tool) Call(ctx context.Context, args string) (Result, error) {
 }
 
 type server struct {
-	cfg      Config
-	peer     *peer
-	hasTools bool
-	mu       sync.Mutex
-	tools    []Tool
+	cfg               Config
+	peer              *peer
+	hasTools          bool
+	log               *slog.Logger
+	mu                sync.Mutex
+	tools             []Tool
 }
 
 func (s *server) close() { s.peer.fail(errClosed); _ = s.peer.t.Close() }
 
-func connectServer(ctx, lifetime context.Context, cfg Config, cwd string) (*server, error) {
+func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *slog.Logger) (*server, error) {
 	p := newPeer(lifetime)
 	if err := p.ctx.Err(); err != nil {
 		return nil, err
@@ -98,7 +101,7 @@ func connectServer(ctx, lifetime context.Context, cfg Config, cwd string) (*serv
 	case *stdioTransport:
 		t.start()
 	}
-	s := &server{cfg: cfg, peer: p}
+	s := &server{cfg: cfg, peer: p, log: log}
 	s.hasTools, err = p.initialize(ctx)
 	if err == nil {
 		err = s.refresh(ctx)
@@ -117,7 +120,9 @@ func (s *server) watch() {
 			return
 		case <-s.peer.changed:
 			ctx, cancel := context.WithTimeout(s.peer.ctx, discoveryTimeout)
-			_ = s.refresh(ctx)
+			if err := s.refresh(ctx); err != nil {
+				s.log.Warn("MCP catalog refresh failed", "server", s.cfg.Name, "err", err)
+			}
 			cancel()
 		}
 	}
@@ -150,7 +155,7 @@ func (s *server) refresh(ctx context.Context) error {
 				return errors.New("MCP tool names must be nonempty and unique")
 			}
 			names[t.Name] = true
-			if _, err := objectArguments(string(t.InputSchema)); err != nil {
+			if _, err := objectArguments(string(t.InputSchema)); err != nil || len(t.InputSchema) == 0 {
 				return errors.New("MCP inputSchema must be a JSON object")
 			}
 			size += len(t.InputSchema) + len(t.Description) + len(t.Name)
@@ -218,19 +223,26 @@ func slug(s string, n int) string {
 
 // Manager owns the servers belonging to one ACP session.
 type Manager struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	cwd      string
-	mu       sync.Mutex
-	servers  []*server
-	revision uint64
-	closed   bool
+	log       *slog.Logger
+	resources map[*server]bool
+	preparing sync.WaitGroup
+	closeDone chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
+	cwd       string
+	mu        sync.Mutex
+	servers   []*server
+	revision  uint64
+	closed    bool
 }
 
 // New creates an empty manager; connections are prepared explicitly.
-func New(parent context.Context, cwd string) *Manager {
+func New(parent context.Context, cwd string, log *slog.Logger) *Manager {
 	ctx, cancel := context.WithCancel(parent)
-	return &Manager{ctx: ctx, cancel: cancel, cwd: cwd}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Manager{ctx: ctx, cancel: cancel, cwd: cwd, log: log, resources: map[*server]bool{}, closeDone: make(chan struct{})}
 }
 
 // Change is an unpublished configuration whose new resources must be committed
@@ -245,27 +257,36 @@ type Change struct {
 
 // Prepare connects new servers without changing the active configuration.
 func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*1e9)
+	requestCtx := ctx
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	m.mu.Lock()
 	old := slices.Clone(m.servers)
 	revision, closed := m.revision, m.closed
+	if !closed {
+		m.preparing.Add(1)
+	}
 	m.mu.Unlock()
+	if !closed {
+		defer m.preparing.Done()
+	}
 	if closed || m.ctx.Err() != nil {
 		return nil, errClosed
 	}
 	if len(configs) > 16 {
 		return nil, errors.New("at most 16 MCP servers are supported")
 	}
-	change := &Change{manager: m, ctx: m.ctx, revision: revision, servers: make([]*server, len(configs))}
+	change := &Change{manager: m, ctx: requestCtx, revision: revision, servers: make([]*server, len(configs))}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var first error
 	sem := make(chan struct{}, 4)
-	for i, cfg := range configs {
+	for _, cfg := range configs {
 		if cfg.Type != "stdio" && cfg.Type != "http" {
 			return nil, errors.New("unsupported normalized MCP configuration")
 		}
+	}
+	for i, cfg := range configs {
 		var found *server
 		key, _ := json.Marshal(cfg)
 		for _, s := range old {
@@ -291,7 +312,7 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 				mu.Unlock()
 				return
 			}
-			s, err := connectServer(ctx, m.ctx, cfg, m.cwd)
+			s, err := connectServer(ctx, m.ctx, cfg, m.cwd, m.log)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -301,6 +322,9 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 				}
 				return
 			}
+			m.mu.Lock()
+			m.resources[s] = true
+			m.mu.Unlock()
 			change.servers[i] = s
 			change.created = append(change.created, s)
 		})
@@ -347,7 +371,7 @@ func (c *Change) Commit() error {
 	for _, s := range old {
 		if !slices.Contains(c.servers, s) {
 			s.peer.fail(errors.New("MCP configuration changed; operation outcome may be unknown"))
-			go s.close()
+			go m.closeResource(s)
 		}
 	}
 	m.mu.Unlock()
@@ -362,7 +386,7 @@ func (c *Change) Discard() {
 	c.settled = true
 	var wg sync.WaitGroup
 	for _, s := range c.created {
-		wg.Go(s.close)
+		wg.Go(func() { c.manager.closeResource(s) })
 	}
 	wg.Wait()
 }
@@ -382,20 +406,36 @@ func (m *Manager) Snapshot() []Tool {
 }
 
 // Close revokes every binding and releases the session's resources.
+func (m *Manager) closeResource(s *server) {
+	s.close()
+	m.mu.Lock()
+	delete(m.resources, s)
+	m.mu.Unlock()
+}
+
 func (m *Manager) Close() {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		<-m.closeDone
 		return
 	}
 	m.closed = true
 	m.cancel()
-	servers := m.servers
+	m.mu.Unlock()
+	m.preparing.Wait()
+	m.mu.Lock()
+	servers := make([]*server, 0, len(m.resources))
+	for s := range m.resources {
+		servers = append(servers, s)
+	}
 	m.servers = nil
 	m.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, s := range servers {
-		wg.Go(s.close)
+		wg.Go(func() { m.closeResource(s) })
 	}
 	wg.Wait()
+	close(m.closeDone)
 }
+

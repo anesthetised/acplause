@@ -96,7 +96,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		cancel:       cancel,
 		dirs:         dirs,
 		toolbox:      toolbox,
-		mcp:          mcp.New(ctx, cwd),
+		mcp:          mcp.New(ctx, cwd, d.log),
 		effort:       effortDefault,
 		updatedAt:    time.Now(),
 		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions)}},
@@ -109,20 +109,26 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 // once it is inserted, or fails with Request cancelled if the prompt is
 // cancelled first, through ctx or session/cancel.
 func (s *Session) Submit(ctx context.Context, prompt []acp.ContentBlock) *jsonrpc.Reply {
-	sub := &submission{ctx: ctx, prompt: prompt, reply: jsonrpc.NewReply()}
+	reply := jsonrpc.NewReply()
+	s.submit(ctx, prompt, reply)
+	return reply
+}
+
+func (s *Session) submit(ctx context.Context, prompt []acp.ContentBlock, reply *jsonrpc.Reply) {
+	sub := &submission{ctx: ctx, prompt: prompt, reply: reply}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || ctx.Err() != nil {
 		sub.reply.Reject(acp.ErrRequestCancelled())
-		return sub.reply
+		return
 	}
 	if s.lost {
 		sub.reply.Reject(errSessionLost())
-		return sub.reply
+		return
 	}
 	if s.model == "" {
 		sub.reply.Reject(acp.ErrInvalidParams("select a model before submitting a prompt"))
-		return sub.reply
+		return
 	}
 	s.queue = append(s.queue, sub)
 	sub.stopWatch = context.AfterFunc(ctx, func() { s.withdraw(sub) })
@@ -130,7 +136,6 @@ func (s *Session) Submit(ctx context.Context, prompt []acp.ContentBlock) *jsonrp
 		s.worker = make(chan struct{})
 		go s.work(s.worker)
 	}
-	return sub.reply
 }
 
 // Cancel stops the running turn and drops queued prompts.

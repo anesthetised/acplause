@@ -19,6 +19,7 @@ func TestMCPHelper(t *testing.T) {
 	}
 	sc := bufio.NewScanner(os.Stdin)
 	w := bufio.NewWriter(os.Stdout)
+	changed := false
 	for sc.Scan() {
 		var req struct {
 			ID     json.RawMessage
@@ -40,7 +41,7 @@ func TestMCPHelper(t *testing.T) {
 			if p.Cursor != "" {
 				name, next = "schedule_task", ""
 			}
-			result = map[string]any{"tools": []any{map[string]any{"name": name, "description": "fixture", "inputSchema": map[string]any{"type": "object"}}}, "nextCursor": next}
+			result = map[string]any{"tools": []any{map[string]any{"name": name, "description": fmt.Sprint("fixture-", changed), "inputSchema": map[string]any{"type": "object"}}}, "nextCursor": next}
 		case "tools/call":
 			var p struct {
 				Name      string
@@ -55,6 +56,10 @@ func TestMCPHelper(t *testing.T) {
 		}
 		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
 		fmt.Fprintln(w, string(b))
+		if req.Method == "tools/call" && os.Getenv("ACPLAUSE_MCP_REFRESH") == "1" {
+			changed = true
+			fmt.Fprintln(w, `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
+		}
 		_ = w.Flush()
 	}
 	os.Exit(0)
@@ -70,7 +75,7 @@ func helperConfig(t *testing.T, name string) Config {
 }
 
 func TestMCPStdioDiscoveryAndRawArguments(t *testing.T) {
-	m := New(context.Background(), t.TempDir())
+	m := New(context.Background(), t.TempDir(), nil)
 	t.Cleanup(m.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -122,5 +127,37 @@ func TestMCPEnvironment(t *testing.T) {
 	}
 	if !filepath.IsAbs(helperConfig(t, "s").Command) {
 		t.Fatal("helper command is not absolute")
+	}
+}
+
+func TestMCPCatalogRefreshRevokesOldDefinition(t *testing.T) {
+	m := New(context.Background(), t.TempDir(), nil)
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cfg := helperConfig(t, "s")
+	cfg.Env["ACPLAUSE_MCP_REFRESH"] = "1"
+	change, err := m.Prepare(ctx, []Config{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	old := m.Snapshot()[0]
+	if _, err = old.Call(ctx, `{}`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-old.Context().Done():
+	case <-ctx.Done():
+		t.Fatal("list changed did not refresh catalog")
+	}
+	if _, err = old.Call(ctx, `{}`); err == nil {
+		t.Fatal("old definition was not revoked")
+	}
+	tools := m.Snapshot()
+	if len(tools) != 2 || tools[0].Description != "fixture-true" || tools[0].Name != old.Name {
+		t.Fatalf("refresh: %+v", tools)
 	}
 }
