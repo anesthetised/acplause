@@ -14,7 +14,7 @@ import (
 	"github.com/anesthetised/acplause/internal/llm"
 )
 
-var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questions when you need input to continue. Use options for a single choice, or omit options for text. This requests information, never permission to perform an action. Never request secrets or credentials, including passwords, API keys, tokens, private keys, recovery codes or payment credentials. If credentials are needed, ask the user to configure them outside this conversation and report only whether setup is complete. Do not ask them to paste secrets into chat.", json.RawMessage(`{
+var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questions when you need input to continue. Use options for a single choice, or omit options for text. Set multiSelect:true with options to allow multiple choices, including an empty selection. This requests information, never permission to perform an action. Never request secrets or credentials, including passwords, API keys, tokens, private keys, recovery codes or payment credentials. If credentials are needed, ask the user to configure them outside this conversation and report only whether setup is complete. Do not ask them to paste secrets into chat.", json.RawMessage(`{
  "type":"object","properties":{
   "message":{"type":"string","minLength":1,"maxLength":2000},
   "questions":{"type":"array","minItems":1,"maxItems":3,"items":{
@@ -22,7 +22,8 @@ var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questi
     "id":{"type":"string","minLength":1,"maxLength":64},
     "title":{"type":"string","minLength":1,"maxLength":120},
     "question":{"type":"string","minLength":1,"maxLength":2000},
-    "options":{"type":"array","maxItems":10,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":200}}
+    "options":{"type":"array","maxItems":10,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":200}},
+    "multiSelect":{"type":"boolean","description":"Allow zero or more offered options; requires nonempty options."}
    },"required":["id","title","question"]
   }}
  },"required":["message","questions"]
@@ -32,19 +33,20 @@ func (s *Session) supportsForms() bool {
 	return s.deps.forms != nil && s.deps.forms.Load()
 }
 
-// parseQuestions accepts only the bounded string/enum surface from ADR 0011.
+// parseQuestions accepts only the bounded question surface from ADRs 0011/0017.
 // Unknown fields remain compatible; the model cannot supply arbitrary schemas.
 func parseQuestions(args string) (acp.ElicitationRequest, error) {
 	var input struct {
 		Message   string `json:"message"`
 		Questions []struct {
-			ID       string   `json:"id"`
-			Title    string   `json:"title"`
-			Question string   `json:"question"`
-			Options  []string `json:"options"`
+			ID          string   `json:"id"`
+			Title       string   `json:"title"`
+			Question    string   `json:"question"`
+			Options     []string `json:"options"`
+			MultiSelect bool     `json:"multiSelect"`
 		} `json:"questions"`
 	}
-	req := acp.ElicitationRequest{Mode: "form", RequestedSchema: acp.ElicitationSchema{Type: "object", Properties: map[string]acp.ElicitationStringProperty{}}}
+	req := acp.ElicitationRequest{Mode: "form", RequestedSchema: acp.ElicitationSchema{Type: "object", Properties: map[string]acp.ElicitationProperty{}}}
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		return req, fmt.Errorf("invalid ask_user arguments: %w", err)
 	}
@@ -67,7 +69,16 @@ func parseQuestions(args string) (acp.ElicitationRequest, error) {
 			}
 			seen[option] = true
 		}
-		req.RequestedSchema.Properties[q.ID] = acp.ElicitationStringProperty{Type: "string", Title: q.Title, Description: q.Question, Enum: q.Options}
+		property := acp.ElicitationProperty{Type: "string", Title: q.Title, Description: q.Question, Enum: q.Options}
+		if q.MultiSelect {
+			if len(q.Options) == 0 {
+				return req, fmt.Errorf("multiselect question %q requires options", q.ID)
+			}
+			property.Type, property.Enum = "array", nil
+			property.Items = &acp.ElicitationEnumItems{Type: "string", Enum: q.Options}
+			property.MaxItems = len(q.Options)
+		}
+		req.RequestedSchema.Properties[q.ID] = property
 		req.RequestedSchema.Required = append(req.RequestedSchema.Required, q.ID)
 	}
 	return req, nil
@@ -82,9 +93,22 @@ func questionResult(req acp.ElicitationRequest, resp acp.ElicitationResponse) to
 	if err := json.Unmarshal(resp.Content, &raw); err != nil || len(raw) != len(req.RequestedSchema.Properties) {
 		return fail("answers must contain exactly the requested fields")
 	}
-	answers := map[string]string{}
+	answers := map[string]any{}
 	for id, property := range req.RequestedSchema.Properties {
 		value, ok := raw[id]
+		if property.Type == "array" {
+			var selected []string
+			if !ok || json.Unmarshal(value, &selected) != nil || selected == nil || len(selected) > property.MaxItems {
+				return fail(fmt.Sprintf("answer %q must be an array of offered options", id))
+			}
+			for i, option := range selected {
+				if !slices.Contains(property.Items.Enum, option) || slices.Contains(selected[:i], option) {
+					return fail(fmt.Sprintf("answer %q contains an unknown or duplicate option", id))
+				}
+			}
+			answers[id] = selected
+			continue
+		}
 		var answer *string // JSON null must not become an empty string
 		if !ok || json.Unmarshal(value, &answer) != nil || answer == nil {
 			return fail(fmt.Sprintf("answer %q must be a string", id))

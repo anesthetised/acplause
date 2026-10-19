@@ -170,8 +170,11 @@ markers for historical images; switching back restores their pixels in model
 requests. Audio and other image formats are not supported.
 
 Clients advertising `capabilities.elicitation.form: {}` enable the agent-owned
-`ask_user` tool. It sends `elicitation/create` with one to three required string
-fields, optionally with single-choice options. Only a complete accepted answer
+`ask_user` tool. It sends `elicitation/create` with one to three required fields:
+text, single-choice strings, or multiple choices when a question sets
+`multiSelect: true` with nonempty options. Multiple-choice answers are arrays of
+distinct offered strings; an empty array explicitly selects none. Missing, null,
+duplicate and unoffered selections fail validation. Only a complete accepted answer
 with the requested keys and valid values reaches the model as answers; decline,
 cancel, malformed responses and request failures become failed tool results.
 While waiting, the tool stays pending and the session reports `requires_action`.

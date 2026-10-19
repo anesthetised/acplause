@@ -15,19 +15,27 @@ type ElicitationRequest struct {
 	RequestedSchema ElicitationSchema `json:"requestedSchema"`
 }
 
-// ElicitationSchema describes the required string fields acplause requests.
+// ElicitationSchema describes the required fields acplause requests.
 type ElicitationSchema struct {
-	Type       string                               `json:"type"`
-	Properties map[string]ElicitationStringProperty `json:"properties"`
-	Required   []string                             `json:"required"`
+	Type       string                         `json:"type"`
+	Properties map[string]ElicitationProperty `json:"properties"`
+	Required   []string                       `json:"required"`
 }
 
-// ElicitationStringProperty is a free-text or single-select form field.
-type ElicitationStringProperty struct {
-	Type        string   `json:"type"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Enum        []string `json:"enum,omitempty"`
+// ElicitationProperty is text, a single choice, or an array of choices.
+type ElicitationProperty struct {
+	Type        string                `json:"type"`
+	Title       string                `json:"title"`
+	Description string                `json:"description"`
+	Enum        []string              `json:"enum,omitempty"`
+	Items       *ElicitationEnumItems `json:"items,omitempty"`
+	MaxItems    int                   `json:"maxItems,omitempty"`
+}
+
+// ElicitationEnumItems limits multiselect answers to offered string values.
+type ElicitationEnumItems struct {
+	Type string   `json:"type"`
+	Enum []string `json:"enum"`
 }
 
 // ElicitationResponse retains answer JSON until the requested fields validate.

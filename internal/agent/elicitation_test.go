@@ -17,6 +17,40 @@ import (
 
 const questionArgs = `{"message":"Choose <&>","questions":[{"id":"choice","title":"Choice","question":"Which?","options":["a","b"]},{"id":"detail","title":"Detail","question":"Why?"},{"id":"last","title":"Last","question":"Anything else?"}]}`
 
+func TestElicitationMultiselect(t *testing.T) {
+	args := strings.Replace(questionArgs, `"options":["a","b"]`, `"options":["a","b"],"multiSelect":true`, 1)
+	req, err := parseQuestions(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := jsonrpc.Marshal(req.RequestedSchema)
+	if !strings.Contains(string(encoded), `"type":"array"`) || !strings.Contains(string(encoded), `"items":{"type":"string","enum":["a","b"]}`) {
+		t.Fatalf("multiselect not advertised: %s", encoded)
+	}
+	for _, tt := range []struct {
+		answer string
+		valid  bool
+	}{
+		{`["b","a"]`, true}, {`[]`, true}, {`["a"]`, true},
+		{`null`, false}, {`"a"`, false}, {`["c"]`, false},
+		{`["a","a"]`, false}, {`[null]`, false}, {`[1]`, false},
+	} {
+		t.Run(tt.answer, func(t *testing.T) {
+			content := json.RawMessage(`{"choice":` + tt.answer + `,"detail":"<&>","last":""}`)
+			out := questionResult(req, acp.ElicitationResponse{Action: "accept", Content: content})
+			if out.Failed == tt.valid || tt.valid && !strings.Contains(out.Output, `"choice":`+tt.answer) {
+				t.Fatalf("result: %+v", out)
+			}
+		})
+	}
+	if _, err := parseQuestions(strings.Replace(args, `"options":["a","b"],`, "", 1)); err == nil {
+		t.Fatal("multiselect without options accepted")
+	}
+	if _, err := parseQuestions(strings.Replace(args, `"multiSelect":true`, `"multiSelect":"yes"`, 1)); err == nil {
+		t.Fatal("malformed multiselect flag accepted")
+	}
+}
+
 func TestElicitationArguments(t *testing.T) {
 	options := make([]string, 10)
 	for i := range options {
