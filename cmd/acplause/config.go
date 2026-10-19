@@ -10,6 +10,7 @@ import (
 
 	"github.com/anesthetised/acplause/internal/agent"
 	"github.com/anesthetised/acplause/internal/llm"
+	"github.com/anesthetised/acplause/internal/tools"
 )
 
 // config is read from the environment.
@@ -25,10 +26,12 @@ type config struct {
 
 func loadConfig(getenv func(string) string) (config, error) {
 	cfg := config{
-		BaseURL:    cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
-		APIKey:     cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
-		DataDir:    getenv("ACPLAUSE_DATA_DIR"),
-		MCPTimeout: agent.DefaultMCPTimeout,
+		BaseURL:     cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
+		APIKey:      cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
+		DataDir:     getenv("ACPLAUSE_DATA_DIR"),
+		MaxRounds:   agent.DefaultMaxRounds,
+		BashTimeout: tools.DefaultBashTimeout,
+		MCPTimeout:  agent.DefaultMCPTimeout,
 	}
 
 	var errs []error
@@ -42,15 +45,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	if v := getenv("ACPLAUSE_MAX_ROUNDS"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			errs = append(errs, fmt.Errorf("ACPLAUSE_MAX_ROUNDS: want a positive integer, got %q", v))
+		if err != nil || n < 0 {
+			errs = append(errs, fmt.Errorf("ACPLAUSE_MAX_ROUNDS: want a nonnegative integer, got %q", v))
 		}
 		cfg.MaxRounds = n
 	}
 	if v := getenv("ACPLAUSE_BASH_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			errs = append(errs, fmt.Errorf("ACPLAUSE_BASH_TIMEOUT: want a positive duration such as 90s, got %q", v))
+		if err != nil || d < 0 {
+			errs = append(errs, fmt.Errorf("ACPLAUSE_BASH_TIMEOUT: want a nonnegative duration such as 90s, got %q", v))
 		}
 		cfg.BashTimeout = d
 	}

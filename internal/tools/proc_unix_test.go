@@ -14,7 +14,7 @@ import (
 )
 
 func TestBashTimeoutKillsTheProcessGroup(t *testing.T) {
-	w := newWorkspace(t, Options{BashTimeout: 300 * time.Millisecond})
+	w := newWorkspace(t, Options{BashTimeout: new(300 * time.Millisecond)})
 	pidFile := filepath.Join(w.cwd, "child.pid")
 	start := time.Now()
 	w.fails("bash", map[string]string{"command": "sleep 30 & echo $! > child.pid; wait"}, "timed out after 300ms")
@@ -25,7 +25,7 @@ func TestBashTimeoutKillsTheProcessGroup(t *testing.T) {
 }
 
 func TestBashCancellationKillsTheProcessGroup(t *testing.T) {
-	w := newWorkspace(t, Options{})
+	w := newWorkspace(t, Options{BashTimeout: new(time.Duration(0))})
 	pidFile := filepath.Join(w.cwd, "child.pid")
 	call, err := w.prepare("bash", map[string]string{"command": "sleep 30 & echo $! > child.pid; wait"})
 	if err != nil {

@@ -119,6 +119,27 @@ func TestCompactionKeepsLatestPromptAndToolExchange(t *testing.T) {
 	}
 }
 
+func TestCompactionWithUnlimitedRequests(t *testing.T) {
+	s, out := compactionSession(t, fakeModel(func(context.Context, llm.Request, func(llm.Delta)) (*llm.Completion, error) {
+		return &llm.Completion{Content: "Remember the task.", FinishReason: llm.FinishStop}, nil
+	}))
+	s.history = append(s.history,
+		llm.Message{Role: llm.RoleUser, Content: strings.Repeat("old request ", 600)},
+		llm.Message{Role: llm.RoleAssistant, Content: strings.Repeat("old answer ", 600)},
+		llm.Message{Role: llm.RoleUser, Content: "continue"})
+	req, err := s.prepareRequest(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestSize(req.Request) > 12000 || req.Messages[2].Content != "continue" {
+		t.Fatalf("compacted request: %+v", req)
+	}
+	start, end := (<-out).(acp.CompactionUpdate), (<-out).(acp.CompactionUpdate)
+	if start.Status != acp.CompactionInProgress || end.Status != acp.CompactionCompleted {
+		t.Fatalf("compaction: %+v, %+v", start, end)
+	}
+}
+
 func TestCompactionFailurePreservesHistory(t *testing.T) {
 	for _, kind := range []string{"empty", "tool", "length", "oversized", "error", "cancelled", "limit"} {
 		t.Run(kind, func(t *testing.T) {

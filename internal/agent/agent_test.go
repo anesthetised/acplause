@@ -108,6 +108,7 @@ func TestCancelledTurnEndsIdleCancelled(t *testing.T) {
 		return nil, ctx.Err()
 	})
 	s, out := testSession(t, model)
+	s.deps.maxRounds = 0
 	s.Submit(context.Background(), []acp.ContentBlock{acp.Text("wait")})
 	for u := range out {
 		if _, ok := u.(acp.AgentThoughtChunk); ok {

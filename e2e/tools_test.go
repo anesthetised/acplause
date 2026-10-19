@@ -104,6 +104,38 @@ func TestRoundLimit(t *testing.T) {
 	}
 }
 
+func TestUnlimitedRounds(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	for range 26 { // exceed the former default limit as well as zero
+		llm.enqueue(callTool("list_dir", `{}`))
+	}
+	llm.enqueue(reply("done"))
+	a, sid, _ := started(t, llm, withEnv("ACPLAUSE_MAX_ROUNDS=0"))
+	a.accepted(a.prompt(sid, "keep working"))
+	updates := a.untilIdle(sid)
+	if idle := updates[len(updates)-1]; idle.StopReason != "end_turn" {
+		t.Fatalf("idle: %+v", idle)
+	}
+	if n := llm.requestCount(); n != 27 {
+		t.Fatalf("model requests: %d", n)
+	}
+}
+
+func TestUnlimitedBashTimeout(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(callTool("bash", `{"command":"printf done"}`), reply("finished"))
+	a, sid, _ := started(t, llm, withEnv("ACPLAUSE_BASH_TIMEOUT=0"))
+	a.accepted(a.prompt(sid, "run"))
+	updates := a.untilIdle(sid)
+	calls := filter(updates, "tool_call_update")
+	completed := calls[len(calls)-1]
+	if completed.Status != "completed" || completed.text() != "done" || updates[len(updates)-1].StopReason != "end_turn" {
+		t.Fatalf("bash: %+v; updates: %v", completed, kinds(updates))
+	}
+}
+
 func TestMissingWriteContentPreservesFiles(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
@@ -143,7 +175,7 @@ func TestCancelDuringBash(t *testing.T) {
 		callTool("bash", `{"command":"sleep 60 & echo $! > child.pid; wait"}`),
 		reply("ok"),
 	)
-	a, sid, cwd := started(t, llm)
+	a, sid, cwd := started(t, llm, withEnv("ACPLAUSE_BASH_TIMEOUT=0", "ACPLAUSE_MAX_ROUNDS=0"))
 	pidFile := filepath.Join(cwd, "child.pid")
 
 	a.accepted(a.prompt(sid, "run it"))

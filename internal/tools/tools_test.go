@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type workspace struct {
@@ -104,6 +105,20 @@ func TestPrepareRejectsBadCalls(t *testing.T) {
 		if _, err := w.tb.Prepare(tt.name, tt.args); err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s %s: got %v, want %q", tt.name, tt.args, err, tt.want)
 		}
+	}
+}
+
+func TestBashTimeoutDefaultsAndZero(t *testing.T) {
+	defaults := Options{}.withDefaults()
+	if *defaults.BashTimeout != 30*time.Minute {
+		t.Fatalf("default bash timeout: %v", *defaults.BashTimeout)
+	}
+	w := newWorkspace(t, Options{BashTimeout: new(time.Duration(0))})
+	if *w.tb.opts.BashTimeout != 0 {
+		t.Fatal("explicit zero was replaced by a default")
+	}
+	if got := w.ok("bash", map[string]string{"command": "printf done"}); got != "done" {
+		t.Fatalf("unlimited command output: %q", got)
 	}
 }
 

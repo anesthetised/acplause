@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -24,8 +23,11 @@ import (
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
-// DefaultMCPTimeout bounds external tool execution independently of bash.
-const DefaultMCPTimeout = 10 * time.Minute
+// DefaultMaxRounds allows sustained tool work while bounding model requests.
+const DefaultMaxRounds = 200
+
+// DefaultMCPTimeout allows long delegated tasks independently of bash.
+const DefaultMCPTimeout = time.Hour
 
 // Model streams chat completions; *llm.Client implements it.
 type Model interface {
@@ -46,8 +48,8 @@ type ListModels func(ctx context.Context) ([]llm.Model, error)
 // Config configures an Agent. Zero values select defaults.
 type Config struct {
 	Info       acp.Implementation
-	MaxRounds  int            // model requests per turn; default 25
-	MCPTimeout *time.Duration // nil selects 10m; zero disables the tool deadline
+	MaxRounds  *int           // nil selects DefaultMaxRounds; zero disables the request limit
+	MCPTimeout *time.Duration // nil selects DefaultMCPTimeout; zero disables the tool deadline
 	Tools      tools.Options
 	Log        *slog.Logger
 	Store      Store // required: where sessions are kept
@@ -79,7 +81,10 @@ type Agent struct {
 
 // New creates an agent and starts loading the model catalog.
 func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
-	cfg.MaxRounds = cmp.Or(cfg.MaxRounds, 25)
+	maxRounds := DefaultMaxRounds
+	if cfg.MaxRounds != nil {
+		maxRounds = *cfg.MaxRounds
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
@@ -90,7 +95,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	}
 	a := &Agent{
 		cfg:        cfg,
-		deps:       deps{out: out, model: model, maxRounds: cfg.MaxRounds, mcpTimeout: mcpTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
+		deps:       deps{out: out, model: model, maxRounds: maxRounds, mcpTimeout: mcpTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*Session),

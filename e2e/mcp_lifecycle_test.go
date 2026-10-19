@@ -53,7 +53,7 @@ func TestMCPCancelAndLateResponse(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
 	llm.enqueue(mcpCall(t, "alpha", "wait", `{}`))
-	a := start(t, llm)
+	a := start(t, llm, withEnv("ACPLAUSE_MCP_TIMEOUT=0", "ACPLAUSE_MAX_ROUNDS=0"))
 	a.initialize()
 	cwd := t.TempDir()
 	log := filepath.Join(cwd, "calls")

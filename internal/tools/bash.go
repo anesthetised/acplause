@@ -14,7 +14,7 @@ import (
 var bashSpec = Spec{
 	Name:        "bash",
 	Kind:        acp.ToolExecute,
-	Description: "Run a bash command in the working directory and return its combined stdout and stderr. Use it for builds, tests, git and other shell work. Commands are killed after a timeout.",
+	Description: "Run a bash command in the working directory and return its combined stdout and stderr. Use it for builds, tests, git and other shell work. Commands are killed on cancellation or when the configured timeout is reached.",
 	Parameters: []byte(`{
 		"type": "object",
 		"properties": {
@@ -46,8 +46,12 @@ var errTimeout = errors.New("command timed out")
 // runShell runs command in its own process group, so that cancellation and
 // timeouts kill everything it started.
 func runShell(ctx context.Context, dir, command string, opts Options) (string, error) {
-	runCtx, cancel := context.WithTimeoutCause(ctx, opts.BashTimeout, errTimeout)
-	defer cancel()
+	runCtx := ctx
+	if *opts.BashTimeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeoutCause(ctx, *opts.BashTimeout, errTimeout)
+		defer cancel()
+	}
 
 	out := &cappedBuffer{limit: opts.OutputLimit}
 	cmd := exec.CommandContext(runCtx, "bash", "-c", command)
@@ -61,7 +65,7 @@ func runShell(ctx context.Context, dir, command string, opts Options) (string, e
 	case ctx.Err() != nil:
 		return out.String(), ctx.Err()
 	case errors.Is(context.Cause(runCtx), errTimeout):
-		return out.String(), fmt.Errorf("timed out after %s", opts.BashTimeout)
+		return out.String(), fmt.Errorf("timed out after %s", *opts.BashTimeout)
 	}
 	return out.String(), err
 }

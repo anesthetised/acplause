@@ -31,13 +31,21 @@ go install github.com/anesthetised/acplause/cmd/acplause@latest
 | ----------------------- | ------------------------------- | ------------------------------------- |
 | `ACPLAUSE_API_KEY`      | `$OPENROUTER_API_KEY`           | API key                               |
 | `ACPLAUSE_BASE_URL`     | `https://openrouter.ai/api/v1`  | any OpenAI-compatible API root        |
-| `ACPLAUSE_MAX_ROUNDS`   | `25`                            | model requests per turn               |
-| `ACPLAUSE_BASH_TIMEOUT` | `2m`                            | timeout of the `bash` tool            |
-| `ACPLAUSE_MCP_TIMEOUT`  | `10m`                           | MCP call timeout; `0` disables it     |
+| `ACPLAUSE_MAX_ROUNDS`   | `200`                           | model requests per turn; `0` disables |
+| `ACPLAUSE_BASH_TIMEOUT` | `30m`                           | bash tool timeout; `0` disables       |
+| `ACPLAUSE_MCP_TIMEOUT`  | `1h`                            | MCP call timeout; `0` disables        |
 | `ACPLAUSE_DATA_DIR`    | `~/.acplause`                    | session database directory            |
 | `ACPLAUSE_LOG_LEVEL`    | `info`                          | logs go to stderr                     |
 
 Point your ACP v2 client at the `acplause` binary with these variables set.
+The defaults allow sustained tool work, long builds and tests, and delegated
+MCP tasks. An unset or empty variable selects its default; explicit `0`
+disables only that limit. Negative values are rejected. Cancellation still
+stops a turn and its active tools when limits are disabled. MCP setup,
+discovery and cleanup keep their separate deadlines. Summary requests also
+count toward `ACPLAUSE_MAX_ROUNDS` when it is enabled. See
+[ADR 0008](docs/adr/0008-long-task-limits.md).
+
 The client receives the available models in `session/new` and selects one
 with `session/set_config_option`. New sessions reuse the last selected model
 and reasoning effort, remembered across restarts and editor windows in the

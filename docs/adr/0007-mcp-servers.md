@@ -198,6 +198,9 @@ difficult.
 
 ## Consequences
 
+- [ADR 0008](0008-long-task-limits.md) supersedes decision 12's default
+  tool-call deadline; the independent setup, discovery and cleanup budgets
+  remain in effect.
 - The implementation owns a small, explicit MCP compatibility surface and
   must test both wire transports rather than rely on SDK conformance.
 - Existing JSON history/transcript storage can hold the initial projections;

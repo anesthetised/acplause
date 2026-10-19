@@ -37,7 +37,8 @@ func requestSize(req llm.Request) uint64 {
 
 // prepareRequest runs only on the session worker, between complete tool
 // rounds. Snapshot edits do not touch replay; only a validated summary can
-// replace history. The current user prompt is never shortened.
+// replace history. The current user prompt is never shortened. A nil
+// remaining budget allows unlimited model requests, including summaries.
 func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRound, error) {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -178,7 +179,7 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if *remaining <= 1 { // leave a request for the actual answer
+		if remaining != nil && *remaining <= 1 { // leave a request for the actual answer
 			return "", errRoundLimit
 		}
 		var chunk llm.Request
@@ -208,7 +209,9 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		if end == 0 {
 			return "", fmt.Errorf("a history exchange is too large for a bounded compaction request")
 		}
-		*remaining--
+		if remaining != nil {
+			*remaining--
+		}
 		completion, err := s.deps.model.Chat(ctx, chunk, func(llm.Delta) {})
 		if err != nil {
 			return "", err

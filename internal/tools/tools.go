@@ -14,14 +14,19 @@ import (
 	"github.com/anesthetised/acplause/internal/acp"
 )
 
+// DefaultBashTimeout allows long builds and test suites to finish.
+const DefaultBashTimeout = 30 * time.Minute
+
 // Options tunes tool limits. Zero values select defaults.
 type Options struct {
-	BashTimeout time.Duration // default 2m
-	OutputLimit int           // bytes of command output kept; default 50 000
+	BashTimeout *time.Duration // nil selects DefaultBashTimeout; zero disables the deadline
+	OutputLimit int            // bytes of command output kept; default 50 000
 }
 
 func (o Options) withDefaults() Options {
-	o.BashTimeout = cmp.Or(o.BashTimeout, 2*time.Minute)
+	if o.BashTimeout == nil {
+		o.BashTimeout = new(DefaultBashTimeout)
+	}
 	o.OutputLimit = cmp.Or(o.OutputLimit, 50_000)
 	return o
 }

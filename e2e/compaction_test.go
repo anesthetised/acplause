@@ -60,7 +60,7 @@ func TestCompactionReportsFitsAndSurvivesRestart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	llm := newMockLLM(t, compactionModels)
-	a, sid, cwd := seedCompaction(t, llm, withDataDir(dir))
+	a, sid, cwd := seedCompaction(t, llm, withDataDir(dir), withEnv("ACPLAUSE_MAX_ROUNDS=0"))
 	llm.enqueue(reply("Keep the plan; the directory was inspected."), callTool("list_dir", `{}`), reply("done"))
 	a.accepted(a.prompt(sid, "continue"))
 	updates := a.untilIdle(sid)
