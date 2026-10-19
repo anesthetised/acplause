@@ -1,6 +1,6 @@
 # ADR 0009: Carry bounded image tool results through model history
 
-- Status: accepted; implementation started with #26
+- Status: accepted; validation and projection in #26, history and compaction in #27
 - Date: 2026-10-19
 - Issues: [#26](https://github.com/anesthetised/acplause/issues/26), [#27](https://github.com/anesthetised/acplause/issues/27), [#23](https://github.com/anesthetised/acplause/issues/23)
 - Scope change: ADR 0007 binary-image omission, and ADR 0006 image budgeting/summary projection, when implemented
@@ -31,6 +31,22 @@ T3 browser tools return screenshots. The MCP transport accepts them, but the cur
 ## Consequences
 
 Inline storage deliberately trades disk duplication for a small implementation and existing transactional guarantees. Synthetic image messages require provider smoke coverage and must not affect latest-user tracking, titles or turn grouping. Explicit format and request bounds may reject some screenshots; a later ADR can expand formats or introduce an attachment store.
+
+## Implementation notes
+
+#27 resolves points the decisions above leave open, without changing them:
+
+- The image policy runs on a copy of the history. Text trimming and
+  compaction still work on the history itself, so an image removed from one
+  request is never persisted.
+- When a request is over its context budget, images leave before ADR 0006
+  trims tool output: their removal is reversible and trimming is not.
+  Images leave a whole message at a time, oldest first. The count and byte
+  caps also apply when the model publishes no context length.
+- The protected content is the set ADR 0006 compaction retains: the latest
+  user prompt and the most recent exchange of its turn.
+- Each message with images adds 256 estimated tokens, beyond the per-image
+  reserve, for the tool label, the synthetic message or an omission marker.
 
 ## Sources and execution
 

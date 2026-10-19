@@ -56,11 +56,12 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 	}
 }
 
-// request snapshots what the next model request needs.
+// request snapshots what the next model request needs. The image policy is
+// taken with the model, so a selection change cannot mix the two.
 func (s *Session) request() modelRound {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	req := llm.Request{Model: s.model, Messages: slices.Clone(s.history)}
+	req := llm.Request{Model: s.model, Messages: slices.Clone(s.history), Vision: s.catalog.vision(s.model)}
 	for _, spec := range s.toolbox.Specs() {
 		req.Tools = append(req.Tools, llm.FunctionTool(spec.Name, spec.Description, spec.Parameters))
 	}
