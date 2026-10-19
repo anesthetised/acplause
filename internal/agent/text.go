@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/anesthetised/acplause/internal/acp"
@@ -28,8 +29,8 @@ func systemPrompt(cwd string, dirs []string, instructions string) string {
 	return prompt
 }
 
-// promptText renders a prompt for the model. Content beyond the baseline
-// text and resource links is not advertised and is skipped.
+// promptText renders a prompt for the model. Content beyond text, resource
+// links and embedded resources is not advertised and is skipped.
 func promptText(blocks []acp.ContentBlock) string {
 	var parts []string
 	for _, b := range blocks {
@@ -38,14 +39,22 @@ func promptText(blocks []acp.ContentBlock) string {
 			parts = append(parts, b.Text)
 		case acp.ContentResourceLink:
 			parts = append(parts, fmt.Sprintf("[%s](%s)", b.Name, b.URI))
+		case acp.ContentResource:
+			if r := b.Resource; r != nil && r.Text != nil {
+				parts = append(parts, fmt.Sprintf("<resource uri=%q>\n%s\n</resource>", r.URI, *r.Text))
+			} else if r != nil {
+				parts = append(parts, fmt.Sprintf("[binary resource omitted: %s]", r.URI))
+			}
 		}
 	}
 	return cmp.Or(strings.Join(parts, "\n\n"), "(empty message)")
 }
 
-// title names a session after the first line of its first prompt.
+// title names a session after the first line of its first prompt's text
+// and links; embedded resources would title it after their markup.
 func title(blocks []acp.ContentBlock) string {
 	const width = 80
+	blocks = slices.DeleteFunc(slices.Clone(blocks), func(b acp.ContentBlock) bool { return b.Type == acp.ContentResource })
 	line, _, _ := strings.Cut(strings.TrimSpace(promptText(blocks)), "\n")
 	if runes := []rune(line); len(runes) > width {
 		return string(runes[:width-1]) + "…"

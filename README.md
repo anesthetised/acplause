@@ -77,6 +77,11 @@ sent once, as a `session_info_update`, when that prompt is accepted, and is
 returned by `session/list`. It is not replayed on resume: replay is
 conversation history, and the title is metadata that `session/list` reports.
 
+Prompts may embed resources (`session.prompt.embeddedContext`). A text
+resource reaches the model as `<resource uri="...">` with its contents; a blob
+resource is replaced by a one-line note naming its URI. The client still gets
+every block echoed back unchanged. Images and audio are not supported.
+
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
 already running keeps its roots until it finishes.

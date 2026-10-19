@@ -146,7 +146,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 		Info:            a.cfg.Info,
 		Capabilities: acp.AgentCapabilities{
 			Session: &acp.SessionCapabilities{
-				Prompt:                &acp.PromptCapabilities{},
+				Prompt:                &acp.PromptCapabilities{EmbeddedContext: &acp.Supported{}},
 				AdditionalDirectories: &acp.Supported{},
 			},
 		},
