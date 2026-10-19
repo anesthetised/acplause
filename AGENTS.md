@@ -78,7 +78,8 @@ testdata/schema/v2 pinned ACP schema; see VERSION
   with `readOnlyHint`; a lost response never causes a tools/call replay.
 - **MCP configs stay in memory.** Never persist/log environment values,
   headers or upstream session IDs. Preserve raw JSON until result projection;
-  binary content is omitted until #23, never copied into text/history.
+  validated PNG/JPEG tool images use typed history attachments (ADR 0009),
+  never base64 in text, summaries or rawOutput. Other binary content is omitted.
 
 ## Code style
 
@@ -120,8 +121,9 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 ## Out of scope
 
-Auth methods, audio prompts/results, image tool results and image formats beyond
-validated PNG/JPEG prompts ([ADR 0010](docs/adr/0010-image-prompts.md)),
+Auth methods, audio prompts/results and image formats beyond validated PNG/JPEG
+prompts and tool results ([ADR 0009](docs/adr/0009-image-tool-results.md),
+[ADR 0010](docs/adr/0010-image-prompts.md)),
 non-OpenAI-compatible backends, legacy MCP HTTP+SSE and MCP server capabilities
 beyond tools. ACP v2 has no
 client `fs/*` or `terminal/*` methods. The roadmap

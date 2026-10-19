@@ -17,7 +17,7 @@ first, and works in your workspace through tools.
   everything a command started, session list/resume/close/delete.
 - Sessions survive restarts and can move between editor windows.
 - Model and reasoning effort selection from OpenRouter's model list.
-- PNG/JPEG prompt attachments for models known to accept images.
+- PNG/JPEG prompt attachments and MCP tool images for models known to accept images.
 - Session-owned MCP tools over stdio and Streamable HTTP.
 
 ## Install
@@ -188,13 +188,27 @@ stdin, waits one second, sends TERM, waits one second, then kills and reaps;
 Unix cleanup includes the process group. Other platforms clean up the direct
 child only. HTTP DELETE has a two-second deadline. Limits are 16 servers,
 100 pages/1,024 tools per server, 8 MiB per message/event/catalog and 256 KiB
-per projected result; exceeding a limit fails explicitly.
+per projected text/JSON result; exceeding a limit fails explicitly.
 
-Text, embedded text resources and resource links are supported. Image, audio
-and blob results produce omission markers; unsupported-only output fails
-with a possible-completion warning. Binary payloads are not stored or sent to
-the model. Image projection is deferred to [#23](https://github.com/anesthetised/acplause/issues/23).
-See [ADR 0007](docs/adr/0007-mcp-servers.md) and the
+Text, embedded text resources, resource links and validated PNG/JPEG tool
+images are supported. Images reach the ACP client and the vision model, with
+their originating tool-call IDs. Chat Completions receives all sibling tool
+results before a separate user message labeled as untrusted tool-image context.
+The model selected for that round must explicitly advertise image input;
+text-only or unknown models get omission markers, without a model switch.
+
+Tool images have the same per-image and per-result limits as prompt images:
+4 MiB and 16 million pixels per image, four images and 8 MiB decoded total per
+result. The 8 MiB MCP frame limit still applies before image validation.
+Invalid, unsupported and excess images produce omission markers, retaining
+usable text/JSON and images that fit. Audio and blob results remain omitted.
+An unsupported-only result fails with a possible-completion warning; image
+projection never repeats the remote operation. Images persist for resume and
+replay, while summaries and ACP rawOutput carry descriptors without base64.
+Actual T3 screenshot interoperability remains a runtime gate in
+[#38](https://github.com/anesthetised/acplause/issues/38).
+See [ADR 0009](docs/adr/0009-image-tool-results.md),
+[ADR 0007](docs/adr/0007-mcp-servers.md) and the
 [real T3 smoke record](docs/testing/mcp-t3-smoke.md).
 
 ## Context compaction
@@ -216,8 +230,8 @@ Sessions are stored in `~/.acplause/acplause.db`; `ACPLAUSE_DATA_DIR` selects
 another directory. acplause creates the directory with permissions `0700`
 and the database with `0600`. The database holds prompts, model output and
 tool output in plain text, along with workspace paths, titles, timestamps,
-model and effort selections, and accumulated cost. Prompt images are stored
-inline in model history and the original ACP transcript until session deletion;
+model and effort selections, and accumulated cost. Prompt and tool images are
+stored inline in model history and the original ACP transcript until session deletion;
 these copies increase database size, and there is no session-wide storage
 quota. See [ADR 0004](docs/adr/0004-sqlite-storage.md).
 

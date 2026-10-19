@@ -2,8 +2,9 @@
 
 - Status: accepted
 - Date: 2026-10-19
-- Issues: #12, #13, #14; image follow-up: #23
+- Issues: #12, #13, #14; image support: #23 and [ADR 0009](0009-image-tool-results.md)
 - Supersedes: ADR 0001's MCP exclusion
+- Partly superseded: image omission in decisions 10 and 15 by [ADR 0009](0009-image-tool-results.md), implemented in #23
 - ACP source: `testdata/schema/v2/schema.json` at `3be9cfc`
 - MCP sources: [2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
   [transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
