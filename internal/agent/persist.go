@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -222,6 +223,55 @@ func (s *Session) repair() {
 			}
 		}
 	}
+}
+
+// claimTurn stages the prompt and running state in one ownership-checked
+// transaction. Requires flushMu and mu; releases mu during I/O so protocol
+// handlers stay responsive. A successful commit is the insertion boundary:
+// cancellation after it still acknowledges the prompt, then ends the turn.
+func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.Message, updated time.Time) error {
+	if ctx.Err() != nil {
+		return acp.ErrRequestCancelled()
+	}
+	if s.deps.store == nil {
+		return nil
+	}
+	sess, history, transcript, undo, err := s.pending()
+	if err == nil {
+		var h, t []byte
+		h, err = json.Marshal(user)
+		if err == nil {
+			t, err = encodeEntry(msg)
+		}
+		if err == nil {
+			history = append(history, store.Row{Seq: len(s.history) - 1, Data: h})
+			transcript = append(transcript, store.Row{Seq: len(s.transcript), Data: t})
+			sess.State, sess.UpdatedAt = string(acp.StateRunning), updated
+			if sess.Title == "" {
+				sess.Title = title(msg.Content)
+			}
+			s.mu.Unlock()
+			err = s.deps.store.Save(ctx, sess, history, transcript)
+			s.mu.Lock()
+		}
+	}
+	if err == nil {
+		s.saved++ // the staged user message is now durable
+		return nil
+	}
+	if undo != nil {
+		undo()
+	}
+	if errors.Is(err, store.ErrLost) {
+		s.lost = true
+		return errSessionLost()
+	}
+	if ctx.Err() != nil {
+		return acp.ErrRequestCancelled()
+	}
+	// Other storage failures retain the existing in-memory fallback.
+	s.deps.log.Warn("saving session", "session", s.id, "err", err)
+	return nil
 }
 
 func errSessionBusy() *jsonrpc.Error {

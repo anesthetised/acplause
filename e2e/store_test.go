@@ -1,9 +1,13 @@
 package e2e
 
 import (
+	"database/sql"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite" // exercises persistence across processes
 )
 
 // Two agents sharing a data directory stand in for two editor windows.
@@ -105,5 +109,38 @@ func TestBusySessionIsNotTakenOver(t *testing.T) {
 	close(release)
 	if idle := a.untilIdle(sid); idle[len(idle)-1].StopReason != "end_turn" {
 		t.Fatalf("owner's turn: %v", kinds(idle))
+	}
+}
+
+func TestContendedPromptCanBeCancelled(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	a, sid, cwd := started(t, newMockLLM(t), withDataDir(dir))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db")+"?_txlock=immediate&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	prompt := a.prompt(sid, "cancel before insertion")
+	// This response must arrive while the write lock is still held.
+	setModel(a, sid)
+	a.notify("session/cancel", map[string]any{"sessionId": sid})
+	// Fence the cancellation on the protocol read loop before unlocking.
+	setModel(a, sid)
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if resp := a.response(prompt); resp.Error == nil || resp.Error.Code != -32800 {
+		t.Fatalf("cancelled prompt: %+v", resp)
+	}
+	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
+	if replay := a.untilIdle(sid); len(replay) != 1 {
+		t.Fatalf("cancelled prompt was inserted: %v", kinds(replay))
 	}
 }

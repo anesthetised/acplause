@@ -10,8 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-
-	_ "modernc.org/sqlite" // expires a dead agent's lease without waiting 30 s
 )
 
 // kill bypasses graceful shutdown to exercise crash recovery.

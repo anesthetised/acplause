@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -14,7 +13,6 @@ import (
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
-	"github.com/anesthetised/acplause/internal/store"
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
@@ -298,7 +296,6 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	if !s.insert(ctx, sub) {
 		return
 	}
-	s.setState(acp.StateUpdate{State: acp.StateRunning})
 	stop, err := s.converse(ctx)
 	if ctx.Err() != nil {
 		stop, err = acp.StopCancelled, nil
@@ -327,22 +324,26 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 		return false
 	}
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt)})
+	user := llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt)}
+	updated := time.Now()
+	// Until the transaction commits, neither replay nor the model may see
+	// the prompt. Cancellation remains available while SQLite is busy.
+	saveCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(sub.ctx, cancel)
+	defer stop()
+	defer cancel()
+	if err := s.claimTurn(saveCtx, msg, user, updated); err != nil {
+		sub.reply.Reject(err)
+		return false
+	}
+	s.history = append(s.history, user)
 	s.transcript = append(s.transcript, msg)
 	s.dirty[len(s.transcript)-1] = true
 	first := s.title == ""
 	if first {
 		s.title = title(sub.prompt)
 	}
-	s.updatedAt = time.Now()
-	if !s.claimTurn() {
-		s.history, s.transcript = s.history[:len(s.history)-1], s.transcript[:len(s.transcript)-1]
-		if first {
-			s.title = ""
-		}
-		sub.reply.Reject(errSessionLost())
-		return false
-	}
+	s.updatedAt = updated
 	sub.reply.Resolve(acp.PromptResponse{MessageID: msg.MessageID})
 	s.send(msg)
 	if first {
@@ -350,33 +351,8 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 		// session/list already reports the title.
 		s.send(acp.SessionInfoUpdate{Title: s.title, UpdatedAt: s.updatedAt.UTC().Format(time.RFC3339Nano)})
 	}
-	return true
-}
-
-// claimTurn stores the inserted prompt with the session running, in one
-// transaction that also checks this process still owns the session, so a
-// takeover by another process and a new turn cannot both win (ADR 0004).
-// It reports false when the session was lost. Requires s.flushMu and s.mu.
-func (s *Session) claimTurn() bool {
-	if s.deps.store == nil {
-		return true
-	}
-	sess, history, transcript, undo, err := s.pending()
-	if err == nil {
-		sess.State = string(acp.StateRunning)
-		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript)
-	}
-	switch {
-	case errors.Is(err, store.ErrLost):
-		s.lost = true
-		undo()
-		return false
-	case err != nil:
-		if undo != nil {
-			undo()
-		}
-		s.deps.log.Warn("saving session", "session", s.id, "err", err)
-	}
+	s.state = acp.StateUpdate{State: acp.StateRunning}
+	s.send(s.state)
 	return true
 }
 

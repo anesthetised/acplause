@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
+	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
 	"github.com/anesthetised/acplause/internal/store"
 )
@@ -52,6 +55,119 @@ func TestRestoreRepairsInterruptedTools(t *testing.T) {
 			s.repair()
 			if len(s.history) != 4 {
 				t.Fatal("repair duplicated a tool result")
+			}
+		})
+	}
+}
+
+// gatedStore holds prompt persistence at the ownership check.
+type gatedStore struct {
+	Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedStore) Save(ctx context.Context, sess store.Session, _, _ []store.Row) error {
+	if sess.State == string(acp.StateRunning) {
+		close(g.entered)
+		<-g.release
+		return ctx.Err()
+	}
+	return nil
+}
+
+func TestPromptSaveDoesNotBlockSessionHandlers(t *testing.T) {
+	g := &gatedStore{entered: make(chan struct{}), release: make(chan struct{})}
+	out := make(recorder, 32)
+	s, err := newSession(context.Background(), deps{out: out, store: g}, newCatalog([]llm.Model{{ID: "m"}}), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	defer close(g.release)
+	s.model = "m"
+	s.Submit(context.Background(), []acp.ContentBlock{acp.Text("not inserted yet")})
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("prompt did not reach the store")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		if err := s.SetConfigOption(configModel, acp.ConfigValueID, json.RawMessage(`"m"`)); err != nil {
+			done <- err
+			return
+		}
+		if err := s.Resume(nil, true); err != nil {
+			done <- err
+			return
+		}
+		s.Cancel()
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session handlers blocked on prompt persistence")
+	}
+	if u := <-out; u.(acp.StateUpdate).State != acp.StateIdle {
+		t.Fatalf("uncommitted prompt visible in replay: %+v", u)
+	}
+	select {
+	case u := <-out:
+		t.Fatalf("unexpected update before insertion: %+v", u)
+	default:
+	}
+}
+
+// saveStore isolates the transaction outcome at the insertion boundary.
+type saveStore struct {
+	Store
+	save func(context.Context, store.Session, []store.Row, []store.Row) error
+}
+
+func (s saveStore) Save(ctx context.Context, sess store.Session, h, t []store.Row) error {
+	return s.save(ctx, sess, h, t)
+}
+
+func TestPromptInsertionAtCommitBoundary(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("committed=%t", committed), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			out := make(recorder, 32)
+			s, err := newSession(context.Background(), deps{out: out}, newCatalog(nil), t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			s.deps.store = saveStore{save: func(_ context.Context, sess store.Session, h, tr []store.Row) error {
+				if sess.State != "running" || len(h) != 1 || len(tr) != 1 {
+					t.Fatalf("prompt not staged with running state: %+v, %v, %v", sess, h, tr)
+				}
+				cancel()
+				if !committed {
+					return context.Canceled
+				}
+				return nil
+			}}
+			sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("hello")}, reply: jsonrpc.NewReply()}
+			if inserted := s.insert(ctx, sub); inserted != committed {
+				t.Fatalf("inserted=%t, committed=%t", inserted, committed)
+			}
+			if committed {
+				if len(s.history) != 2 || len(s.transcript) != 1 || s.saved != 1 || s.state.State != acp.StateRunning {
+					t.Fatal("committed prompt missing from memory")
+				}
+				if _, ok := (<-out).(acp.UserMessage); !ok {
+					t.Fatal("committed prompt not echoed")
+				}
+			} else if len(s.history) != 1 || len(s.transcript) != 0 || len(out) != 0 || s.title != "" {
+				t.Fatal("rolled-back prompt escaped into the session")
 			}
 		})
 	}
