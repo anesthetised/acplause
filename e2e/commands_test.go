@@ -173,7 +173,11 @@ func TestCompactCommandCancelsBeforeInsertion(t *testing.T) {
 			if err := a.response(command).Error; err == nil || err.Code != -32800 {
 				t.Fatalf("queued command: %+v", err)
 			}
-			close(release)
+			if !sessionCancel {
+				// Session cancellation must abort the stream; releasing it
+				// would race normal completion against that assertion.
+				close(release)
+			}
 			updates := a.untilIdle(sid)
 			want := "end_turn"
 			if sessionCancel {
