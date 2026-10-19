@@ -89,6 +89,7 @@ type update struct {
 	UpdatedAt       string          `json:"updatedAt"`
 	Kind            string          `json:"kind"`
 	RawInput        json.RawMessage `json:"rawInput"`
+	Plan            *planSnapshot   `json:"plan"`
 	Locations       []struct {
 		Path string `json:"path"`
 	} `json:"locations"`

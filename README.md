@@ -24,6 +24,7 @@ first, and works in your workspace through tools.
 - PNG/JPEG prompt attachments and MCP tool images for models known to accept images.
 - Session-owned MCP tools over stdio and Streamable HTTP.
 - Structured user questions on clients advertising ACP form elicitation.
+- Native ACP execution plans with persistent progress snapshots.
 
 ## Install
 
@@ -72,6 +73,7 @@ support, session creation fails. See [ADR 0005](docs/adr/0005-remember-model-sel
 | `edit`        | `edit`    | replace one exact occurrence                      |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
 | `ask_user`    | `other`   | one to three text/choice questions, when supported |
+| `update_plan` | `other`   | replace the current turn's execution plan          |
 
 `write_file` and `edit` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
@@ -146,6 +148,23 @@ elicitation. See
 [ADR 0011](docs/adr/0011-structured-user-questions.md) and the
 [T3 form smoke procedure](docs/testing/t3-first-class-smoke.md). Actual T3 question
 card acceptance remains pending [#38](https://github.com/anesthetised/acplause/issues/38).
+
+For multi-step work, the model can publish a native ACP plan with `update_plan`.
+Each call replaces the complete list of one to twenty entries, with priorities
+`high`, `medium` or `low` and statuses `pending`, `in_progress` or `completed`.
+At most one entry may be in progress; each entry has nonblank content of up to
+1000 characters. Invalid arguments fail the tool without changing the plan.
+
+The agent assigns one plan ID per accepted user turn and returns it in the
+tool result. Later updates in that turn reuse it; later turns create new plans.
+Resume replays the latest snapshot of each plan at its original conversation
+position. Cancellation, errors and restarts preserve unfinished statuses.
+Plans report progress without executing commands, changing files or asking
+permission, and require no optional client capability. See
+[ADR 0012](docs/adr/0012-structured-plans.md). Automated tests cover the protocol;
+actual T3 rendering remains pending the
+[runtime acceptance procedure](docs/testing/t3-first-class-smoke.md) in
+[#38](https://github.com/anesthetised/acplause/issues/38).
 
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call

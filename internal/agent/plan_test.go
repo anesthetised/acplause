@@ -221,11 +221,6 @@ func TestPlanUnfinishedOnTurnFailureOrCancellation(t *testing.T) {
 		t.Run(map[bool]string{false: "failure", true: "cancelled"}[cancelled], func(t *testing.T) {
 			var s *Session
 			model := fakeModel(func(ctx context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
-				for _, tool := range req.Tools {
-					if tool.Function.Name == "update_plan" {
-						t.Error("groundwork advertised a model tool before activation")
-					}
-				}
 				if _, err := s.updatePlan(ctx, []acp.PlanEntry{{Content: "unfinished", Priority: "high", Status: "in_progress"}}); err != nil {
 					return nil, err
 				}

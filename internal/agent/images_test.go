@@ -221,7 +221,7 @@ func TestProtectedImagesOverLimitFail(t *testing.T) {
 }
 
 func TestImagesLeaveBeforeTextIsTrimmed(t *testing.T) {
-	s, _ := imageSession(t, noModel(t), 34000) // input budget 25500, including tool definitions
+	s, _ := imageSession(t, noModel(t), 0)
 	img := testImage(t, 4, 4)
 	long := strings.Repeat("output ", 500)
 	s.history = append(s.history,
@@ -229,12 +229,17 @@ func TestImagesLeaveBeforeTextIsTrimmed(t *testing.T) {
 		callMessage("a"), imageResult("a", long, img),
 		callMessage("b"), imageResult("b", "b", img),
 		callMessage("c"), imageResult("c", "c", img))
+	// Require one image's removal regardless of the current tool catalog size.
+	budget := requestSize(s.request().Request) - imageTokens/2
+	model := s.catalog.models["m"]
+	model.ContextLength = budget * 4 / 3
+	s.catalog.models["m"] = model
 	before := slices.Clone(s.history)
 	req, err := s.prepareRequest(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requestSize(req.Request) > 25500 || len(req.Messages[3].Images) != 0 || len(req.Messages[5].Images) != 1 || len(req.Messages[7].Images) != 1 {
+	if requestSize(req.Request) > budget || len(req.Messages[3].Images) != 0 || len(req.Messages[5].Images) != 1 || len(req.Messages[7].Images) != 1 {
 		t.Fatalf("size %d, images %d", requestSize(req.Request), imageCount(req.Messages))
 	}
 	if !strings.HasPrefix(req.Messages[3].Content, long) {

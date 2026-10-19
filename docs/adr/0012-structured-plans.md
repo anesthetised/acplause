@@ -1,6 +1,6 @@
 # ADR 0012: Publish and persist item-based execution plans
 
-- Status: accepted; snapshot groundwork implemented in #31; model tool activation pending #32 and actual T3 acceptance pending #38
+- Status: accepted; snapshots and model tool implemented in #31/#32; actual T3 acceptance pending #38
 - Date: 2026-10-19
 - Issues: [#31](https://github.com/anesthetised/acplause/issues/31), [#32](https://github.com/anesthetised/acplause/issues/32)
 - Scope change: No existing decision
@@ -38,7 +38,8 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
 Execution plan: [plans](../../tasks/t3/plans.md). Snapshot types, validation,
-per-turn identity, persistence and replay are implemented as groundwork in #31.
-No model tool is advertised until #32 supplies activation and protocol e2e
-coverage. Actual T3 acceptance remains tracked in #38.
+per-turn identity, persistence and replay are implemented in #31. The agent-owned
+`update_plan` tool is activated in #32, with in-package and schema-valid e2e
+coverage for replacements, per-turn identity, invalid arguments, cancellation,
+failure and restart/replay. Actual T3 acceptance remains tracked in #38.
 

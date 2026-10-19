@@ -98,7 +98,7 @@ func TestMCPStdioRelay(t *testing.T) {
 	if pending != 3 {
 		t.Fatalf("readOnlyHint bypassed permission: %v", kinds(updates))
 	}
-	if len(llm.request(0).Tools) != 20 {
+	if len(llm.request(0).Tools) != 21 {
 		t.Fatalf("pagination or collision lost tools: %d", len(llm.request(0).Tools))
 	}
 	data, _ := os.ReadFile(log)
