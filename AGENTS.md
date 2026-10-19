@@ -69,8 +69,9 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 ## Code style
 
-- Go standard library only. The single third-party module, the JSON Schema
-  validator, is used by tests alone. Ask before adding a dependency.
+- Go standard library, plus `modernc.org/sqlite` for storage
+  ([ADR 0004](docs/adr/0004-sqlite-storage.md)). The JSON Schema validator is
+  used by tests alone. Ask before adding any other dependency.
 - Prefer stdlib helpers (`cmp.Or`, `slices`, `maps`, `errors.AsType`) over
   hand-rolled ones.
 - Doc comments on every exported identifier and on non-obvious unexported
