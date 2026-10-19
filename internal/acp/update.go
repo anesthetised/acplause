@@ -165,15 +165,49 @@ func setSlice[S ~[]E, E any](dst *S, src S) {
 	}
 }
 
-// ToolCallContent is content produced by a tool call. acplause only
-// produces regular content blocks.
+// ToolCallContent is content produced by a tool call: a content block or a
+// file diff. Fields of the other variant stay zero and are omitted.
 type ToolCallContent struct {
 	Type    string       `json:"type"`
-	Content ContentBlock `json:"content"`
+	Content ContentBlock `json:"content,omitzero"`  // content
+	Changes []DiffChange `json:"changes,omitempty"` // diff; required, never empty
+	Patch   *DiffPatch   `json:"patch,omitempty"`   // diff
 }
 
 // ToolText wraps text as tool call content.
 func ToolText(s string) ToolCallContent { return ToolCallContent{Type: "content", Content: Text(s)} }
+
+// ToolDiff wraps file changes as tool call content. patch may be nil when
+// rendering it is not feasible; changes stay authoritative.
+func ToolDiff(changes []DiffChange, patch *DiffPatch) ToolCallContent {
+	return ToolCallContent{Type: "diff", Changes: changes, Patch: patch}
+}
+
+// Diff operations acplause produces.
+const (
+	DiffAdd    = "add"
+	DiffModify = "modify"
+)
+
+// DiffChange is one file-level change of a diff.
+type DiffChange struct {
+	Operation string `json:"operation"`
+	Path      string `json:"path"` // absolute
+	FileType  string `json:"fileType,omitempty"`
+}
+
+// FileText is the DiffChange file type of text files.
+const FileText = "text"
+
+// DiffPatch is renderable patch text consistent with the diff's changes.
+type DiffPatch struct {
+	Format string `json:"format"`
+	Text   string `json:"text"`
+}
+
+// PatchGit is git's --patch format with absolute paths and no a/ and b/
+// prefixes, the only format ACP defines.
+const PatchGit = "git_patch"
 
 // ToolCallLocation is a file a tool call touches.
 type ToolCallLocation struct {

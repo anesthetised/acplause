@@ -39,12 +39,14 @@ type Call struct {
 	Title     string
 	Locations []string // absolute paths the call touches
 	run       func(ctx context.Context) (string, error)
+	diff      *acp.ToolCallContent // set by run before it writes, for file tools
 }
 
 // Result is what a call reports back to the model.
 type Result struct {
 	Output string
 	Failed bool
+	Diff   *acp.ToolCallContent // the change a successful file tool made
 }
 
 // Run executes the call. When ctx is cancelled the call stops as soon as it
@@ -52,7 +54,7 @@ type Result struct {
 func (c *Call) Run(ctx context.Context) Result {
 	out, err := c.run(ctx)
 	if err == nil {
-		return Result{Output: cmp.Or(out, "(no output)")}
+		return Result{Output: cmp.Or(out, "(no output)"), Diff: c.diff}
 	}
 	if out != "" {
 		out += "\n"

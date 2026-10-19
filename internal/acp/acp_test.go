@@ -25,6 +25,15 @@ func TestSessionNotificationPutsDiscriminatorFirst(t *testing.T) {
 			UsageUpdate{Used: 10, Size: 100, Cost: &Cost{Amount: 0.5, Currency: "USD"}},
 			`{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":10,"size":100,"cost":{"amount":0.5,"currency":"USD"}}}`,
 		},
+		{
+			ToolCallUpdate{ToolCallID: "t1", Content: []ToolCallContent{
+				ToolDiff([]DiffChange{{Operation: DiffModify, Path: "/w/a.go", FileType: FileText}}, &DiffPatch{Format: PatchGit, Text: "p"}),
+				ToolText("ok"),
+			}},
+			`{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","content":[` +
+				`{"type":"diff","changes":[{"operation":"modify","path":"/w/a.go","fileType":"text"}],"patch":{"format":"git_patch","text":"p"}},` +
+				`{"type":"content","content":{"type":"text","text":"ok"}}]}}`,
+		},
 	}
 	for _, tt := range tests {
 		got, err := jsonrpc.Marshal(SessionNotification{SessionID: "s1", Update: tt.update})

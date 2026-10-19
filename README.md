@@ -48,6 +48,9 @@ models with tool support, session creation fails.
 | `edit`        | `edit`    | replace one exact occurrence                      |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
 
+`write_file` and `edit` report what they changed as a diff in the tool call,
+with a `git_patch` unless the change is too large to diff.
+
 File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not
 sandboxed.

@@ -94,5 +94,6 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 ## Out of scope
 
-MCP relay, client `fs/*` and `terminal/*`, auth methods, image and audio
-prompts, non-OpenAI-compatible backends.
+MCP relay, auth methods, image and audio prompts, non-OpenAI-compatible
+backends. ACP v2 has no client `fs/*` or `terminal/*` methods. The roadmap
+is tracked in [GitHub milestones](https://github.com/anesthetised/acplause/milestones).
