@@ -95,5 +95,4 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 ## Out of scope
 
 MCP relay, client `fs/*` and `terminal/*`, auth methods, image and audio
-prompts, non-OpenAI-compatible backends. See the handoff in
-[docs/handoff.md](docs/handoff.md) for the roadmap.
+prompts, non-OpenAI-compatible backends.

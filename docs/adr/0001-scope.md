@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-10-18
-- Source: [handoff](../handoff.md), ACP spec at `3be9cfc` (`testdata/schema/v2/VERSION`)
+- Source: ACP spec at `3be9cfc` (`testdata/schema/v2/VERSION`)
 
 ## Context
 
