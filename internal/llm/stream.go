@@ -64,7 +64,9 @@ func readStream(ctx context.Context, body io.Reader, onDelta func(Delta)) (*Comp
 		if c.Error != nil {
 			return nil, c.Error.toError()
 		}
-		acc.add(&c, onDelta)
+		if err := acc.add(&c, onDelta); err != nil {
+			return nil, err
+		}
 	}
 }
 
@@ -78,12 +80,12 @@ type accumulator struct {
 	usage     *Usage
 }
 
-func (a *accumulator) add(c *chunk, onDelta func(Delta)) {
+func (a *accumulator) add(c *chunk, onDelta func(Delta)) error {
 	if c.Usage != nil {
 		a.usage = c.Usage
 	}
 	if len(c.Choices) == 0 {
-		return
+		return nil
 	}
 	choice := c.Choices[0]
 	if choice.FinishReason != "" {
@@ -100,7 +102,11 @@ func (a *accumulator) add(c *chunk, onDelta func(Delta)) {
 		onDelta(Delta{Kind: DeltaReasoning, Text: reasoning})
 	}
 	for _, d := range delta.ReasoningDetails {
-		a.details = mergeDetail(a.details, d)
+		var err error
+		a.details, err = mergeDetail(a.details, d)
+		if err != nil {
+			return err
+		}
 	}
 	if delta.Content != "" {
 		a.content.WriteString(delta.Content)
@@ -109,6 +115,7 @@ func (a *accumulator) add(c *chunk, onDelta func(Delta)) {
 	for _, f := range delta.ToolCalls {
 		a.addToolCall(f)
 	}
+	return nil
 }
 
 func (a *accumulator) addToolCall(f toolCallDelta) {
@@ -152,7 +159,16 @@ func (a *accumulator) completion() *Completion {
 // value.
 var detailPayloads = []string{"text", "summary", "data"}
 
-func mergeDetail(details []ReasoningDetail, fragment ReasoningDetail) []ReasoningDetail {
+func mergeDetail(details []ReasoningDetail, fragment ReasoningDetail) ([]ReasoningDetail, error) {
+	for _, key := range []string{"index", "type"} {
+		if value, ok := fragment[key]; ok {
+			switch value.(type) {
+			case nil, bool, float64, string:
+			default:
+				return nil, &Error{Kind: KindProtocol, Message: "malformed reasoning detail " + key}
+			}
+		}
+	}
 	for _, d := range slices.Backward(details) {
 		if d["index"] == fragment["index"] && d["type"] == fragment["type"] {
 			for key, value := range fragment {
@@ -163,10 +179,10 @@ func mergeDetail(details []ReasoningDetail, fragment ReasoningDetail) []Reasonin
 					d[key] = value
 				}
 			}
-			return details
+			return details, nil
 		}
 	}
-	return append(details, maps.Clone(fragment))
+	return append(details, maps.Clone(fragment)), nil
 }
 
 // detailsText extracts readable reasoning from details, for models that
