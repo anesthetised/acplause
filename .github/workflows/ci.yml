@@ -17,6 +17,8 @@ jobs:
     name: just check
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      coverage: ${{ steps.coverage.outputs.coverage }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,4 +37,64 @@ jobs:
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
       - name: Check
-        run: just check
+        run: just check -coverprofile="$RUNNER_TEMP/coverage.out"
+
+      - name: Read coverage
+        id: coverage
+        run: |
+          coverage=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '/^total:/ {print $3}')
+          echo "coverage=$coverage" >> "$GITHUB_OUTPUT"
+
+  coverage:
+    name: Publish coverage badge
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare coverage branch
+        run: |
+          if git ls-remote --exit-code --heads origin coverage; then
+            git fetch --depth=1 origin coverage
+            git switch -c coverage FETCH_HEAD
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then exit "$status"; fi
+            git switch --orphan coverage
+          fi
+
+      - name: Generate badge
+        shell: python
+        env:
+          COVERAGE: ${{ needs.check.outputs.coverage }}
+        run: |
+          import os
+          from pathlib import Path
+
+          coverage = float(os.environ["COVERAGE"].removesuffix("%"))
+          label = f"{coverage:.1f}%"
+          Path("coverage.svg").write_text(f'''<svg xmlns="http://www.w3.org/2000/svg" width="132" height="20" role="img" aria-label="coverage: {label}">
+            <title>coverage: {label}</title>
+            <clipPath id="r"><rect width="132" height="20" rx="3"/></clipPath>
+            <g clip-path="url(#r)">
+              <path fill="#555" d="M0 0h70v20H0z"/>
+              <path fill="#007ec6" d="M70 0h62v20H70z"/>
+            </g>
+            <g fill="#fff" text-anchor="middle" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11">
+              <text x="35" y="14">coverage</text>
+              <text x="101" y="14">{label}</text>
+            </g>
+          </svg>\n''')
+
+      - name: Publish badge
+        run: |
+          git add coverage.svg
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Update coverage badge'
+          git push origin HEAD:coverage

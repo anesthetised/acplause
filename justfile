@@ -33,8 +33,8 @@ lint:
     go vet ./...
     staticcheck ./...
 
-# Everything CI should run.
-check: fmt-check lint test
+# Everything CI should run; optional arguments are passed to go test.
+check *args: fmt-check lint (test args)
     go mod tidy -diff
 
 # Run the agent on stdio; the ACP client selects the model.
