@@ -289,7 +289,7 @@ func TestPlanRejectsClosedOrLostSession(t *testing.T) {
 func insertPlanPrompt(t *testing.T, s *Session) {
 	t.Helper()
 	if !s.insert(context.Background(), &submission{
-		ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("work")}, reply: jsonrpc.NewReply(),
+		ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("work")}, reply: jsonrpc.NewReply(context.Background()),
 	}) {
 		t.Fatal("prompt rejected")
 	}
@@ -351,7 +351,7 @@ func TestPlanSnapshotsReplaceAtFirstPosition(t *testing.T) {
 	if _, err := s.updatePlan(cancelled, entries); err == nil {
 		t.Fatal("cancelled update accepted")
 	}
-	if s.insert(cancelled, &submission{ctx: ctx, reply: jsonrpc.NewReply()}) || s.planID != id {
+	if s.insert(cancelled, &submission{ctx: ctx, reply: jsonrpc.NewReply(context.Background())}) || s.planID != id {
 		t.Fatal("rejected prompt reset the current plan")
 	}
 	after, _ := json.Marshal(s.transcript)

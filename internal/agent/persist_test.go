@@ -137,7 +137,7 @@ func TestPromptOwnershipLossRevokesMCPImmediately(t *testing.T) {
 	}
 	defer s.Close()
 	s.deps.store = saveStore{save: func(context.Context, store.Session, []store.Row, []store.Row) error { return store.ErrLost }}
-	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("lost")}, reply: jsonrpc.NewReply()}
+	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("lost")}, reply: jsonrpc.NewReply(context.Background())}
 	if s.insert(context.Background(), sub) {
 		t.Fatal("lost prompt was inserted")
 	}
@@ -157,7 +157,7 @@ func TestQueuedPromptReportsLossNotCancellation(t *testing.T) {
 	turn, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 	s.markLost()
-	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("mine?")}, reply: jsonrpc.NewReply()}
+	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("mine?")}, reply: jsonrpc.NewReply(context.Background())}
 	if s.insert(turn, sub) {
 		t.Fatal("lost prompt was inserted")
 	}
@@ -191,7 +191,7 @@ func TestPromptInsertionAtCommitBoundary(t *testing.T) {
 				}
 				return nil
 			}}
-			sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("hello")}, reply: jsonrpc.NewReply()}
+			sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{acp.Text("hello")}, reply: jsonrpc.NewReply(context.Background())}
 			if inserted := s.insert(ctx, sub); inserted != committed {
 				t.Fatalf("inserted=%t, committed=%t", inserted, committed)
 			}

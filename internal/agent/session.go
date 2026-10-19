@@ -123,7 +123,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 // once it is inserted, or fails with Request cancelled if the prompt is
 // cancelled first, through ctx or session/cancel.
 func (s *Session) Submit(ctx context.Context, prompt []acp.ContentBlock) *jsonrpc.Reply {
-	reply := jsonrpc.NewReply()
+	reply := jsonrpc.NewReply(ctx)
 	s.submit(ctx, prompt, reply)
 	return reply
 }
@@ -394,8 +394,9 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 }
 
 // insert adds the user message to the conversation and acknowledges the
-// prompt, unless it was cancelled first. The prompt response precedes the
-// user_message update on the wire.
+// prompt, unless it was cancelled first. For an individual request the response
+// precedes user_message on the wire; a batch collects replies before writing
+// its response array, so updates may precede that array.
 func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	// Validation runs on the session worker, never the protocol read loop.
 	// Keep both cancellation sources live while decoding and claiming the turn.

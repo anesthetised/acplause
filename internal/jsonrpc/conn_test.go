@@ -141,8 +141,8 @@ func TestNotificationsGetNoResponse(t *testing.T) {
 func TestDeferredReplyIsWrittenBeforeLaterNotifications(t *testing.T) {
 	var conn *Conn
 	p := newPeer(t, Methods{
-		"later": func(context.Context, json.RawMessage) (any, error) {
-			reply := NewReply()
+		"later": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			reply := NewReply(ctx)
 			go func() {
 				reply.Resolve(map[string]string{"messageId": "m1"})
 				_ = conn.Notify("session/update", map[string]string{"after": "reply"})
@@ -158,8 +158,8 @@ func TestDeferredReplyIsWrittenBeforeLaterNotifications(t *testing.T) {
 
 func TestReplySettledBeforeHandlerReturns(t *testing.T) {
 	p := newPeer(t, Methods{
-		"now": func(context.Context, json.RawMessage) (any, error) {
-			reply := NewReply()
+		"now": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			reply := NewReply(ctx)
 			reply.Reject(NewError(-32002, "gone"))
 			reply.Resolve("ignored")
 			return reply, nil
@@ -172,7 +172,7 @@ func TestReplySettledBeforeHandlerReturns(t *testing.T) {
 func TestCancelRequestCancelsDeferredRequestContext(t *testing.T) {
 	p := newPeer(t, Methods{
 		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			reply := NewReply()
+			reply := NewReply(ctx)
 			context.AfterFunc(ctx, func() { reply.Reject(NewError(-32800, "Request cancelled")) })
 			return reply, nil
 		},
@@ -216,8 +216,8 @@ func TestBatch(t *testing.T) {
 	release := make(chan struct{})
 	p := newPeer(t, Methods{
 		"echo": echo,
-		"slow": func(context.Context, json.RawMessage) (any, error) {
-			reply := NewReply()
+		"slow": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			reply := NewReply(ctx)
 			go func() { <-release; reply.Resolve("slow") }()
 			return reply, nil
 		},

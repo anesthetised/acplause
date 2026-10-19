@@ -142,7 +142,7 @@ func TestImagePromptQueuedModelChange(t *testing.T) {
 
 func TestImagePromptCancelledBeforeClaim(t *testing.T) {
 	s, out := imageSession(t, noModel(t), 0)
-	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{imageBlock(t, testImage(t, 2, 2))}, reply: jsonrpc.NewReply()}
+	sub := &submission{ctx: context.Background(), prompt: []acp.ContentBlock{imageBlock(t, testImage(t, 2, 2))}, reply: jsonrpc.NewReply(context.Background())}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// The worker can decode while persistence is busy; cancellation must
@@ -175,7 +175,7 @@ func TestImagePromptInsertion(t *testing.T) {
 				blocks = append(blocks, acp.ContentBlock{Type: acp.ContentResource, Resource: &acp.Resource{URI: "file:///a", Text: &text}}, acp.Text("Explain these\nplease"))
 				wantText, wantTitle = "<resource uri=\"file:///a\">\nresource body\n</resource>\n\nExplain these\nplease", "Explain these"
 			}
-			sub := &submission{ctx: context.Background(), prompt: blocks, reply: jsonrpc.NewReply()}
+			sub := &submission{ctx: context.Background(), prompt: blocks, reply: jsonrpc.NewReply(context.Background())}
 			if !s.insert(context.Background(), sub) {
 				t.Fatal("valid image prompt rejected")
 			}
@@ -231,7 +231,7 @@ func TestImagePromptRejectsBeforeInsertion(t *testing.T) {
 			if tc.cancel {
 				cancel()
 			}
-			sub := &submission{ctx: ctx, prompt: tc.blocks, reply: jsonrpc.NewReply()}
+			sub := &submission{ctx: ctx, prompt: tc.blocks, reply: jsonrpc.NewReply(context.Background())}
 			if s.insert(context.Background(), sub) {
 				t.Fatal("rejected prompt inserted")
 			}
