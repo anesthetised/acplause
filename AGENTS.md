@@ -29,6 +29,7 @@ internal/acp/      ACP v2 wire types, only those acplause uses
 internal/agent/    sessions, prompt queue, lifecycle, cancellation, tool loop
 internal/llm/      Chat Completions client: SSE, retries, models list
 internal/mcp/      session-owned MCP peers, discovery, stdio and HTTP
+internal/media/    validated PNG/JPEG values with ADR 0009 bounds
 internal/tools/    tools and the os.Root sandbox
 internal/store/    SQLite sessions, migrations and ownership leases
 e2e/               tests of the built binary over stdio
