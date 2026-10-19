@@ -90,3 +90,35 @@ of every file for `session/list`.
   window cannot be taken until it is idle, or its process has been gone for
   30 s.
 - Conversations, including tool output, stay on disk until deleted.
+
+## Ownership coordination (#50)
+
+The lease policy above is unchanged. `Acquire` also returns `AlreadyOwned`,
+read from the previous owner in the same transaction that claims the row and
+loads its history. An open local session is reused only when that flag is
+true and the session has not already detected loss. Reacquisition restores
+the durable history, replay transcript, settings and accumulated cost into a
+new session; a lost context or MCP manager is never revived.
+
+A dedicated agent ownership mutex serialises acquisition and publication
+with the complete renewal check, including application of lost results.
+Renewal cancels only setup operations captured when its check began, so an
+older result cannot cancel a later resume waiting to reacquire. This mutex
+is taken only off the protocol read loop. `Agent.mu` is never held during
+ownership I/O or lock waits, and ordinary turns retain their per-session
+concurrency.
+
+Before acquiring a cached session, the agent takes its `flushMu` to drain
+old saves and prompt insertion transactions. The store checks process owner
+IDs, so changing the owner back first would let an old in-flight save pass
+its ownership check and overwrite newer history. An obsolete session is
+marked lost while still fenced, then closed without releasing the new
+session's lease. Queued saves and insertions observe loss after the fence
+opens. Renewal also drains writes from a session it detaches before releasing
+the ownership mutex, since a later resume cannot find that session's fence
+in the open-session map. Lock order is ownership mutex, session `flushMu`,
+then session `mu`; session cleanup runs without waiting under that fence.
+
+This coordinates this process's acquisition paths without introducing
+per-acquisition fencing tokens or changing expiry and takeover rules.
+Writers from older binaries do not gain these protections.

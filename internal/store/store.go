@@ -60,6 +60,9 @@ type Loaded struct {
 	Session
 	History    [][]byte
 	Transcript [][]byte
+	// AlreadyOwned reports whether this process owned the row immediately
+	// before Acquire, observed in the same transaction as the takeover.
+	AlreadyOwned bool
 }
 
 // Store is an open database. Each process has one, identified by owner.
@@ -267,6 +270,7 @@ func (s *Store) Acquire(ctx context.Context, id string) (*Loaded, error) {
 		if s.heldElsewhere(owner, leaseUntil, l.State) {
 			return ErrBusy
 		}
+		l.AlreadyOwned = owner == s.owner
 		l.ID, l.UpdatedAt = id, time.Unix(0, updated)
 		if err := json.Unmarshal([]byte(dirs), &l.Dirs); err != nil {
 			return err
