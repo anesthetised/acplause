@@ -67,6 +67,10 @@ just check   # gofmt, vet, staticcheck, tests with -race, go mod tidy
 just e2e -v  # end-to-end tests only
 ```
 
+GitHub Actions runs `just check` on every pull request and push to `main`.
+CI reads the Go version from `go.mod` and pins just 1.59.0 and Staticcheck
+2026.2.2 (v0.8.2).
+
 The end-to-end tests in `e2e/` build the binary, drive it over stdio against
 a scripted SSE server and validate every message it writes against the ACP
 schema. Decisions are recorded in [`docs/adr`](docs/adr).
