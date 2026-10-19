@@ -1,9 +1,9 @@
 # ADR 0007: Relay session-owned MCP tools over stdio and HTTP
 
-- Status: proposed; architecture only, implementation awaits approval
+- Status: accepted
 - Date: 2026-10-19
 - Issues: #12, #13, #14; image follow-up: #23
-- Supersedes when accepted: ADR 0001's MCP exclusion
+- Supersedes: ADR 0001's MCP exclusion
 - ACP source: `testdata/schema/v2/schema.json` at `3be9cfc`
 - MCP sources: [2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
   [transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
@@ -12,7 +12,7 @@
 
 ## Context
 
-Session setup accepts `mcpServers` but currently ignores it. Issues #13 and
+Before this change session setup accepted `mcpServers` but ignored it. Issues #13 and
 #14 require one bridge for local processes and HTTP endpoints, including
 stateful tools, cancellation and configuration changes on resume. Existing
 ACP ordering, permission and history invariants must also hold for external
@@ -205,9 +205,9 @@ difficult.
 - Exact references are preserved through relay and untrimmed history.
   Historical context compaction still follows ADR 0006; this bridge does not
   promise permanent model memory of every old handle.
-- README and AGENTS.md scope statements, plus ADR 0001's exclusion, change
-  when the implementation lands. This proposed ADR alone does not advertise
-  working MCP support.
+- README and AGENTS.md describe the implemented scope; ADR 0001's exclusion
+  is superseded. Both transports are advertised and schema-validated in e2e.
 - Actual T3 interoperability needs a smoke test through the built acplause
   binary. Harness-native T3 calls are not evidence that this bridge works.
-  See [the implementation plan](../../tasks/plan.md) for that gate and #23.
+  See [the smoke record](../testing/mcp-t3-smoke.md) and
+  [the implementation plan](../../tasks/plan.md) for verification and #23.

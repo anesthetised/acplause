@@ -45,5 +45,6 @@ it in tests.
 
 - Schema updates land as separate PRs that refresh `testdata/schema/v2` and
   re-run validation.
-- MCP servers are accepted and ignored; `session.mcp` is not advertised.
+- MCP exclusion is superseded by [ADR 0007](0007-mcp-servers.md): session-owned
+  stdio and Streamable HTTP tools are supported and advertised.
 - Prompts support the baseline `text` and `resource_link` content only.

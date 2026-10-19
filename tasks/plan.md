@@ -1,21 +1,22 @@
 # Plan: MCP tools over stdio and HTTP (#12, #13, #14)
 
-Status: architecture prepared for review; implementation has not started.
+Status: implemented; real T3 stdio smoke passed, including explicit resume.
+Final verification and PR delivery are tracked below.
 Date: 2026-10-19. Baseline: `4793b51`. Branch: `feat/mcp-servers`.
 
 The user requested one branch and one PR for issues
 [#12](https://github.com/anesthetised/acplause/issues/12),
 [#13](https://github.com/anesthetised/acplause/issues/13), and
 [#14](https://github.com/anesthetised/acplause/issues/14).
-Architecture is prepared with Astra High; wait for the user's switch to Sol
-High before implementing. [#23](https://github.com/anesthetised/acplause/issues/23)
+Architecture was prepared with Astra High; implementation continued after
+the user switched to Sol High. [#23](https://github.com/anesthetised/acplause/issues/23)
 is an architectural input and explicitly not part of this implementation.
 Tasks remain tracked in those GitHub issues; this file is the execution and
 verification checklist, not a request to create additional issues.
 
 ## Architecture contract
 
-Read [proposed ADR 0007](../docs/adr/0007-mcp-servers.md) before implementation.
+Read [accepted ADR 0007](../docs/adr/0007-mcp-servers.md) before implementation.
 Its lifecycle, permissions, retry policy and result representation are the
 contract. Do not replace them with an SDK or a narrower implementation just
 to make tests pass. Any necessary design change must update the ADR and plan
@@ -149,13 +150,13 @@ focused tests and `just check` for each completed implementation checkpoint.
 
 ### 1. Contract and wire admission (#12)
 
-- [ ] Accept ADR 0007 after architecture review; update ADR 0001's exclusion
+- [x] Accept ADR 0007 after architecture review; update ADR 0001's exclusion
   as superseded, and align README/AGENTS.md scope with what the final PR adds.
-- [ ] Add ACP MCP config/capability types using only the pinned schema.
+- [x] Add ACP MCP config/capability types using only the pinned schema.
   Preserve/ignore unknown variants; reject invalid known configs and duplicate
   names without launching anything. Keep capability advertisement gated by
   completion of the corresponding transport slice.
-- [ ] Add validated `ACPLAUSE_MCP_TIMEOUT` configuration and wire it through
+- [x] Add validated `ACPLAUSE_MCP_TIMEOUT` configuration and wire it through
   `agent.Config`; accept positive durations and explicit zero.
 
 Likely files: `internal/acp/mcp.go`, `session.go`, `initialize.go`, their tests;
@@ -168,11 +169,11 @@ session behavior. Schema validation remains unchanged.
 
 ### 2. Stdio peer and discovery (#13)
 
-- [ ] Build the bounded peer and process transport with initialize/version
+- [x] Build the bounded peer and process transport with initialize/version
   negotiation, cancellation, orderly cleanup and server-request rejection.
-- [ ] Add full paginated discovery, stable aliases, raw argument/result
+- [x] Add full paginated discovery, stable aliases, raw argument/result
   preservation and list-changed refresh.
-- [ ] Use isolated fake server processes for launch cwd/args/env, ping,
+- [x] Use isolated fake server processes for launch cwd/args/env, ping,
   pagination, collisions, large JSON integer/opaque references, malformed
   messages, protocol rejection, duplicate/repeated cursors and crashes.
 
@@ -185,12 +186,12 @@ cleanup do not leak a process, pipe or pending request.
 
 ### 3. One complete ACP-to-MCP turn (#13)
 
-- [ ] Add session manager ownership, model-round bindings and the prepared
+- [x] Add session manager ownership, model-round bindings and the prepared
   invocation adapter. Keep existing built-in permissions and root semantics.
-- [ ] Add the common tool lifecycle and separate model/ACP result projection.
+- [x] Add the common tool lifecycle and separate model/ACP result projection.
   Test structured-only, text plus JSON, MCP isError/RPC errors, invalid args,
   denied permission, unknown tools, unsupported image/audio blocks and limits.
-- [ ] Add e2e ACP capability advertisement and a full stdio tool round.
+- [x] Add e2e ACP capability advertisement and a full stdio tool round.
   Every emitted message continues through the existing schema validator.
 
 Likely files: `internal/agent/mcp.go`, `turn.go`, `compact.go`, `session.go`,
@@ -204,13 +205,13 @@ T3 routing. At least one tool falsely claims readOnlyHint and is still gated.
 
 ### 4. Resume, cancellation and ownership races (#13)
 
-- [ ] Implement ordered setup barriers and atomic directory/MCP publication.
+- [x] Implement ordered setup barriers and atomic directory/MCP publication.
   Reuse unchanged healthy connections; rollback on partial setup failure.
-- [ ] Revoke changed/removed bindings and stop local waits on close/delete,
+- [x] Revoke changed/removed bindings and stop local waits on close/delete,
   lease loss and shutdown, including setup candidates.
-- [ ] Exercise resume while a model response streams, while permission is
+- [x] Exercise resume while a model response streams, while permission is
   pending, during a tool call, and while another setup is still in progress.
-- [ ] Prove each cancelled multi-tool model response still has all tool
+- [x] Prove each cancelled multi-tool model response still has all tool
   results, and that a late response cannot corrupt the next prompt.
 
 Likely files: `internal/agent/agent.go`, `session.go`, `persist.go`, `mcp.go`
@@ -222,16 +223,16 @@ close/delete, leaked child after takeover, or call rerouted across generations.
 
 ### 5. Streamable HTTP (#14)
 
-- [ ] Add HTTP transport and SSE parser to the same peer/manager contracts.
+- [x] Add HTTP transport and SSE parser to the same peer/manager contracts.
   Cover JSON and streaming responses, session IDs, protocol headers, explicit
   config headers, GET notifications, GET 405 and DELETE cleanup.
-- [ ] Cover SSE resumption by GET, retries/cursor isolation, deadline/cancel,
+- [x] Cover SSE resumption by GET, retries/cursor isolation, deadline/cancel,
   404 session expiry and reinitialization for future requests. Prove a dropped
   response causes exactly one tools/call POST, even with an apparent
   idempotent/read-only hint.
-- [ ] Cover auth failures, forbidden redirect/credential forwarding, size
+- [x] Cover auth failures, forbidden redirect/credential forwarding, size
   bounds and unsupported legacy SSE endpoints.
-- [ ] Add ACP HTTP capability and e2e tests through local httptest servers.
+- [x] Add ACP HTTP capability and e2e tests through local httptest servers.
   Run shared bridge behavior against both transports where appropriate.
 
 Likely files: `internal/mcp/http.go`, `sse.go`, their tests, then capability
@@ -243,21 +244,20 @@ using the same HTTP endpoint with isolated upstream MCP sessions.
 
 ### 6. Documentation, actual T3 smoke and one PR
 
-- [ ] Update README with supported MCP versions/transports, client-supplied
+- [x] Update README with supported MCP versions/transports, client-supplied
   setup examples, permissions, timeout/cleanup behavior, and unsupported
   content. AGENTS.md should include the new module and invariants.
-- [ ] Run the built acplause binary as the ACP agent inside T3, with actual
+- [x] Run the built acplause binary as the ACP agent inside T3, with actual
   injected MCP config. Record transport, command/args or endpoint, versions,
   build commit and results, redacting env/header secrets.
-- [ ] Discover orchestrator_capabilities; invoke a textual browser operation
+- [x] Discover orchestrator_capabilities; invoke a textual browser operation
   such as preview_status/preview_snapshot with includeImage=false; delegate
   a harmless asynchronous task; receive its completion in a later ACP turn;
   resume and call a tool again. If T3 provides HTTP, record this as HTTP
   coverage and do not claim real-T3 stdio interoperability.
-- [ ] If runtime/configuration is unavailable, record the precise missing
-  prerequisite. Fake fixtures and native tools in this assistant's harness
-  do not satisfy that smoke test. Create a draft PR with the outstanding gate
-  visible rather than claiming all acceptance criteria or closing #13.
+- [x] Runtime gate available and passed: the actual injected config was
+  stdio. The smoke used acplause as the ACP provider, not this harness's
+  native tools. No draft-only runtime gate remains.
 - [ ] Review diff, run final `just check`, push this branch and create one PR
   covering #12–14. Register its URL with T3 immediately. Do not merge it or
   include a closing reference for #23. Use closing references for other issues
@@ -270,11 +270,11 @@ recognize a result containing an image as a valid MCP result, keep the raw
 ordered blocks until projection, and emit an explicit omission marker.
 The following checks are part of #12–14:
 
-- [ ] Text plus image preserves text and reports the omitted image without
+- [x] Text plus image preserves text and reports the omitted image without
   leaking base64 into model text, ACP rawOutput, replay, logs or SQLite.
-- [ ] Unsupported-only output is distinguished from an empty success and
+- [x] Unsupported-only output is distinguished from an empty success and
   from a server-reported isError; its remote side-effect uncertainty is clear.
-- [ ] raw structuredContent remains structured in ACP and intact in the
+- [x] raw structuredContent remains structured in ACP and intact in the
   current textual model projection, including nested arrays and opaque IDs.
 
 #23 later owns a new ADR, bounded validated image decoding, model vision
@@ -308,9 +308,27 @@ prompts. Those are acceptance decisions for #23, not unfinished code in this PR.
 | Structured-only result contains nested IDs/large numbers | Exact values survive the bridge and are usable in a later call. |
 | Tool returns text plus screenshot | Text works now, explicit image marker now; #23 adds projection later. |
 
-## Handoff
+## Verification record
 
-Only architecture documents should be modified at this checkpoint. The
-proposed ADR does not itself supersede accepted policy or advertise MCP
-support. After the user switches to Sol High, start with slice 1 and keep
-this checklist current. The original delivery remains one branch and one PR.
+- `just check` passes with race detection, vet, Staticcheck and tidy diff.
+- `internal/mcp` tests cover raw JSON fidelity, aliases/pagination, refresh,
+  invalid discovery/wire messages, minimal environment, blocked-write process
+  group cleanup, HTTP JSON/SSE, GET cursor recovery, missing-cursor failure,
+  one-POST delivery, expiry recovery, redirects, auth/setup errors and bounds.
+- `internal/agent` tests cover text/structured/unsupported projections and
+  size bounds, plus immediate lifetime cancellation on ownership loss.
+- Schema-valid e2e tests cover actual stdio and HTTP servers, explicit
+  permission despite readOnlyHint, nested objects and opaque references,
+  cancellation/late results, independent timeout, resume replacement/rollback/
+  ordering, queued-prompt cancellation and close/delete during stored setup.
+  Existing built-in, persistence and compaction tests remain green.
+- The real T3 test discovered orchestration, called textual browser status,
+  delegated asynchronously, consumed completion in a later ACP turn and
+  called tools again after an observed explicit `session/resume`.
+  Configuration and opaque IDs are recorded in
+  [the smoke record](../docs/testing/mcp-t3-smoke.md).
+
+The test matrix above is the concrete implemented coverage; the scenario
+lists in the original slices describe the review scope, not a claim that
+every combination has a separate test. Images in #23 remain explicitly out
+of scope. The original delivery remains one branch and one PR.

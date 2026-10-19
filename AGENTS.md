@@ -24,6 +24,7 @@ internal/jsonrpc/  NDJSON framing, dispatch, batches, single stdout writer
 internal/acp/      ACP v2 wire types, only those acplause uses
 internal/agent/    sessions, prompt queue, lifecycle, cancellation, tool loop
 internal/llm/      Chat Completions client: SSE, retries, models list
+internal/mcp/      session-owned MCP peers, discovery, stdio and HTTP
 internal/tools/    tools and the os.Root sandbox
 internal/store/    SQLite sessions, migrations and ownership leases
 e2e/               tests of the built binary over stdio
@@ -67,6 +68,12 @@ testdata/schema/v2 pinned ACP schema; see VERSION
   permission are reported as a `failed` tool call and sent back to the model.
 - **Agent-to-client requests block**, so `jsonrpc.Conn.Call` is used only from
   session goroutines. Anything but an explicit allow is not permission.
+- **MCP bindings belong to a model round.** Reconfiguration cannot redirect
+  an old call or approval. Every MCP tool requires permission, including one
+  with `readOnlyHint`; a lost response never causes a tools/call replay.
+- **MCP configs stay in memory.** Never persist/log environment values,
+  headers or upstream session IDs. Preserve raw JSON until result projection;
+  binary content is omitted until #23, never copied into text/history.
 
 ## Code style
 
@@ -102,6 +109,7 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 ## Out of scope
 
-MCP relay, auth methods, image and audio prompts, non-OpenAI-compatible
-backends. ACP v2 has no client `fs/*` or `terminal/*` methods. The roadmap
+Auth methods, image and audio prompts/results, non-OpenAI-compatible backends,
+legacy MCP HTTP+SSE and MCP server capabilities beyond tools. ACP v2 has no
+client `fs/*` or `terminal/*` methods. The roadmap
 is tracked in [GitHub milestones](https://github.com/anesthetised/acplause/milestones).
