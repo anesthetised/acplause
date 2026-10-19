@@ -20,10 +20,9 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 		if round == s.deps.maxRounds {
 			return acp.StopMaxTurnRequests, nil
 		}
-		req, toolbox := s.request()
+		req := s.request()
 		out := roundOutput{s: s}
 		completion, err := s.deps.model.Chat(ctx, req, out.delta)
-		out.record()
 		if err != nil {
 			return acp.StopError, turnError(err)
 		}
@@ -34,7 +33,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 			return stopReason(completion.FinishReason)
 		}
 		for _, call := range completion.ToolCalls {
-			s.runTool(ctx, toolbox, call)
+			s.runTool(ctx, call)
 		}
 		if ctx.Err() != nil {
 			return acp.StopCancelled, nil
@@ -43,7 +42,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 }
 
 // request snapshots what the next model request needs.
-func (s *Session) request() (llm.Request, *tools.Toolbox) {
+func (s *Session) request() llm.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req := llm.Request{Model: s.model, Messages: slices.Clone(s.history)}
@@ -53,16 +52,18 @@ func (s *Session) request() (llm.Request, *tools.Toolbox) {
 	if s.catalog.reasons(s.model) && s.effort != effortDefault {
 		req.ReasoningEffort = s.effort
 	}
-	return req, s.toolbox
+	return req
 }
 
 // runTool reports and executes one tool call. Every call gets a result in
 // the history, so the conversation stays valid even when cancelled.
-func (s *Session) runTool(ctx context.Context, toolbox *tools.Toolbox, call llm.ToolCall) {
+func (s *Session) runTool(ctx context.Context, call llm.ToolCall) {
 	if ctx.Err() != nil {
 		s.appendHistory(toolResult(call.ID, "Cancelled before it ran."))
 		return
 	}
+	toolbox := s.acquireToolbox()
+	defer s.releaseToolbox(toolbox)
 
 	name := call.Function.Name
 	update := acp.ToolCallUpdate{
@@ -73,13 +74,14 @@ func (s *Session) runTool(ctx context.Context, toolbox *tools.Toolbox, call llm.
 		RawInput:   rawInput(call.Function.Arguments),
 	}
 	var result tools.Result
+	entry := -1
 	if prepared, err := toolbox.Prepare(name, call.Function.Arguments); err != nil {
 		result = tools.Result{Output: "Error: " + err.Error(), Failed: true}
 	} else {
 		update.Title = prepared.Title
 		update.Locations = locations(prepared.Locations)
 		update.Status = acp.ToolInProgress
-		s.send(update)
+		entry = s.reportTool(entry, update)
 		result = prepared.Run(ctx)
 	}
 
@@ -99,9 +101,23 @@ func (s *Session) runTool(ctx context.Context, toolbox *tools.Toolbox, call llm.
 	if update.Status == "" { // never reported: send everything at once
 		final = update.Merge(final)
 	}
-	s.send(final)
-	s.record(update.Merge(final))
+	s.reportTool(entry, final)
 	s.appendHistory(toolResult(call.ID, result.Output))
+}
+
+// reportTool updates replay and live output atomically, including calls
+// still in progress when the client resumes.
+func (s *Session) reportTool(entry int, patch acp.ToolCallUpdate) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry < 0 {
+		entry = len(s.transcript)
+		s.transcript = append(s.transcript, patch)
+	} else {
+		s.transcript[entry] = s.transcript[entry].(acp.ToolCallUpdate).Merge(patch)
+	}
+	s.send(patch)
+	return entry
 }
 
 func (s *Session) reportUsage(model string, u *llm.Usage) {
@@ -109,9 +125,9 @@ func (s *Session) reportUsage(model string, u *llm.Usage) {
 		return
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cost += u.Cost
 	cost := s.cost
-	s.mu.Unlock()
 
 	size := s.catalog.contextLength(model)
 	if size == 0 {
@@ -125,7 +141,7 @@ func (s *Session) reportUsage(model string, u *llm.Usage) {
 }
 
 // roundOutput streams one model response as an agent thought and an agent
-// message, each with its own id, and records them for replay.
+// message, each with its own id and replay entry updated with every chunk.
 type roundOutput struct {
 	s       *Session
 	thought message
@@ -133,32 +149,30 @@ type roundOutput struct {
 }
 
 type message struct {
-	id   string
-	text strings.Builder
+	id    string
+	entry int // index of this message's current snapshot in the transcript
+	text  strings.Builder
 }
 
 func (o *roundOutput) delta(d llm.Delta) {
+	o.s.mu.Lock()
+	defer o.s.mu.Unlock()
 	m := &o.answer
 	if d.Kind == llm.DeltaReasoning {
 		m = &o.thought
 	}
 	if m.id == "" {
 		m.id = newID()
+		m.entry = len(o.s.transcript)
+		o.s.transcript = append(o.s.transcript, nil)
 	}
 	m.text.WriteString(d.Text)
 	if d.Kind == llm.DeltaReasoning {
+		o.s.transcript[m.entry] = acp.AgentThought{MessageID: m.id, Content: []acp.ContentBlock{acp.Text(m.text.String())}}
 		o.s.send(acp.AgentThoughtChunk{MessageID: m.id, Content: acp.Text(d.Text)})
 	} else {
+		o.s.transcript[m.entry] = acp.AgentMessage{MessageID: m.id, Content: []acp.ContentBlock{acp.Text(m.text.String())}}
 		o.s.send(acp.AgentMessageChunk{MessageID: m.id, Content: acp.Text(d.Text)})
-	}
-}
-
-func (o *roundOutput) record() {
-	if o.thought.id != "" {
-		o.s.record(acp.AgentThought{MessageID: o.thought.id, Content: []acp.ContentBlock{acp.Text(o.thought.text.String())}})
-	}
-	if o.answer.id != "" {
-		o.s.record(acp.AgentMessage{MessageID: o.answer.id, Content: []acp.ContentBlock{acp.Text(o.answer.text.String())}})
 	}
 }
 

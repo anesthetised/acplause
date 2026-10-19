@@ -51,7 +51,7 @@ func (tb *Toolbox) readFile(args readFileArgs) (*Call, error) {
 	return &Call{
 		Title:     "Read " + args.Path,
 		Locations: []string{t.abs},
-		run: func(context.Context) (string, error) {
+		run: func(ctx context.Context) (string, error) {
 			info, err := t.root.Stat(t.rel)
 			switch {
 			case err != nil:
@@ -61,7 +61,7 @@ func (tb *Toolbox) readFile(args readFileArgs) (*Call, error) {
 			case info.Size() > maxReadSize:
 				return "", fmt.Errorf("%s is too large (%d bytes, max %d)", args.Path, info.Size(), maxReadSize)
 			}
-			data, err := t.root.ReadFile(t.rel)
+			data, err := t.readFile(ctx, maxReadSize)
 			if err != nil {
 				return "", err
 			}
@@ -159,8 +159,8 @@ var writeFileSpec = Spec{
 }
 
 type writeFileArgs struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path    string  `json:"path"`
+	Content *string `json:"content"` // nil distinguishes missing content from an intentional empty file
 }
 
 func (tb *Toolbox) writeFile(args writeFileArgs) (*Call, error) {
@@ -168,20 +168,23 @@ func (tb *Toolbox) writeFile(args writeFileArgs) (*Call, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(args.Content) > maxWriteSize {
-		return nil, fmt.Errorf("content is too large (%d bytes, max %d)", len(args.Content), maxWriteSize)
+	if args.Content == nil {
+		return nil, errors.New("content is required")
+	}
+	if len(*args.Content) > maxWriteSize {
+		return nil, fmt.Errorf("content is too large (%d bytes, max %d)", len(*args.Content), maxWriteSize)
 	}
 	return &Call{
 		Title:     "Write " + args.Path,
 		Locations: []string{t.abs},
-		run: func(context.Context) (string, error) {
+		run: func(ctx context.Context) (string, error) {
 			if err := t.root.MkdirAll(filepath.Dir(t.rel), 0o755); err != nil {
 				return "", err
 			}
-			if err := t.root.WriteFile(t.rel, []byte(args.Content), filePerm(t)); err != nil {
+			if err := t.writeFile(ctx, []byte(*args.Content)); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("Wrote %d bytes to %s", len(args.Content), t.abs), nil
+			return fmt.Sprintf("Wrote %d bytes to %s", len(*args.Content), t.abs), nil
 		},
 	}, nil
 }
@@ -202,9 +205,9 @@ var editSpec = Spec{
 }
 
 type editArgs struct {
-	Path    string `json:"path"`
-	OldText string `json:"old_text"`
-	NewText string `json:"new_text"`
+	Path    string  `json:"path"`
+	OldText string  `json:"old_text"`
+	NewText *string `json:"new_text"` // an explicit empty string deletes the matched text
 }
 
 func (tb *Toolbox) edit(args editArgs) (*Call, error) {
@@ -215,11 +218,14 @@ func (tb *Toolbox) edit(args editArgs) (*Call, error) {
 	if err := required("old_text", args.OldText); err != nil {
 		return nil, err
 	}
+	if args.NewText == nil {
+		return nil, errors.New("new_text is required")
+	}
 	return &Call{
 		Title:     "Edit " + args.Path,
 		Locations: []string{t.abs},
-		run: func(context.Context) (string, error) {
-			data, err := t.root.ReadFile(t.rel)
+		run: func(ctx context.Context) (string, error) {
+			data, err := t.readFile(ctx, 0)
 			if err != nil {
 				return "", err
 			}
@@ -231,19 +237,11 @@ func (tb *Toolbox) edit(args editArgs) (*Call, error) {
 			default:
 				return "", fmt.Errorf("old_text occurs %d times in %s; add context to make it unique", n, args.Path)
 			}
-			content = strings.Replace(content, args.OldText, args.NewText, 1)
-			if err := t.root.WriteFile(t.rel, []byte(content), filePerm(t)); err != nil {
+			content = strings.Replace(content, args.OldText, *args.NewText, 1)
+			if err := t.writeFile(ctx, []byte(content)); err != nil {
 				return "", err
 			}
 			return "Edited " + t.abs, nil
 		},
 	}, nil
-}
-
-// filePerm keeps an existing file's permissions.
-func filePerm(t target) fs.FileMode {
-	if info, err := t.root.Stat(t.rel); err == nil {
-		return info.Mode().Perm()
-	}
-	return 0o644
 }

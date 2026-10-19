@@ -197,7 +197,7 @@ func TestCancelMidStream(t *testing.T) {
 	llm := newMockLLM(t)
 	aborted := make(chan struct{})
 	llm.enqueue(waitFor(nil, aborted), reply("still here"))
-	a, sid, _ := started(t, llm)
+	a, sid, cwd := started(t, llm)
 
 	a.accepted(a.prompt(sid, "long task"))
 	a.updateWhere(sid, func(u update) bool { return u.is("agent_message_chunk") })
@@ -208,6 +208,12 @@ func TestCancelMidStream(t *testing.T) {
 		t.Fatalf("idle: %+v", idle)
 	}
 	waitClosed(t, aborted, "the model request was not aborted")
+	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
+	replay := a.untilIdle(sid)
+	answers := filter(replay, "agent_message")
+	if len(answers) != 1 || answers[0].text() != "working" || replay[len(replay)-1].StopReason != "cancelled" {
+		t.Fatalf("cancelled partial response was lost: %v", replay)
+	}
 
 	// The session keeps working after a cancellation.
 	a.accepted(a.prompt(sid, "again"))

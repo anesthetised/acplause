@@ -52,12 +52,24 @@ File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not
 sandboxed.
 
+Read, write and edit operations accept regular files only; pipes and devices
+are rejected. `write_file.content` and `edit.new_text` must be explicit
+strings: an empty string is valid, but an omitted or null value is an error.
+
+Resuming a running session can replay partial messages and active tool calls.
+Changes to additional directories apply to subsequent tool calls; a call
+already running keeps its roots until it finishes.
+
 ## Develop
 
 ```sh
 just check   # gofmt, vet, staticcheck, tests with -race, go mod tidy
 just e2e -v  # end-to-end tests only
 ```
+
+GitHub Actions runs `just check` on every pull request and push to `main`.
+CI reads the Go version from `go.mod` and pins just 1.59.0 and Staticcheck
+2026.2.2 (v0.8.2).
 
 The end-to-end tests in `e2e/` build the binary, drive it over stdio against
 a scripted SSE server and validate every message it writes against the ACP
