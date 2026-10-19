@@ -231,3 +231,26 @@ func TestRestoreRepairsInterruptedCompaction(t *testing.T) {
 		t.Fatalf("repair was not queued: %v, %v, %v", history, transcript, err)
 	}
 }
+
+func TestSessionModeRecordAndRecovery(t *testing.T) {
+	for _, mode := range []string{"", "build", "plan"} {
+		t.Run(mode, func(t *testing.T) {
+			s, err := restoreSession(context.Background(), deps{}, newCatalog(nil), &store.Loaded{Session: store.Session{ID: "s", Cwd: t.TempDir(), State: "idle", Mode: mode}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			want := mode
+			if want == "" {
+				want = "build"
+			}
+			if s.mode != want || s.record().Mode != want {
+				t.Fatalf("mode not recovered: %q %+v", s.mode, s.record())
+			}
+		})
+	}
+	s, _ := testSession(t, nil)
+	if s.record().Mode != "build" {
+		t.Fatalf("new mode: %q", s.record().Mode)
+	}
+}

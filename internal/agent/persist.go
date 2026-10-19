@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,7 +106,7 @@ func decodeEntry(data []byte) (acp.Update, error) {
 func (s *Session) record() store.Session {
 	return store.Session{
 		ID: s.id, Cwd: s.cwd, Dirs: s.dirs, Title: s.title, UpdatedAt: s.updatedAt,
-		Model: s.model, Effort: s.effort, Cost: s.cost, State: string(s.state.State),
+		Model: s.model, Mode: s.mode, Effort: s.effort, Cost: s.cost, State: string(s.state.State),
 	}
 }
 
@@ -182,6 +183,7 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 	if err != nil {
 		return nil, err
 	}
+	s.mode = cmp.Or(l.Mode, modeBuild)
 	s.id, s.title, s.updatedAt, s.cost = l.ID, l.Title, l.UpdatedAt, l.Cost
 	if c.has(l.Model) {
 		s.model = l.Model

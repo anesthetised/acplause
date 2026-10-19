@@ -19,6 +19,12 @@ import (
 	"github.com/anesthetised/acplause/internal/tools"
 )
 
+// Execution modes are session state, never a remembered user preference.
+const (
+	modeBuild = "build"
+	modePlan  = "plan"
+)
+
 // deps is what sessions share with the agent.
 type deps struct {
 	forms      *atomic.Bool // negotiated capabilities belong to this connection, never the store
@@ -50,6 +56,7 @@ type Session struct {
 	toolbox       *tools.Toolbox
 	activeToolbox *tools.Toolbox // retained by the single worker until its current tool returns
 	model         string
+	mode          string
 	effort        string
 	title         string
 	updatedAt     time.Time
@@ -101,6 +108,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		dirs:         dirs,
 		toolbox:      toolbox,
 		mcp:          mcp.New(ctx, cwd, d.log),
+		mode:         modeBuild,
 		effort:       effortDefault,
 		updatedAt:    time.Now(),
 		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions)}},

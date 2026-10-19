@@ -288,11 +288,12 @@ func TestMigrateSessionDatabaseAddsSettings(t *testing.T) {
 	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
 		t.Fatal(err)
 	}
-	old := &Store{db: db, owner: "old", now: time.Now}
-	if err := old.Create(ctx, session("existing", "idle")); err != nil {
+	// Insert using the old shape: current Create requires the new columns.
+	if _, err := db.Exec(`INSERT INTO sessions VALUES
+		('existing', '/w', '[]', 'old', 0, 'm', 'default', 0, 'idle', '', 0)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := old.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	upgraded := open(t, dir, "new")
@@ -340,5 +341,104 @@ func TestTakeoverRacesNewTurn(t *testing.T) {
 		if err := a.Save(ctx, session("s1", "idle"), nil, nil); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestMigrateModeFromPreviousSchema(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, migration := range migrations[:2] {
+		if _, err := db.Exec(migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 2;
+ INSERT INTO sessions VALUES ('old', '/w', '[]', 'kept', 0, 'm', 'high', 0, 'idle', 'old-owner', 0);
+ INSERT INTO history VALUES ('old', 0, 'history');
+ INSERT INTO transcript VALUES ('old', 0, 'transcript');
+ INSERT INTO settings VALUES (1, 'm', 'high');`); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := open(t, dir, "new-owner")
+	l, err := upgraded.Acquire(ctx, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Mode != "build" || l.Title != "kept" || !slices.Equal(strs(l.History), []string{"history"}) || !slices.Equal(strs(l.Transcript), []string{"transcript"}) {
+		t.Fatalf("migration lost state: %+v", l)
+	}
+	var version int
+	if err := upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+		t.Fatalf("version=%d: %v", version, err)
+	}
+	if model, effort, err := upgraded.Selection(ctx); err != nil || model != "m" || effort != "high" {
+		t.Fatalf("selection changed: %q %q %v", model, effort, err)
+	}
+}
+
+func TestModeIsSessionOwnedAndTransactional(t *testing.T) {
+	dir := t.TempDir()
+	a, b := open(t, dir, "a"), open(t, dir, "b")
+	build, plan := session("build", "idle"), session("plan", "idle")
+	plan.Mode = "plan"
+	for _, sess := range []Session{build, plan} {
+		if err := a.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]string{"build": "build", "plan": "plan"} {
+		l, err := b.Acquire(ctx, id)
+		if err != nil || l.Mode != want {
+			t.Fatalf("takeover %s: %+v %v", id, l, err)
+		}
+	}
+	plan.Mode = "build"
+	if err := a.Save(ctx, plan, rows("stale"), nil); !errors.Is(err, ErrLost) {
+		t.Fatalf("stale save: %v", err)
+	}
+	plan.Mode = "invalid"
+	if err := b.Save(ctx, plan, rows("invalid"), nil); err == nil {
+		t.Fatal("invalid mode saved")
+	}
+	l, err := b.Acquire(ctx, "plan")
+	if err != nil || l.Mode != "plan" || len(l.History) != 0 {
+		t.Fatalf("failed saves mutated session: %+v %v", l, err)
+	}
+	plan.Mode = "build"
+	if err := b.Save(ctx, plan, rows("kept"), nil); err != nil {
+		t.Fatal(err)
+	}
+	l, err = b.Acquire(ctx, "plan")
+	if err != nil || l.Mode != "build" || !slices.Equal(strs(l.History), []string{"kept"}) {
+		t.Fatalf("mode save: %+v %v", l, err)
+	}
+}
+
+func TestModeMigrationFailureDoesNotAdvanceVersion(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, migration := range migrations[:2] {
+		if _, err := db.Exec(migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN mode TEXT; PRAGMA user_version = 2;`); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Open(dir, "new"); err == nil {
+		_ = s.Close()
+		t.Fatal("conflicting migration succeeded")
+	}
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("failed migration advanced version to %d: %v", version, err)
 	}
 }
