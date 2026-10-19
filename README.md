@@ -27,6 +27,7 @@ first, and works in your workspace through tools.
 - Structured user questions on clients advertising ACP form elicitation.
 - Native ACP execution plans with persistent progress snapshots.
 - Per-session Plan/Build modes with enforced tool restrictions.
+- A discoverable `/compact` command to summarize older model context on demand.
 
 ## Install
 
@@ -307,6 +308,20 @@ Summary requests count toward the request limit and usage cost. The portable
 byte-based estimate is conservative; providers without a published context
 length do not enable automatic compaction. See
 [ADR 0006](docs/adr/0006-context-compaction.md) for limits and recovery behavior.
+
+Send `/compact` as a single text-only prompt to summarize older history now,
+even below the automatic threshold. It runs in the prompt queue with the
+selected model, reports compaction progress and a short confirmation, and
+keeps the original full conversation for replay. Summary requests count
+toward usage, cost and the turn's request limit; the command does not run an
+ordinary answer or tools afterwards. With no older history or no published
+context window, it returns a short explanation without contacting the model.
+Cancellation and summary failures keep the pre-summary history (apart from
+any completed tool-output trimming). `/compact explanation`, `/compactness`,
+resource contents and prompts mixing text with attachments remain ordinary
+prompts. The command is advertised on session creation and resume; see
+[ADR 0015](docs/adr/0015-compact-slash-command.md). Actual T3 slash-menu
+validation remains part of [#38](https://github.com/anesthetised/acplause/issues/38).
 
 ## Storage
 

@@ -1,6 +1,6 @@
 # ADR 0015: Advertise and execute a deterministic /compact command
 
-- Status: proposed; implementation contract prepared for the requested roadmap
+- Status: accepted; implemented with schema-validated tests; real-T3 validation pending (#38)
 - Date: 2026-10-19
 - Issues: [#37](https://github.com/anesthetised/acplause/issues/37)
 - Scope change: Extends ADR 0006 with user-triggered compaction; automatic compaction stays unchanged
@@ -37,5 +37,11 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
-Execution plan: [commands](../../tasks/t3/commands.md). The roadmap's request is to prepare this design, not implement it. Mark accepted when implementation is authorized; do not silently revise the contract in a small execution task.
+Execution plan: [commands](../../tasks/t3/commands.md). Issue #37 implements
+static discovery, structural recognition and queued execution through the
+image-aware compaction path. Manual summary calls need no reserved answer
+request, but retain automatic compaction's summary and final-size checks.
+Automated tests cover no-op outcomes, request limits, summary errors,
+cancellation on both sides of insertion, usage, persistence and full replay.
+Actual T3 command-menu and execution validation remains pending under #38.
 
