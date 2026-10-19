@@ -257,6 +257,7 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 		change, err := s.mcp.Prepare(ctx, mcpConfigs(req.MCPServers))
 		if err == nil {
 			err = change.Commit()
+			change.Discard()
 		}
 		if err != nil {
 			s.Close()

@@ -363,12 +363,12 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 }
 
 // Commit atomically installs the prepared servers and revokes stale bindings.
+// A rejected change still needs Discard, outside the caller's session lock.
 func (c *Change) Commit() error {
 	m := c.manager
 	m.mu.Lock()
 	if c.settled || m.closed || m.revision != c.revision || c.ctx.Err() != nil {
 		m.mu.Unlock()
-		c.Discard()
 		return errClosed
 	}
 	old := m.servers

@@ -121,6 +121,32 @@ func TestMCPHTTPDoesNotFollowRedirect(t *testing.T) {
 	}
 }
 
+func TestMCPHTTPRejectsSetupFailures(t *testing.T) {
+	for _, failure := range []string{"auth", "legacy", "size"} {
+		t.Run(failure, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch failure {
+				case "auth":
+					w.WriteHeader(http.StatusUnauthorized)
+				case "legacy":
+					w.WriteHeader(http.StatusMethodNotAllowed)
+				case "size":
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprint(w, strings.Repeat("x", maxMessage+1))
+				}
+			}))
+			defer srv.Close()
+			m := New(context.Background(), t.TempDir(), nil)
+			defer m.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if _, err := m.Prepare(ctx, []Config{{Type: "http", Name: "s", URL: srv.URL}}); err == nil {
+				t.Fatal("failed setup accepted")
+			}
+		})
+	}
+}
+
 func TestMCPHTTPExpiredSessionRecoversForFutureCall(t *testing.T) {
 	var initialized atomic.Int32
 	var calls atomic.Int32

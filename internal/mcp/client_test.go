@@ -73,7 +73,37 @@ func TestMCPHelper(t *testing.T) {
 		}
 		_ = w.Flush()
 	}
+	if os.Getenv("ACPLAUSE_MCP_CASE") == "stubborn" {
+		time.Sleep(time.Minute)
+	}
 	os.Exit(0)
+}
+
+func TestMCPFailedCommitDefersProcessCleanup(t *testing.T) {
+	m := New(context.Background(), t.TempDir(), nil)
+	defer m.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := helperConfig(t, "stubborn")
+	cfg.Env["ACPLAUSE_MCP_CASE"] = "stubborn"
+	change, err := m.Prepare(ctx, []Config{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer change.Discard()
+	cancel()
+	// Session publication holds its lock. Even a rejected publication must
+	// return without waiting for EOF/TERM; its caller discards after unlocking.
+	done := make(chan error, 1)
+	go func() { done <- change.Commit() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled publication succeeded")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("publication blocked on process cleanup")
+	}
 }
 
 func TestMCPRejectsInvalidDiscovery(t *testing.T) {
