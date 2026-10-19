@@ -1,9 +1,13 @@
-# acplause
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/acplause-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/acplause-light.svg">
+  <img alt="acplause" src="docs/assets/acplause-light.svg" width="340">
+</picture>
+
+*Don't hold your acplause — it streams.*
 
 [![CI](https://github.com/anesthetised/acplause/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/anesthetised/acplause/actions/workflows/ci.yml)
 [![Go coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/anesthetised/acplause/badges/coverage.json)](https://github.com/anesthetised/acplause/actions/workflows/ci.yml)
-
-*Don't hold your acplause — it streams.*
 
 acplause is an [Agent Client Protocol](https://agentclientprotocol.com) v2
 agent. Your editor talks to it over stdio; it thinks with any
