@@ -98,7 +98,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	}
 	a := &Agent{
 		cfg:        cfg,
-		deps:       deps{out: out, model: model, maxRounds: maxRounds, mcpTimeout: mcpTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
+		deps:       deps{forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, mcpTimeout: mcpTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*Session),
@@ -221,6 +221,7 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 	if *req.ProtocolVersion < acp.ProtocolVersion {
 		return nil, acp.ErrUnsupportedProtocolVersion(*req.ProtocolVersion)
 	}
+	a.deps.forms.Store(req.Capabilities.Elicitation != nil && req.Capabilities.Elicitation.Form != nil)
 	a.initialized.Store(true)
 	return acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersion,

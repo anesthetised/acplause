@@ -1,13 +1,13 @@
 # Execution plan: Ask structured questions through ACP form elicitation
 
-Status: planned. Baseline: acplause `d9c99f1`, 2026-10-19.
+Status: #29 and #30 implemented; actual T3 acceptance pending #38. Baseline: acplause `d9c99f1`, 2026-10-19.
 Tracker: [#25](https://github.com/anesthetised/acplause/issues/25); task checkboxes live in GitHub Issues.
 Contract: [ADR 0011](../../docs/adr/0011-structured-user-questions.md).
 Read the [roadmap](../plan.md) for ordering and shared acceptance gates.
 
 ## Execution rules
 
-This is a planning deliverable; no feature is implemented by this document.
+This document records the execution contract; implementation status is stated above.
 Use GitHub issues as the authoritative task checklist. Each issue below is one
 bounded execution task; do not implement the whole roadmap in one run.
 
@@ -76,8 +76,12 @@ is advertised yet; their dependent activation issue supplies protocol e2e covera
 ## [#30](https://github.com/anesthetised/acplause/issues/30): Expose ask_user through ACP form elicitation
 
 **Depends on:** [#29](https://github.com/anesthetised/acplause/issues/29).
-**Scope:** 5 primary files; small/medium execution slice.
-**Files:** `internal/acp/elicitation.go (new)`, `internal/acp/initialize.go`, `internal/agent/agent.go`, `internal/agent/elicitation.go (new)`, `internal/agent/turn.go`.
+**Scope:** 6 primary files; small/medium execution slice.
+**Files:** `internal/acp/elicitation.go (new)`, `internal/acp/initialize.go`, `internal/agent/agent.go`, `internal/agent/elicitation.go (new)`, `internal/agent/turn.go`, `internal/agent/session.go`.
+The shared `deps` in session.go carries connection-local form capability into
+both new and restored sessions; it adds no persisted state or independent feature.
+The e2e validator also recognizes pinned `x-side: protocol` notifications so
+outbound `$/cancel_request` receives definition-level validation.
 
 ### Ordered implementation
 

@@ -5,11 +5,11 @@ import (
 	"fmt"
 )
 
-// InitializeRequest is the client's initialize params. Client capabilities
-// are not used: acplause calls nothing on the client.
+// InitializeRequest is the client's initialize params.
 type InitializeRequest struct {
-	ProtocolVersion *int            `json:"protocolVersion"`
-	Info            *Implementation `json:"info"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
+	ProtocolVersion *int               `json:"protocolVersion"`
+	Info            *Implementation    `json:"info"`
 }
 
 // Validate implements jsonrpc's params validation.
@@ -59,4 +59,14 @@ type SessionCapabilities struct {
 type PromptCapabilities struct {
 	EmbeddedContext *Supported `json:"embeddedContext,omitempty"`
 	Image           *Supported `json:"image,omitempty"`
+}
+
+// ClientCapabilities contains the client surfaces acplause uses.
+type ClientCapabilities struct {
+	Elicitation *ElicitationCapabilities `json:"elicitation"`
+}
+
+// ElicitationCapabilities negotiates direct agent form requests.
+type ElicitationCapabilities struct {
+	Form *Supported `json:"form"`
 }
