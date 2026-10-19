@@ -3,7 +3,11 @@
 // accounting.
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/anesthetised/acplause/internal/media"
+)
 
 // Message roles.
 const (
@@ -22,14 +26,21 @@ type Request struct {
 	MaxTokens uint64
 	// ReasoningEffort is sent as reasoning.effort when non-empty.
 	ReasoningEffort string
+	// Vision says the model is known to accept images. Without it, attached
+	// images are replaced by a textual marker in the request.
+	Vision bool
 }
 
-// Message is a chat message in the OpenAI wire format.
+// Message is a chat message as stored in the history. It is not sent upstream
+// as is: see wireMessages.
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// Images attached to a user message or tool result. Absent in text-only
+	// and older rows.
+	Images []media.Image `json:"images,omitempty"`
 	// Reasoning output of an assistant turn, passed back so models that
 	// require it can continue their reasoning across tool calls.
 	Reasoning        string            `json:"reasoning,omitempty"`

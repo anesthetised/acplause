@@ -84,6 +84,15 @@ type Model struct {
 	TopProvider struct {
 		MaxCompletionTokens uint64 `json:"max_completion_tokens"`
 	} `json:"top_provider"`
+	Architecture struct {
+		InputModalities []string `json:"input_modalities"`
+	} `json:"architecture"`
+}
+
+// Vision reports whether the model explicitly lists image input. Missing
+// metadata means unknown, which is not permission to send images.
+func (m Model) Vision() bool {
+	return slices.Contains(m.Architecture.InputModalities, "image")
 }
 
 // Supports reports whether the model accepts a request parameter, such as
@@ -110,12 +119,12 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 }
 
 type chatBody struct {
-	MaxTokens uint64     `json:"max_tokens,omitempty"`
-	Model     string     `json:"model"`
-	Messages  []Message  `json:"messages"`
-	Tools     []Tool     `json:"tools,omitempty"`
-	Stream    bool       `json:"stream"`
-	Reasoning *reasoning `json:"reasoning,omitempty"`
+	MaxTokens uint64        `json:"max_tokens,omitempty"`
+	Model     string        `json:"model"`
+	Messages  []wireMessage `json:"messages"`
+	Tools     []Tool        `json:"tools,omitempty"`
+	Stream    bool          `json:"stream"`
+	Reasoning *reasoning    `json:"reasoning,omitempty"`
 }
 
 type reasoning struct {
@@ -123,7 +132,7 @@ type reasoning struct {
 }
 
 func newChatBody(req Request) chatBody {
-	body := chatBody{Model: req.Model, Messages: req.Messages, Tools: req.Tools, Stream: true, MaxTokens: req.MaxTokens}
+	body := chatBody{Model: req.Model, Messages: wireMessages(req.Messages, req.Vision), Tools: req.Tools, Stream: true, MaxTokens: req.MaxTokens}
 	if req.ReasoningEffort != "" {
 		body.Reasoning = &reasoning{Effort: req.ReasoningEffort}
 	}

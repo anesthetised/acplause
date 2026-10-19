@@ -1,6 +1,6 @@
 # ADR 0009: Carry bounded image tool results through model history
 
-- Status: proposed; implementation contract prepared for the requested roadmap
+- Status: accepted; implementation started with #26
 - Date: 2026-10-19
 - Issues: [#26](https://github.com/anesthetised/acplause/issues/26), [#27](https://github.com/anesthetised/acplause/issues/27), [#23](https://github.com/anesthetised/acplause/issues/23)
 - Scope change: ADR 0007 binary-image omission, and ADR 0006 image budgeting/summary projection, when implemented
