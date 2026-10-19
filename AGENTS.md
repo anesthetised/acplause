@@ -16,6 +16,10 @@ just e2e -v
 
 Run `just check` before handing work back. All of it must pass.
 
+## Git
+
+Commits are allowed without asking. Push only when the user explicitly asks.
+
 ## Layout
 
 ```
