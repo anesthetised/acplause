@@ -226,6 +226,13 @@ type UsageUpdate struct {
 	Cost *Cost  `json:"cost,omitempty"`
 }
 
+// Notice is live user guidance, never a replayable transcript entry.
+type Notice struct {
+	Severity    string `json:"severity"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+}
+
 // CompactionStatus is the lifecycle state of a context compaction.
 type CompactionStatus string
 
@@ -267,5 +274,6 @@ func (AgentThoughtChunk) sessionUpdate() string { return "agent_thought_chunk" }
 func (StateUpdate) sessionUpdate() string       { return "state_update" }
 func (ToolCallUpdate) sessionUpdate() string    { return "tool_call_update" }
 func (UsageUpdate) sessionUpdate() string       { return "usage_update" }
+func (Notice) sessionUpdate() string            { return "notice" }
 func (CompactionUpdate) sessionUpdate() string  { return "compaction_update" }
 func (SessionInfoUpdate) sessionUpdate() string { return "session_info_update" }

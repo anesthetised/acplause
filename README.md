@@ -377,8 +377,10 @@ and matching results added to the model history.
 Changes are saved at prompt, model response, tool call and configuration
 boundaries. Streaming chunks stay in memory until a save boundary, so a crash
 can lose the response being streamed. Failure to open or migrate the database
-prevents startup. A later save failure is logged to stderr; work continues
-from memory, and unsaved changes may be missing after a restart.
+prevents startup. A later save failure is logged to stderr and sends a live ACP
+warning notice; work continues from memory, and unsaved changes may be missing
+after a restart. Repeated failures send no additional notice until a save succeeds.
+Notices are not stored or replayed, and clients may ignore them.
 
 ## Develop
 
