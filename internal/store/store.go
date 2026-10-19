@@ -133,6 +133,11 @@ var migrations = []string{
 		data       TEXT NOT NULL,
 		PRIMARY KEY (session_id, seq)
 	) WITHOUT ROWID;`,
+	`CREATE TABLE settings (
+		id     INTEGER PRIMARY KEY CHECK (id = 1),
+		model  TEXT NOT NULL,
+		effort TEXT NOT NULL
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -167,6 +172,24 @@ func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 func (s *Store) leaseUntil() int64 { return s.now().Add(leaseTTL).UnixNano() }
+
+// Selection returns the last explicit model and effort selection, or empty
+// strings if the user has not selected one yet.
+func (s *Store) Selection(ctx context.Context) (model, effort string, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT model, effort FROM settings WHERE id = 1`).Scan(&model, &effort)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return model, effort, err
+}
+
+// SetSelection remembers the model and effort together, independently of
+// the lifetime of the session in which they were selected.
+func (s *Store) SetSelection(ctx context.Context, model, effort string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO settings (id, model, effort) VALUES (1, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET model = excluded.model, effort = excluded.effort`, model, effort)
+	return err
+}
 
 // Create stores a new session owned by this process.
 func (s *Store) Create(ctx context.Context, sess Session) error {

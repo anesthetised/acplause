@@ -64,9 +64,10 @@ type Agent struct {
 	ctx         context.Context // parent of all sessions
 	cancel      context.CancelFunc
 
-	mu       sync.Mutex
-	sessions map[string]*Session // open in this process
-	lost     map[string]bool     // taken over by another process
+	mu             sync.Mutex
+	sessions       map[string]*Session // open in this process
+	lost           map[string]bool     // taken over by another process
+	selectionSaved <-chan struct{}     // last queued selection write; nil before the first
 }
 
 // New creates an agent and starts loading the model catalog.
@@ -175,6 +176,9 @@ func (a *Agent) Shutdown() {
 		})
 	}
 	wg.Wait()
+	if saved := a.pendingSelection(); saved != nil {
+		<-saved
+	}
 	a.cancel()
 }
 
@@ -206,11 +210,15 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 	}, nil
 }
 
-// newSession answers once the model catalog is loaded, which only delays
-// the first session of a connection.
+// newSession waits for the catalog and earlier model selections off the
+// read loop, then creates a session with the last available user choice.
 func (a *Agent) newSession(_ context.Context, req acp.NewSessionRequest) (any, error) {
 	reply := jsonrpc.NewReply()
+	saved := a.pendingSelection()
 	go func() {
+		if saved != nil {
+			<-saved
+		}
 		c, err := a.catalog()
 		if err != nil {
 			reply.Reject(turnError(err))
@@ -220,6 +228,15 @@ func (a *Agent) newSession(_ context.Context, req acp.NewSessionRequest) (any, e
 		if err != nil {
 			reply.Reject(acp.ErrInvalidParams("cannot open workspace: %v", err))
 			return
+		}
+		model, effort, err := a.cfg.Store.Selection(a.ctx)
+		if err != nil {
+			a.cfg.Log.Warn("loading last model selection", "err", err)
+		} else if c.has(model) {
+			s.model = model
+			if c.reasons(model) && validEffort(effort) {
+				s.effort = effort
+			}
 		}
 		if err := a.cfg.Store.Create(a.ctx, s.record()); err != nil {
 			s.Close()
@@ -427,7 +444,38 @@ func (a *Agent) setConfigOption(_ context.Context, req acp.SetConfigOptionReques
 	if err := s.SetConfigOption(req.ConfigID, req.Type, req.Value); err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	model, effort := s.model, s.effort
+	s.mu.Unlock()
+	a.rememberSelection(model, effort)
 	return acp.SetConfigOptionResponse{ConfigOptions: s.ConfigOptions()}, nil
+}
+
+// pendingSelection fences earlier client choices without waiting on the
+// read loop. New sessions must see those choices, even before their saves finish.
+func (a *Agent) pendingSelection() <-chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.selectionSaved
+}
+
+// rememberSelection queues writes in request order across all sessions.
+// Background session saves and resume never change this user preference.
+func (a *Agent) rememberSelection(model, effort string) {
+	done := make(chan struct{})
+	a.mu.Lock()
+	previous := a.selectionSaved
+	a.selectionSaved = done
+	a.mu.Unlock()
+	go func() {
+		defer close(done)
+		if previous != nil {
+			<-previous
+		}
+		if err := a.cfg.Store.SetSelection(a.ctx, model, effort); err != nil {
+			a.cfg.Log.Warn("saving last model selection", "err", err)
+		}
+	}()
 }
 
 func (a *Agent) session(id string) (*Session, error) {

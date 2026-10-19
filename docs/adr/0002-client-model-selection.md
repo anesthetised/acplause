@@ -1,6 +1,6 @@
 # ADR 0002: Let the ACP client select the model
 
-- Status: accepted
+- Status: accepted; decision 2 partially superseded by [ADR 0005](0005-remember-model-selection.md)
 - Date: 2026-10-18
 
 ## Context
@@ -25,7 +25,8 @@ the user did not intend to use.
 
 ## Consequences
 
-- Clients must select a model before the first prompt in each new session.
+- Clients must select a model before the first prompt in each new session
+  unless an available remembered choice is reused (ADR 0005).
 - Model selection is preserved when resuming a session.
 - Providers must expose a usable `/models` endpoint.
 - Selecting the first available model automatically was rejected because

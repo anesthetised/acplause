@@ -15,7 +15,8 @@ import (
 	"github.com/anesthetised/acplause/internal/store"
 )
 
-// Store persists sessions; *store.Store implements it (ADR 0004).
+// Store persists sessions and model selection; *store.Store implements it
+// (ADRs 0004 and 0005).
 type Store interface {
 	Create(ctx context.Context, sess store.Session) error
 	Save(ctx context.Context, sess store.Session, history, transcript []store.Row) error
@@ -24,6 +25,8 @@ type Store interface {
 	Release(ctx context.Context, id string) error
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context, cwd string, offset, limit int) ([]store.Session, bool, error)
+	Selection(ctx context.Context) (model, effort string, err error)
+	SetSelection(ctx context.Context, model, effort string) error
 }
 
 // interrupted is the result of tool calls a dead process left unfinished.
