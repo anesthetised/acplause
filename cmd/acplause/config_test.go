@@ -23,7 +23,7 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config{BaseURL: llm.DefaultBaseURL, APIKey: "sk-or", MaxRounds: 7, BashTimeout: 90 * time.Second, LogLevel: slog.LevelDebug}
+	want := config{BaseURL: llm.DefaultBaseURL, APIKey: "sk-or", MaxRounds: 7, BashTimeout: 90 * time.Second, MCPTimeout: 10 * time.Minute, LogLevel: slog.LevelDebug}
 	if cfg != want {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
@@ -50,5 +50,18 @@ func TestLoadConfigErrors(t *testing.T) {
 func TestLoadConfigWithoutModel(t *testing.T) {
 	if _, err := loadConfig(env(nil)); err != nil {
 		t.Fatalf("model selection belongs to the ACP client: %v", err)
+	}
+}
+
+func TestMCPTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  time.Duration
+		valid bool
+	}{{"", 10 * time.Minute, true}, {"0", 0, true}, {"30m", 30 * time.Minute, true}, {"-1s", 0, false}, {"later", 0, false}} {
+		cfg, err := loadConfig(env(map[string]string{"ACPLAUSE_MCP_TIMEOUT": tt.value}))
+		if (err == nil) != tt.valid || tt.valid && cfg.MCPTimeout != tt.want {
+			t.Errorf("%q: timeout=%v err=%v", tt.value, cfg.MCPTimeout, err)
+		}
 	}
 }

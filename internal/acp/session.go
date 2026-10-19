@@ -5,12 +5,11 @@ import (
 	"errors"
 )
 
-// NewSessionRequest is the params of session/new. MCP servers are accepted
-// and ignored.
+// NewSessionRequest is the params of session/new.
 type NewSessionRequest struct {
-	Cwd                   string            `json:"cwd"`
-	AdditionalDirectories []string          `json:"additionalDirectories"`
-	MCPServers            []json.RawMessage `json:"mcpServers"`
+	Cwd                   string      `json:"cwd"`
+	AdditionalDirectories []string    `json:"additionalDirectories"`
+	MCPServers            []MCPServer `json:"mcpServers"`
 }
 
 // Validate implements jsonrpc's params validation.
@@ -18,6 +17,7 @@ func (r NewSessionRequest) Validate() error {
 	return errors.Join(
 		requireAbsolute("cwd", r.Cwd),
 		requireAbsoluteAll("additionalDirectories", r.AdditionalDirectories),
+		validateMCPServers(r.MCPServers),
 	)
 }
 
@@ -29,11 +29,11 @@ type NewSessionResponse struct {
 
 // ResumeSessionRequest is the params of session/resume.
 type ResumeSessionRequest struct {
-	SessionID             string            `json:"sessionId"`
-	Cwd                   string            `json:"cwd"`
-	AdditionalDirectories []string          `json:"additionalDirectories"`
-	MCPServers            []json.RawMessage `json:"mcpServers"`
-	ReplayFrom            *ReplayFrom       `json:"replayFrom"`
+	SessionID             string      `json:"sessionId"`
+	Cwd                   string      `json:"cwd"`
+	AdditionalDirectories []string    `json:"additionalDirectories"`
+	MCPServers            []MCPServer `json:"mcpServers"`
+	ReplayFrom            *ReplayFrom `json:"replayFrom"`
 }
 
 // Validate implements jsonrpc's params validation.
@@ -47,6 +47,7 @@ func (r ResumeSessionRequest) Validate() error {
 		requireAbsolute("cwd", r.Cwd),
 		requireAbsoluteAll("additionalDirectories", r.AdditionalDirectories),
 		replay,
+		validateMCPServers(r.MCPServers),
 	)
 }
 

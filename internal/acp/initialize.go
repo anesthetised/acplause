@@ -48,6 +48,7 @@ type AgentCapabilities struct {
 
 // SessionCapabilities lists optional session features.
 type SessionCapabilities struct {
+	MCP                   *MCPCapabilities    `json:"mcp,omitempty"`
 	Delete                *Supported          `json:"delete,omitempty"`
 	Prompt                *PromptCapabilities `json:"prompt,omitempty"`
 	AdditionalDirectories *Supported          `json:"additionalDirectories,omitempty"`
