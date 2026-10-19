@@ -36,6 +36,10 @@ func (r recorder) Call(_ context.Context, _ string, _, result any) error {
 	return nil
 }
 
+func (r recorder) CallCancellable(context.Context, string, any, any) error {
+	return fmt.Errorf("unexpected cancellable client request")
+}
+
 // untilIdle returns the updates up to and including the next idle state.
 func (r recorder) untilIdle(t *testing.T) []acp.Update {
 	t.Helper()

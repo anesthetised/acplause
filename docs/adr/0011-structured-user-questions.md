@@ -1,6 +1,6 @@
 # ADR 0011: Ask structured questions through ACP form elicitation
 
-- Status: proposed; implementation contract prepared for the requested roadmap
+- Status: accepted; outbound cancellation implemented in #29, form elicitation pending #30
 - Date: 2026-10-19
 - Issues: [#29](https://github.com/anesthetised/acplause/issues/29), [#30](https://github.com/anesthetised/acplause/issues/30)
 - Scope change: No existing decision; outbound cancellation for questions is opt-in and preserves ADR 0003 permission behavior
@@ -41,5 +41,8 @@ Wire shapes come only from the pinned schema and these pinned protocol pages:
 
 T3 compatibility evidence: checkout `94285424c`, `packages/provider-acp/src/server/{adapter,runtimeModel,AcpSessionRuntime}.ts` and `docs/user/providers-acp.md`. This is client evidence, not a source of ACP wire shapes.
 
-Execution plan: [questions](../../tasks/t3/questions.md). The roadmap's request is to prepare this design, not implement it. Mark accepted when implementation is authorized; do not silently revise the contract in a small execution task.
+Execution plan: [questions](../../tasks/t3/questions.md). The accepted design is
+implemented in separate slices: #29 adds opt-in transport cancellation without
+activating a client request; #30 supplies form elicitation and its protocol e2e
+coverage. Actual T3 acceptance remains tracked in #38.
 

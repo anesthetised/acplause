@@ -87,6 +87,17 @@ func (c *Conn) Notify(method string, params any) error {
 // arrives through the read loop the handler would be holding up. It returns
 // the peer's *Error, ctx's error, or ErrClosed.
 func (c *Conn) Call(ctx context.Context, method string, params, result any) error {
+	return c.callPeer(ctx, method, params, result, false)
+}
+
+// CallCancellable works like Call, but also abandons a blocked enqueue when ctx
+// ends and sends a best-effort $/cancel_request for an enqueued pending request.
+// Cancellation never waits for output queue space; a delivered response wins.
+func (c *Conn) CallCancellable(ctx context.Context, method string, params, result any) error {
+	return c.callPeer(ctx, method, params, result, true)
+}
+
+func (c *Conn) callPeer(ctx context.Context, method string, params, result any, cancellable bool) error {
 	c.mu.Lock()
 	c.lastCall++
 	id := ID(strconv.FormatInt(c.lastCall, 10))
@@ -99,27 +110,63 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 		c.mu.Unlock()
 	}()
 
-	if err := c.send(request{JSONRPC: Version, ID: id, Method: method, Params: params}); err != nil {
+	// Permissions retain Call's enqueue semantics; only opt-in requests can
+	// abandon an enqueue before there is anything for the peer to cancel.
+	sendCtx := context.Background()
+	if cancellable {
+		sendCtx = ctx
+	}
+	if err := c.sendContext(sendCtx, request{JSONRPC: Version, ID: id, Method: method, Params: params}); err != nil {
 		return err
 	}
+	var msg *inbound
 	select {
-	case msg := <-done:
-		if msg.Error != nil {
-			var e Error
-			if err := json.Unmarshal(msg.Error, &e); err != nil {
-				return fmt.Errorf("jsonrpc: decode error of %s: %w", method, err)
-			}
-			return &e
-		}
-		if err := json.Unmarshal(msg.Result, result); err != nil {
-			return fmt.Errorf("jsonrpc: decode result of %s: %w", method, err)
-		}
-		return nil
+	case msg = <-done:
 	case <-ctx.Done():
-		return ctx.Err()
+		if !cancellable || c.cancelCall(id) {
+			return ctx.Err()
+		}
+		msg = <-done // deliver claimed the call and buffered its response
 	case <-c.quit:
 		return ErrClosed
 	}
+	if msg.Error != nil {
+		var e Error
+		if err := json.Unmarshal(msg.Error, &e); err != nil {
+			return fmt.Errorf("jsonrpc: decode error of %s: %w", method, err)
+		}
+		return &e
+	}
+	if err := json.Unmarshal(msg.Result, result); err != nil {
+		return fmt.Errorf("jsonrpc: decode result of %s: %w", method, err)
+	}
+	return nil
+}
+
+// cancelCall competes with deliver under mu. Its caller has already enqueued
+// the request, so a cancellation queued here cannot overtake that request.
+func (c *Conn) cancelCall(id ID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.calls[id] == nil {
+		return false
+	}
+	delete(c.calls, id)
+	select {
+	case <-c.quit:
+		return true
+	default:
+	}
+	// Locally generated numeric IDs and this fixed payload always marshal.
+	b, _ := Marshal(notification{JSONRPC: Version, Method: CancelRequestMethod, Params: struct {
+		RequestID ID `json:"requestId"`
+	}{id}})
+	select {
+	case c.queue <- b:
+	case <-c.quit:
+	default: // peer cancellation is best effort, even with a blocked writer
+	}
+	return true
 }
 
 // deliver hands a response to the Call awaiting it. Responses nobody awaits,
@@ -130,12 +177,14 @@ func (c *Conn) deliver(msg *inbound) {
 	c.mu.Lock()
 	done := c.calls[id]
 	delete(c.calls, id)
+	if done != nil {
+		done <- msg // buffered before cancellation can observe the removed waiter
+	}
 	c.mu.Unlock()
 	if done == nil {
 		c.log.Debug("ignoring response to no pending request", "id", string(msg.ID))
 		return
 	}
-	done <- msg
 }
 
 // Serve reads and dispatches messages until the input ends (returning nil),
@@ -359,6 +408,13 @@ func (c *Conn) sendOrLog(v any) {
 }
 
 func (c *Conn) send(v any) error {
+	return c.sendContext(context.Background(), v)
+}
+
+func (c *Conn) sendContext(ctx context.Context, v any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	b, err := Marshal(v)
 	if err != nil {
 		return fmt.Errorf("jsonrpc: encode message: %w", err)
@@ -373,6 +429,8 @@ func (c *Conn) send(v any) error {
 		return nil
 	case <-c.quit:
 		return ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
