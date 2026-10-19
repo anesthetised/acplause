@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,6 +154,51 @@ func TestReadFile(t *testing.T) {
 	w.fails("read_file", map[string]string{"path": "blob.bin"}, "not a text file")
 	w.fails("read_file", map[string]string{"path": "big.txt"}, "too large")
 	w.fails("read_file", map[string]string{"path": "missing.txt"}, "no such file")
+}
+
+func TestReadFileRange(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	w.write("f.txt", "a\nb\nc\nd\ne\n")
+	w.write("nonl.txt", "x\ny")
+	w.write("empty.txt", "")
+	tests := []struct {
+		path string
+		args map[string]any
+		want string
+	}{
+		{"f.txt", map[string]any{"offset": 2, "limit": 2}, "[lines 2-3 of 5]\nb\nc\n"},
+		{"f.txt", map[string]any{"offset": 4}, "[lines 4-5 of 5]\nd\ne\n"},
+		{"f.txt", map[string]any{"limit": 1}, "[lines 1-1 of 5]\na\n"},
+		{"f.txt", map[string]any{"offset": 5, "limit": 100}, "[lines 5-5 of 5]\ne\n"},
+		{"f.txt", map[string]any{"offset": 2, "limit": math.MaxInt}, "[lines 2-5 of 5]\nb\nc\nd\ne\n"},
+		{"nonl.txt", map[string]any{"offset": 2}, "[lines 2-2 of 2]\ny"},
+		{"f.txt", map[string]any{}, "a\nb\nc\nd\ne\n"}, // no range, no header
+	}
+	for _, tc := range tests {
+		tc.args["path"] = tc.path
+		if got := w.run("read_file", tc.args); got.Failed || got.Output != tc.want {
+			t.Errorf("%v: got %+v, want %q", tc.args, got, tc.want)
+		}
+	}
+	w.fails("read_file", map[string]any{"path": "f.txt", "offset": 6}, "offset 6 is beyond the end of the file (5 lines)")
+	w.fails("read_file", map[string]any{"path": "empty.txt", "offset": 1}, "(0 lines)")
+}
+
+func TestReadFileRangeRejectsInvalidArguments(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	w.write("f.txt", "a\n")
+	for _, tc := range []struct{ args, want string }{
+		{`{"path":"f.txt","offset":0}`, "offset must be at least 1"},
+		{`{"path":"f.txt","offset":-3}`, "offset must be at least 1"},
+		{`{"path":"f.txt","limit":0}`, "limit must be at least 1"},
+		{`{"path":"f.txt","limit":-1}`, "limit must be at least 1"},
+		{`{"path":"f.txt","offset":"2"}`, "invalid arguments for read_file"},
+		{`{"path":"f.txt","limit":1.5}`, "invalid arguments for read_file"},
+	} {
+		if _, err := w.tb.Prepare("read_file", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %q", tc.args, err, tc.want)
+		}
+	}
 }
 
 func TestListDir(t *testing.T) {

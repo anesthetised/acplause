@@ -41,7 +41,7 @@ models with tool support, session creation fails.
 
 | Tool          | Kind      |                                                   |
 | ------------- | --------- | ------------------------------------------------- |
-| `read_file`   | `read`    | text files up to 1 MiB                            |
+| `read_file`   | `read`    | text files up to 1 MiB; `offset`, `limit` lines   |
 | `list_dir`    | `read`    | tree, 3 levels, 200 entries                       |
 | `search_code` | `search`  | plain-text search, 50 matches                     |
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
