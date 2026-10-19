@@ -75,3 +75,51 @@ func assertExited(t *testing.T, pidFile string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestShellObserverSignalsAndCancellation(t *testing.T) {
+	for _, mode := range []string{"signal", "cancel", "timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			opts := Options{BashTimeout: new(time.Duration(0))}
+			command := "printf ready; sleep 60"
+			if mode == "timeout" {
+				opts.BashTimeout = new(100 * time.Millisecond)
+			}
+			if mode == "signal" {
+				command = "kill -TERM $$"
+			}
+			w := newWorkspace(t, opts)
+			call, err := w.prepare("bash", map[string]string{"command": command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := call.ObserveShell()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan Result, 1)
+			go func() { done <- call.Run(ctx) }()
+			if mode == "cancel" {
+				awaitShell(t, o, func(s ShellSnapshot) bool { return string(s.Output) == "ready" })
+				cancel()
+			}
+			select {
+			case r := <-done:
+				if !r.Failed {
+					t.Fatalf("succeeded: %+v", r)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("shell survived")
+			}
+			s := o.Snapshot(0)
+			want := "SIGKILL"
+			if mode == "signal" {
+				want = "SIGTERM"
+			}
+			if s.Exit == nil || s.Exit.Code != nil || s.Exit.Signal != want {
+				t.Fatalf("status: %+v", s.Exit)
+			}
+		})
+	}
+	if status := shellExit(nil); status.Code != nil || status.Signal != "" {
+		t.Fatalf("unknown completion: %+v", status)
+	}
+}
