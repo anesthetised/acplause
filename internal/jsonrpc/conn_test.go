@@ -274,3 +274,77 @@ func TestSendAfterCloseFails(t *testing.T) {
 		t.Fatalf("got %v, want ErrClosed", err)
 	}
 }
+
+func TestCallRoutesResponsesByID(t *testing.T) {
+	p := newPeer(t, Methods{})
+	type result struct {
+		N int `json:"n"`
+	}
+	call := func(ctx context.Context) (result, error) {
+		var r result
+		return r, p.conn.Call(ctx, "ask", map[string]int{"q": 1}, &r)
+	}
+	type outcome struct {
+		r   result
+		err error
+	}
+	outcomes := make(chan outcome, 2)
+	for range 2 {
+		go func() {
+			r, err := call(context.Background())
+			outcomes <- outcome{r, err}
+		}()
+	}
+	var ids []string
+	for range 2 {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.Unmarshal([]byte(p.recv()), &req); err != nil || req.Method != "ask" {
+			t.Fatalf("request: %+v %v", req, err)
+		}
+		ids = append(ids, string(req.ID))
+	}
+	// Answer out of order, one in a batch, plus a response nobody awaits.
+	p.send(`{"jsonrpc":"2.0","id":999,"result":{"n":0}}`)
+	p.send(`[{"jsonrpc":"2.0","id":` + ids[1] + `,"error":{"code":-32603,"message":"no"}}]`)
+	p.send(`{"jsonrpc":"2.0","id":` + ids[0] + `,"result":{"n":7}}`)
+	var got []outcome
+	for range 2 {
+		got = append(got, <-outcomes)
+	}
+	var ok, failed int
+	for _, o := range got {
+		if e, isRPC := errors.AsType[*Error](o.err); isRPC && e.Code == CodeInternalError && e.Message == "no" {
+			failed++
+		} else if o.err == nil && o.r.N == 7 {
+			ok++
+		}
+	}
+	if ok != 1 || failed != 1 {
+		t.Fatalf("outcomes: %+v", got)
+	}
+	p.expectSilence()
+}
+
+func TestCallReturnsWhenContextEnds(t *testing.T) {
+	p := newPeer(t, Methods{"echo": echo})
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	go func() { errs <- p.conn.Call(ctx, "ask", nil, &struct{}{}) }()
+	var req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(p.recv()), &req); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := <-errs; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call: %v", err)
+	}
+	// A late answer is dropped and the connection keeps serving.
+	p.send(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{}}`)
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"echo","params":[1]}`)
+	p.expect(`{"jsonrpc":"2.0","id":1,"result":[1]}`)
+}

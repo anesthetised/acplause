@@ -114,6 +114,13 @@ func errorResponse(id ID, err *Error) *response {
 	return &response{JSONRPC: Version, ID: id, Error: err}
 }
 
+type request struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      ID     `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
 type notification struct {
 	JSONRPC string `json:"jsonrpc"`
 	Method  string `json:"method"`
