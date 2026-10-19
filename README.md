@@ -34,10 +34,13 @@ go install github.com/anesthetised/acplause/cmd/acplause@latest
 
 Point your ACP v2 client at the `acplause` binary with these variables set.
 The client receives the available models in `session/new` and selects one
-with `session/set_config_option` before sending the first prompt. New
-sessions show "Select a model" until then; prompts without a selection are
-rejected. If the provider's model list cannot be loaded or contains no
-models with tool support, session creation fails.
+with `session/set_config_option`. New sessions reuse the last selected model
+and reasoning effort, remembered across restarts and editor windows in the
+same data directory. If there is no remembered selection or the model is no
+longer available, sessions show "Select a model"; prompts are rejected until
+the client selects one. The agent never picks a substitute model. If the
+provider's model list cannot be loaded or contains no models with tool
+support, session creation fails. See [ADR 0005](docs/adr/0005-remember-model-selection.md).
 
 ## Tools
 

@@ -226,6 +226,62 @@ func TestOpenRefusesNewerSchema(t *testing.T) {
 	}
 }
 
+func TestSelectionSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	a := open(t, dir, "a")
+	if model, effort, err := a.Selection(ctx); err != nil || model != "" || effort != "" {
+		t.Fatalf("initial selection: %q %q %v", model, effort, err)
+	}
+	if err := a.SetSelection(ctx, "m", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b := open(t, dir, "b")
+	if model, effort, err := b.Selection(ctx); err != nil || model != "m" || effort != "high" {
+		t.Fatalf("reopened selection: %q %q %v", model, effort, err)
+	}
+	if err := b.SetSelection(ctx, "other", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if model, effort, err := b.Selection(ctx); err != nil || model != "other" || effort != "default" {
+		t.Fatalf("updated selection: %q %q %v", model, effort, err)
+	}
+}
+
+func TestMigrateSessionDatabaseAddsSettings(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(migrations[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	old := &Store{db: db, owner: "old", now: time.Now}
+	if err := old.Create(ctx, session("existing", "idle")); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := open(t, dir, "new")
+	if _, err := upgraded.Acquire(ctx, "existing"); err != nil {
+		t.Fatalf("existing session after migration: %v", err)
+	}
+	if model, effort, err := upgraded.Selection(ctx); err != nil || model != "" || effort != "" {
+		t.Fatalf("migration invented a selection: %q %q %v", model, effort, err)
+	}
+	if err := upgraded.SetSelection(ctx, "m", "default"); err != nil {
+		t.Fatalf("settings after migration: %v", err)
+	}
+}
+
 // A new turn and a takeover racing for an idle session: exactly one wins.
 func TestTakeoverRacesNewTurn(t *testing.T) {
 	dir := t.TempDir()
