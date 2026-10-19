@@ -172,3 +172,26 @@ func TestPromptInsertionAtCommitBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestRestoreRepairsInterruptedCompaction(t *testing.T) {
+	data, err := encodeEntry(acp.CompactionUpdate{CompactionID: "c", Status: acp.CompactionInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := restoreSession(context.Background(), deps{}, newCatalog(nil), &store.Loaded{
+		Session: store.Session{ID: "s", Cwd: t.TempDir(), State: "running"},
+		History: [][]byte{[]byte(`{"role":"user","content":"keep this"}`)}, Transcript: [][]byte{data},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c := s.transcript[0].(acp.CompactionUpdate)
+	if c.Status != acp.CompactionFailed || c.Error == "" || c.CompactionID != "c" || len(s.history) != 2 || s.history[1].Content != "keep this" {
+		t.Fatalf("interrupted compaction: %+v, %+v", c, s.history)
+	}
+	_, history, transcript, _, err := s.pending()
+	if err != nil || len(history) != 0 || len(transcript) != 1 {
+		t.Fatalf("repair was not queued: %v, %v, %v", history, transcript, err)
+	}
+}

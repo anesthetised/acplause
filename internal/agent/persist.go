@@ -47,6 +47,8 @@ func encodeEntry(u acp.Update) ([]byte, error) {
 		kind = "agent_message"
 	case acp.AgentThought:
 		kind = "agent_thought"
+	case acp.CompactionUpdate:
+		kind = "compaction_update"
 	case acp.ToolCallUpdate:
 		kind = "tool_call_update"
 	default:
@@ -77,6 +79,10 @@ func decodeEntry(data []byte) (acp.Update, error) {
 		u = m
 	case "agent_thought":
 		var m acp.AgentThought
+		err = json.Unmarshal(e.Update, &m)
+		u = m
+	case "compaction_update":
+		var m acp.CompactionUpdate
 		err = json.Unmarshal(e.Update, &m)
 		u = m
 	case "tool_call_update":
@@ -200,10 +206,15 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 	return s, nil
 }
 
-// repair finishes what a dead process left: unfinished tool calls fail and
-// get a result in the history.
+// repair finishes what a dead process left: unfinished compactions fail,
+// and unfinished tool calls fail and get a result in the history.
 func (s *Session) repair() {
 	for i, u := range s.transcript {
+		if c, ok := u.(acp.CompactionUpdate); ok && c.Status == acp.CompactionInProgress {
+			c.Status, c.Error = acp.CompactionFailed, "acplause exited before compaction finished."
+			s.transcript[i] = c
+			s.dirty[i] = true
+		}
 		if call, ok := u.(acp.ToolCallUpdate); ok && (call.Status == acp.ToolPending || call.Status == acp.ToolInProgress) {
 			s.transcript[i] = call.Merge(acp.ToolCallUpdate{
 				Status:    acp.ToolFailed,

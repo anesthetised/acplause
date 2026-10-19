@@ -14,8 +14,8 @@ import (
 // Models offered by the mock: one that reasons, one that does not, and one
 // without tool support that the agent must hide.
 const modelsJSON = `{"data":[
-	{"id":"test/model","name":"Test Model","context_length":1000,"supported_parameters":["tools","reasoning"]},
-	{"id":"test/plain","name":"Test Plain","context_length":2000,"supported_parameters":["tools"]},
+	{"id":"test/model","name":"Test Model","context_length":64000,"supported_parameters":["tools","reasoning"]},
+	{"id":"test/plain","name":"Test Plain","context_length":128000,"supported_parameters":["tools"]},
 	{"id":"test/notools","name":"No Tools","context_length":3000,"supported_parameters":["temperature"]}
 ]}`
 
@@ -35,6 +35,7 @@ type mockLLM struct {
 type script func(s *stream)
 
 type chatRequest struct {
+	MaxTokens uint64           `json:"max_tokens"`
 	Model     string           `json:"model"`
 	Stream    bool             `json:"stream"`
 	Messages  []map[string]any `json:"messages"`

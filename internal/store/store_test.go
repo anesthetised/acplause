@@ -92,6 +92,31 @@ func TestSaveAndAcquireRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveReplacesHistorySuffix(t *testing.T) {
+	s := open(t, t.TempDir(), "a")
+	sess := session("s", "idle")
+	if err := s.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, sess, rows(`"old"`, `"answer"`, `"prompt"`, `"result"`), rows(`"original replay"`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, sess, rows(`"summary"`, `"latest prompt"`), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, sess, []Row{{Seq: 2, Data: []byte(`"new answer"`)}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	l, err := s.Acquire(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(strs(l.History), []string{`"summary"`, `"latest prompt"`, `"new answer"`}) ||
+		!slices.Equal(strs(l.Transcript), []string{`"original replay"`}) {
+		t.Fatalf("stale history or damaged replay: %q, %q", l.History, l.Transcript)
+	}
+}
+
 func TestOwnershipBetweenProcesses(t *testing.T) {
 	dir := t.TempDir()
 	a, b := open(t, dir, "a"), open(t, dir, "b")

@@ -224,6 +224,26 @@ type UsageUpdate struct {
 	Cost *Cost  `json:"cost,omitempty"`
 }
 
+// CompactionStatus is the lifecycle state of a context compaction.
+type CompactionStatus string
+
+// Compaction lifecycle states.
+const (
+	CompactionInProgress CompactionStatus = "in_progress"
+	CompactionCompleted  CompactionStatus = "completed"
+	CompactionFailed     CompactionStatus = "failed"
+	CompactionCancelled  CompactionStatus = "cancelled"
+)
+
+// CompactionUpdate upserts a compaction at its first-seen transcript position.
+// Summary and Error are patches; acplause never clears them.
+type CompactionUpdate struct {
+	CompactionID string           `json:"compactionId"`
+	Status       CompactionStatus `json:"status"`
+	Summary      []ContentBlock   `json:"summary,omitempty"`
+	Error        string           `json:"error,omitempty"`
+}
+
 // SessionInfoUpdate patches session metadata. Only what acplause sets is
 // modelled; omitted fields mean "unchanged".
 type SessionInfoUpdate struct {
@@ -245,4 +265,5 @@ func (AgentThoughtChunk) sessionUpdate() string { return "agent_thought_chunk" }
 func (StateUpdate) sessionUpdate() string       { return "state_update" }
 func (ToolCallUpdate) sessionUpdate() string    { return "tool_call_update" }
 func (UsageUpdate) sessionUpdate() string       { return "usage_update" }
+func (CompactionUpdate) sessionUpdate() string  { return "compaction_update" }
 func (SessionInfoUpdate) sessionUpdate() string { return "session_info_update" }

@@ -14,6 +14,10 @@ func TestSessionNotificationPutsDiscriminatorFirst(t *testing.T) {
 		want   string
 	}{
 		{
+			CompactionUpdate{CompactionID: "c1", Status: CompactionCompleted, Summary: []ContentBlock{Text("a < b")}},
+			`{"sessionId":"s1","update":{"sessionUpdate":"compaction_update","compactionId":"c1","status":"completed","summary":[{"type":"text","text":"a < b"}]}}`,
+		},
+		{
 			StateUpdate{State: StateRunning},
 			`{"sessionId":"s1","update":{"sessionUpdate":"state_update","state":"running"}}`,
 		},

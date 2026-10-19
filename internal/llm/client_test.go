@@ -44,6 +44,22 @@ func collect(t *testing.T, c *Client) (*Completion, []Delta, error) {
 	return comp, deltas, err
 }
 
+func TestChatOutputBudget(t *testing.T) {
+	for _, limit := range []uint64{0, 4096} {
+		body, err := json.Marshal(newChatBody(Request{MaxTokens: limit}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(body, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if limit == 0 && wire["max_tokens"] != nil || limit != 0 && wire["max_tokens"] != float64(limit) {
+			t.Fatalf("max_tokens=%d: %s", limit, body)
+		}
+	}
+}
+
 func TestChatStreamsTextReasoningAndUsage(t *testing.T) {
 	var body map[string]any
 	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
@@ -260,13 +276,13 @@ func TestModels(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		fmt.Fprint(w, `{"data":[{"id":"a/x","name":"X","context_length":8192,"supported_parameters":["tools","reasoning"]},{"id":"b/y","name":"Y","context_length":null,"supported_parameters":["temperature"]},{"id":"c/z","name":"Z"}]}`)
+		fmt.Fprint(w, `{"data":[{"id":"a/x","name":"X","context_length":8192,"top_provider":{"max_completion_tokens":4096},"supported_parameters":["tools","reasoning"]},{"id":"b/y","name":"Y","context_length":null,"top_provider":{"max_completion_tokens":null},"supported_parameters":["temperature"]},{"id":"c/z","name":"Z"}]}`)
 	})
 	models, err := c.Models(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 3 || models[0].ContextLength != 8192 || models[1].ContextLength != 0 {
+	if len(models) != 3 || models[0].ContextLength != 8192 || models[1].ContextLength != 0 || models[0].TopProvider.MaxCompletionTokens != 4096 || models[1].TopProvider.MaxCompletionTokens != 0 || models[2].TopProvider.MaxCompletionTokens != 0 {
 		t.Fatalf("unexpected models: %+v", models)
 	}
 	if !models[0].Supports("reasoning") || models[1].Supports("tools") || !models[2].Supports("tools") {

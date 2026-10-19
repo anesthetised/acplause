@@ -17,11 +17,19 @@ import (
 // budget runs out or the turn fails. The caller turns any result into
 // cancelled when ctx is done.
 func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error) {
-	for round := 0; ; round++ {
-		if round == s.deps.maxRounds {
+	remaining := s.deps.maxRounds
+	for {
+		if remaining == 0 {
 			return acp.StopMaxTurnRequests, nil
 		}
-		req := s.request()
+		req, err := s.prepareRequest(ctx, &remaining)
+		if errors.Is(err, errRoundLimit) {
+			return acp.StopMaxTurnRequests, nil
+		}
+		if err != nil {
+			return acp.StopError, turnError(err)
+		}
+		remaining--
 		out := roundOutput{s: s}
 		completion, err := s.deps.model.Chat(ctx, req, out.delta)
 		if err != nil {

@@ -53,7 +53,7 @@ func TestPromptLifecycle(t *testing.T) {
 	if thought.text != "Let me think." || answer.text != "Hello, world" || thought.id == answer.id {
 		t.Fatalf("thought %+v, answer %+v", thought, answer)
 	}
-	if u := find(t, updates, "usage_update"); u.Used != 15 || u.Size != 1000 || u.Cost == nil || u.Cost.Amount != 0.001 || u.Cost.Currency != "USD" {
+	if u := find(t, updates, "usage_update"); u.Used != 15 || u.Size != 64000 || u.Cost == nil || u.Cost.Amount != 0.001 || u.Cost.Currency != "USD" {
 		t.Fatalf("usage_update: %+v", u)
 	}
 

@@ -205,8 +205,9 @@ func (s *Store) Create(ctx context.Context, sess Session) error {
 	return err
 }
 
-// Save updates a session this process owns and upserts entries, all or
-// nothing. It fails with ErrLost once another process has the session.
+// Save replaces the history suffix starting at history[0].Seq and upserts
+// transcript entries atomically. An empty history leaves it unchanged.
+// It fails with ErrLost once another process has the session.
 func (s *Store) Save(ctx context.Context, sess Session, history, transcript []Row) error {
 	dirs, err := json.Marshal(nonNil(sess.Dirs))
 	if err != nil {
@@ -222,6 +223,11 @@ func (s *Store) Save(ctx context.Context, sess Session, history, transcript []Ro
 		}
 		if n, err := res.RowsAffected(); err != nil || n == 0 {
 			return cmp.Or(err, ErrLost)
+		}
+		if len(history) > 0 {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM history WHERE session_id = ? AND seq >= ?`, sess.ID, history[0].Seq); err != nil {
+				return err
+			}
 		}
 		for _, t := range []struct {
 			table string

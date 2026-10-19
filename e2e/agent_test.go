@@ -63,22 +63,25 @@ type rpcError struct {
 
 // update is a decoded session/update notification.
 type update struct {
-	seq           int
-	SessionID     string
-	SessionUpdate string          `json:"sessionUpdate"`
-	MessageID     string          `json:"messageId"`
-	State         string          `json:"state"`
-	StopReason    string          `json:"stopReason"`
-	Error         *rpcError       `json:"error"`
-	Content       json.RawMessage `json:"content"`
-	ToolCallID    string          `json:"toolCallId"`
-	Status        string          `json:"status"`
-	Name          string          `json:"name"`
-	Title         string          `json:"title"`
-	UpdatedAt     string          `json:"updatedAt"`
-	Kind          string          `json:"kind"`
-	RawInput      json.RawMessage `json:"rawInput"`
-	Locations     []struct {
+	seq             int
+	SessionID       string
+	SessionUpdate   string          `json:"sessionUpdate"`
+	CompactionID    string          `json:"compactionId"`
+	Summary         json.RawMessage `json:"summary"`
+	CompactionError string          `json:"-"`
+	MessageID       string          `json:"messageId"`
+	State           string          `json:"state"`
+	StopReason      string          `json:"stopReason"`
+	Error           *rpcError       `json:"error"`
+	Content         json.RawMessage `json:"content"`
+	ToolCallID      string          `json:"toolCallId"`
+	Status          string          `json:"status"`
+	Name            string          `json:"name"`
+	Title           string          `json:"title"`
+	UpdatedAt       string          `json:"updatedAt"`
+	Kind            string          `json:"kind"`
+	RawInput        json.RawMessage `json:"rawInput"`
+	Locations       []struct {
 		Path string `json:"path"`
 	} `json:"locations"`
 	Used uint64 `json:"used"`
@@ -481,8 +484,24 @@ func decodeUpdate(t *testing.T, m *message) update {
 		t.Fatal(err)
 	}
 	u := update{seq: m.seq, SessionID: p.SessionID}
-	if err := json.Unmarshal(p.Update, &u); err != nil {
+	type plain update
+	raw := struct {
+		*plain
+		Error json.RawMessage `json:"error"`
+	}{plain: (*plain)(&u)}
+	if err := json.Unmarshal(p.Update, &raw); err != nil {
 		t.Fatal(err)
+	}
+	if len(raw.Error) > 0 {
+		var err error
+		if u.is("compaction_update") {
+			err = json.Unmarshal(raw.Error, &u.CompactionError)
+		} else {
+			err = json.Unmarshal(raw.Error, &u.Error)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	return u
 }

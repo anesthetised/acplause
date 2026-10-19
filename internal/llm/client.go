@@ -80,6 +80,10 @@ type Model struct {
 	Name                string   `json:"name"`
 	ContextLength       uint64   `json:"context_length"`
 	SupportedParameters []string `json:"supported_parameters"`
+	// TopProvider supplies OpenRouter's advertised output ceiling; zero is unknown.
+	TopProvider struct {
+		MaxCompletionTokens uint64 `json:"max_completion_tokens"`
+	} `json:"top_provider"`
 }
 
 // Supports reports whether the model accepts a request parameter, such as
@@ -106,6 +110,7 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 }
 
 type chatBody struct {
+	MaxTokens uint64     `json:"max_tokens,omitempty"`
 	Model     string     `json:"model"`
 	Messages  []Message  `json:"messages"`
 	Tools     []Tool     `json:"tools,omitempty"`
@@ -118,7 +123,7 @@ type reasoning struct {
 }
 
 func newChatBody(req Request) chatBody {
-	body := chatBody{Model: req.Model, Messages: req.Messages, Tools: req.Tools, Stream: true}
+	body := chatBody{Model: req.Model, Messages: req.Messages, Tools: req.Tools, Stream: true, MaxTokens: req.MaxTokens}
 	if req.ReasoningEffort != "" {
 		body.Reasoning = &reasoning{Effort: req.ReasoningEffort}
 	}
