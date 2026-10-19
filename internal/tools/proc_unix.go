@@ -3,7 +3,6 @@
 package tools
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -29,11 +28,15 @@ func shellExit(state *os.ProcessState) ShellExit {
 			syscall.SIGUSR1: "SIGUSR1", syscall.SIGSEGV: "SIGSEGV", syscall.SIGUSR2: "SIGUSR2",
 			syscall.SIGPIPE: "SIGPIPE", syscall.SIGALRM: "SIGALRM", syscall.SIGTERM: "SIGTERM",
 			syscall.SIGXCPU: "SIGXCPU", syscall.SIGXFSZ: "SIGXFSZ", syscall.SIGSYS: "SIGSYS",
+			syscall.SIGPROF: "SIGPROF", syscall.SIGVTALRM: "SIGVTALRM", syscall.SIGIO: "SIGIO",
+			syscall.SIGURG: "SIGURG", syscall.SIGWINCH: "SIGWINCH", syscall.SIGCHLD: "SIGCHLD",
+			syscall.SIGCONT: "SIGCONT", syscall.SIGSTOP: "SIGSTOP", syscall.SIGTSTP: "SIGTSTP",
+			syscall.SIGTTIN: "SIGTTIN", syscall.SIGTTOU: "SIGTTOU",
 		}
 		if name := names[signal]; name != "" {
 			return ShellExit{Signal: name}
 		}
-		return ShellExit{Signal: fmt.Sprintf("SIG%d", signal)}
+		return ShellExit{Signal: signal.String()}
 	}
 	if code := state.ExitCode(); code >= 0 {
 		return ShellExit{Code: new(uint32(code))}

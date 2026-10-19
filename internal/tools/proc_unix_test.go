@@ -123,3 +123,36 @@ func TestShellObserverSignalsAndCancellation(t *testing.T) {
 		t.Fatalf("unknown completion: %+v", status)
 	}
 }
+
+func TestShellObserverPreservesWaitDelay(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	call, err := w.prepare("bash", map[string]string{"command": "echo $$ > shell.pid; sleep 60 & printf ready; exit 0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := call.ObserveShell()
+	done := make(chan Result, 1)
+	go func() { done <- call.Run(context.Background()) }()
+	awaitShell(t, o, func(s ShellSnapshot) bool { return len(s.Output) > 0 })
+	raw, err := os.ReadFile(filepath.Join(w.cwd, "shell.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("pid: %q, %v", raw, err)
+	}
+	defer syscall.Kill(-pid, syscall.SIGKILL)
+	select {
+	case r := <-done:
+		if !r.Failed || !strings.Contains(r.Output, "WaitDelay") {
+			t.Fatalf("pipe wait result: %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("observer defeated WaitDelay")
+	}
+	s := o.Snapshot(0)
+	if s.Exit == nil || s.Exit.Code == nil || *s.Exit.Code != 0 || string(s.Output) != "ready" {
+		t.Fatalf("shell status: %+v", s)
+	}
+}

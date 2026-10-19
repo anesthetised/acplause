@@ -128,3 +128,20 @@ func TestShellObserverSnapshotsAreDetached(t *testing.T) {
 		t.Fatalf("non-shell observation: %v", err)
 	}
 }
+
+func TestShellObserverCancelledBeforeStart(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	c, err := w.prepare("bash", map[string]string{"command": "touch ran"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := c.ObserveShell()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if r := c.Run(ctx); !r.Failed || !strings.Contains(r.Output, "context canceled") {
+		t.Fatalf("result: %+v", r)
+	}
+	if s := o.Snapshot(0); s.Started || s.Exit != nil {
+		t.Fatalf("phantom terminal: %+v", s)
+	}
+}
