@@ -3,7 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +15,48 @@ import (
 	"github.com/anesthetised/acplause/internal/llm"
 	"github.com/anesthetised/acplause/internal/store"
 )
+
+func TestSaveFailureNotices(t *testing.T) {
+	for _, insertion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("insertion=%t", insertion), func(t *testing.T) {
+			failure := errors.New("private storage detail")
+			out := make(recorder, 16)
+			st := saveStore{save: func(context.Context, store.Session, []store.Row, []store.Row) error { return failure }}
+			s, err := newSession(context.Background(), deps{out: out, store: st, log: slog.New(slog.DiscardHandler)}, newCatalog(nil), t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			save := func() {
+				if !insertion {
+					s.flush()
+					return
+				}
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if err := s.claimTurn(context.Background(), acp.UserMessage{MessageID: "m"}, llm.Message{Role: llm.RoleUser}, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			save()
+			save()
+			if len(out) != 1 {
+				t.Fatalf("want one notice per failure episode, got %d updates", len(out))
+			}
+			data, err := jsonrpc.Marshal(acp.SessionNotification{SessionID: s.id, Update: <-out})
+			if err != nil || !strings.Contains(string(data), `"sessionUpdate":"notice"`) || !strings.Contains(string(data), `"severity":"warning"`) || strings.Contains(string(data), failure.Error()) {
+				t.Fatalf("unsafe or missing notice: %s, %v", data, err)
+			}
+			failure = nil
+			s.flush()
+			failure = errors.New("another private detail")
+			save()
+			if len(out) != 1 || len(s.transcript) != 0 {
+				t.Fatalf("notice did not reset or entered replay: updates=%d transcript=%v", len(out), s.transcript)
+			}
+		})
+	}
+}
 
 func TestRestoreRepairsInterruptedTools(t *testing.T) {
 	for _, status := range []acp.ToolCallStatus{acp.ToolPending, acp.ToolInProgress} {

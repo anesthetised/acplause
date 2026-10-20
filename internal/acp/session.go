@@ -3,6 +3,8 @@ package acp
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/anesthetised/acplause/internal/jsonrpc"
 )
 
 // NewSessionRequest is the params of session/new.
@@ -186,9 +188,26 @@ const (
 	CategoryThoughtLevel = "thought_level"
 )
 
-// ConfigOptionValue is one choice of a select option.
+// ConfigOptionValue is a select value, or a labeled group when GroupID is set.
+// Groups contain only values; the two shapes cannot be mixed in one options list.
 type ConfigOptionValue struct {
-	Value       string `json:"value"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Value       string              `json:"value"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	GroupID     string              `json:"groupId,omitempty"`
+	Options     []ConfigOptionValue `json:"options,omitempty"`
+}
+
+// MarshalJSON keeps value (including the empty placeholder) required on values,
+// while group headers carry only the fields defined for groups in ACP v2.
+func (v ConfigOptionValue) MarshalJSON() ([]byte, error) {
+	if v.GroupID != "" {
+		return jsonrpc.Marshal(struct {
+			GroupID string              `json:"groupId"`
+			Name    string              `json:"name"`
+			Options []ConfigOptionValue `json:"options"`
+		}{v.GroupID, v.Name, v.Options})
+	}
+	type value ConfigOptionValue
+	return jsonrpc.Marshal(value(v))
 }

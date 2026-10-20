@@ -147,7 +147,7 @@ func (s *Session) pending() (sess store.Session, history, transcript []store.Row
 
 // flush saves what changed. Saves are serialised and each one takes the
 // latest state, so they cannot reorder. A session lost to another process
-// stops saving; other failures are logged and retried by the next flush.
+// stops saving; other failures notify the client and retry on the next flush.
 func (s *Session) flush() {
 	if s.deps.store == nil {
 		return
@@ -165,6 +165,9 @@ func (s *Session) flush() {
 		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript)
 	}
 	if err == nil {
+		s.mu.Lock()
+		s.saveWarning = false
+		s.mu.Unlock()
 		return
 	}
 	s.mu.Lock()
@@ -176,7 +179,20 @@ func (s *Session) flush() {
 	if undo != nil {
 		undo()
 	}
+	s.warnSave(err)
+}
+
+// warnSave reports a failure episode without exposing storage details. Requires
+// s.mu. Notices are live only, so they cannot make a failed save grow history.
+func (s *Session) warnSave(err error) {
 	s.deps.log.Warn("saving session", "session", s.id, "err", err)
+	if !s.saveWarning && !s.closed && !s.lost {
+		s.send(acp.Notice{
+			Severity: "warning", Title: "Session changes could not be saved",
+			Description: "Work continues in memory. Recent changes may be lost if acplause exits. Saving will be retried automatically.",
+		})
+		s.saveWarning = true
+	}
 }
 
 // flushAsync saves without blocking a handler on the read loop. Requires
@@ -311,6 +327,7 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 	}
 	if err == nil {
 		s.saved++ // the staged user message is now durable
+		s.saveWarning = false
 		return nil
 	}
 	if undo != nil {
@@ -324,7 +341,7 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 		return acp.ErrRequestCancelled()
 	}
 	// Other storage failures retain the existing in-memory fallback.
-	s.deps.log.Warn("saving session", "session", s.id, "err", err)
+	s.warnSave(err)
 	return nil
 }
 

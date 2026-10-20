@@ -12,6 +12,48 @@ import (
 
 // Two agents sharing a data directory stand in for two editor windows.
 
+func TestSaveFailureNotice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	llm := newMockLLM(t)
+	llm.enqueue(reply("Still working."), reply("Saved."), reply("Still working again."))
+	a, sid, cwd := started(t, llm, withDataDir(dir))
+	// Protocol responses and idle updates do not wait for session saves.
+	// Let the agent's write transactions finish before changing the schema.
+	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	exec := func(query string) {
+		t.Helper()
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const fail = `CREATE TRIGGER fail_save BEFORE UPDATE OF state ON sessions BEGIN SELECT RAISE(FAIL, 'private storage detail'); END`
+	exec(fail)
+	a.accepted(a.prompt(sid, "first failure"))
+	updates := a.untilIdle(sid)
+	notices := filter(updates, "notice")
+	if len(notices) != 1 || notices[0].Title == "" || notices[0].Severity != "warning" || notices[0].Description == "" || strings.Contains(notices[0].Description, "private storage detail") {
+		t.Fatalf("notices: %+v", notices)
+	}
+	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
+	if replay := a.untilIdle(sid); len(filter(replay, "notice")) != 0 {
+		t.Fatalf("notice replayed: %v", kinds(replay))
+	}
+	exec("DROP TRIGGER fail_save")
+	a.accepted(a.prompt(sid, "recovered"))
+	a.untilIdle(sid)
+	exec(fail)
+	a.accepted(a.prompt(sid, "new failure"))
+	if notices := filter(a.untilIdle(sid), "notice"); len(notices) != 1 {
+		t.Fatalf("notice did not reset: %+v", notices)
+	}
+	exec("DROP TRIGGER fail_save")
+}
+
 func setModel(a *agent, sid string) {
 	a.t.Helper()
 	a.ok("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": "test/model"}, nil)

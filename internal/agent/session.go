@@ -73,11 +73,12 @@ type Session struct {
 
 	// Persistence (persist.go). flushMu serialises saves and is taken
 	// before mu.
-	flushMu sync.Mutex
-	saves   sync.WaitGroup // admitted under mu; Close waits before releasing ownership
-	saved   int            // history messages after the system prompt already stored
-	dirty   map[int]bool   // transcript entries changed since the last save
-	lost    bool           // another process took the session over
+	flushMu     sync.Mutex
+	saves       sync.WaitGroup // admitted under mu; Close waits before releasing ownership
+	saved       int            // history messages after the system prompt already stored
+	dirty       map[int]bool   // transcript entries changed since the last save
+	lost        bool           // another process took the session over
+	saveWarning bool           // suppress repeated notices until a save succeeds
 }
 
 // submission is a prompt waiting for insertion.

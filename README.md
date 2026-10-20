@@ -57,7 +57,13 @@ count toward `ACPLAUSE_MAX_ROUNDS` when it is enabled. See
 [ADR 0008](docs/adr/0008-long-task-limits.md).
 
 The client receives the available models in `session/new` and selects one
-with `session/set_config_option`. New sessions reuse the last selected model
+with `session/set_config_option`. Catalogs with multiple model-ID namespaces
+use labeled groups (for example `openai/…` and `anthropic/…`); unprefixed IDs
+appear under "Other models". Single-group catalogs stay flat. Grouping changes
+presentation only; model IDs and selection behavior stay the same. See
+[ADR 0018](docs/adr/0018-group-model-options.md).
+
+New sessions reuse the last selected model
 and reasoning effort, remembered across restarts and editor windows in the
 same data directory. If there is no remembered selection or the model is no
 longer available, sessions show "Select a model"; prompts are rejected until
@@ -170,8 +176,11 @@ markers for historical images; switching back restores their pixels in model
 requests. Audio and other image formats are not supported.
 
 Clients advertising `capabilities.elicitation.form: {}` enable the agent-owned
-`ask_user` tool. It sends `elicitation/create` with one to three required string
-fields, optionally with single-choice options. Only a complete accepted answer
+`ask_user` tool. It sends `elicitation/create` with one to three required fields:
+text, single-choice strings, or multiple choices when a question sets
+`multiSelect: true` with nonempty options. Multiple-choice answers are arrays of
+distinct offered strings; an empty array explicitly selects none. Missing, null,
+duplicate and unoffered selections fail validation. Only a complete accepted answer
 with the requested keys and valid values reaches the model as answers; decline,
 cancel, malformed responses and request failures become failed tool results.
 While waiting, the tool stays pending and the session reports `requires_action`.
@@ -188,7 +197,8 @@ every connection. Clients without it receive no `ask_user` tool and the model ca
 ask in text. Malformed optional capability values are treated as unsupported,
 so they do not prevent initialization. This does not enable MCP server
 elicitation. See
-[ADR 0011](docs/adr/0011-structured-user-questions.md) and the
+[ADR 0011](docs/adr/0011-structured-user-questions.md),
+[ADR 0017](docs/adr/0017-multiselect-questions.md) and the
 [T3 form smoke procedure](docs/testing/t3-first-class-smoke.md). Native T3 form
 answers and turn cancellation were verified; the procedure distinguishes those
 observations from extended lifecycle cases covered only by automated tests.
@@ -377,8 +387,10 @@ and matching results added to the model history.
 Changes are saved at prompt, model response, tool call and configuration
 boundaries. Streaming chunks stay in memory until a save boundary, so a crash
 can lose the response being streamed. Failure to open or migrate the database
-prevents startup. A later save failure is logged to stderr; work continues
-from memory, and unsaved changes may be missing after a restart.
+prevents startup. A later save failure is logged to stderr and sends a live ACP
+warning notice; work continues from memory, and unsaved changes may be missing
+after a restart. Repeated failures send no additional notice until a save succeeds.
+Notices are not stored or replayed, and clients may ignore them.
 
 ## Develop
 

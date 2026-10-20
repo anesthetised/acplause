@@ -11,6 +11,62 @@ import (
 
 const formArgs = `{"message":"Choose <&>","questions":[{"id":"choice","title":"Choice","question":"Which?","options":["a","b"]},{"id":"detail","title":"Detail","question":"Why?"},{"id":"last","title":"Last","question":"Anything else?"}]}`
 
+func TestElicitationMultiselect(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		answer any
+		valid  bool
+	}{
+		{"multiple", []string{"b", "a"}, true}, {"none", []string{}, true},
+		{"duplicate", []string{"a", "a"}, false}, {"unknown", []string{"c"}, false},
+		{"string", "a", false}, {"null", nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			llm := newMockLLM(t)
+			args := strings.Replace(formArgs, `"options":["a","b"]`, `"options":["a","b"],"multiSelect":true`, 1)
+			llm.enqueue(callTool("ask_user", args), reply("Done."))
+			a, sid, _ := startedForms(t, llm)
+			a.accepted(a.prompt(sid, "choose several"))
+			q := a.elicitationRequest()
+			var req struct {
+				RequestedSchema struct {
+					Properties map[string]struct {
+						Type  string
+						Enum  []string
+						Items struct {
+							Type string
+							Enum []string
+						}
+					}
+				}
+			}
+			if err := json.Unmarshal(q.Params, &req); err != nil {
+				t.Fatal(err)
+			}
+			p := req.RequestedSchema.Properties["choice"]
+			if p.Type != "array" || p.Items.Type != "string" || !slices.Equal(p.Items.Enum, []string{"a", "b"}) || len(p.Enum) != 0 {
+				t.Fatalf("multiselect schema: %s", q.Params)
+			}
+			a.answer(q, map[string]any{"action": "accept", "content": map[string]any{"choice": tt.answer, "detail": "<&>", "last": ""}})
+			calls := filter(a.untilIdle(sid), "tool_call_update")
+			if len(calls) != 2 || (calls[1].Status == "completed") != tt.valid {
+				t.Fatalf("tool results: %+v", calls)
+			}
+			request := llm.request(1)
+			result := request.Messages[len(request.Messages)-1]["content"].(string)
+			if tt.valid {
+				want, _ := json.Marshal(tt.answer)
+				if !strings.Contains(result, `"choice":`+string(want)) {
+					t.Fatalf("model answers: %s", result)
+				}
+			}
+			a.expectQuiet(func(m *message) bool { return m.Method == "session/request_permission" })
+		})
+	}
+}
+
 func (a *agent) initializeForms() {
 	a.t.Helper()
 	a.ok("initialize", map[string]any{"protocolVersion": 2, "info": map[string]any{"name": "forms", "version": "1"}, "capabilities": map[string]any{"elicitation": map[string]any{"form": map[string]any{}}}}, nil)
