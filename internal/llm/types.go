@@ -5,6 +5,7 @@ package llm
 
 import (
 	"encoding/json"
+	"math"
 
 	"github.com/anesthetised/acplause/internal/media"
 )
@@ -133,10 +134,64 @@ type Usage struct {
 	CompletionTokens uint64  `json:"completion_tokens"`
 	TotalTokens      uint64  `json:"total_tokens"`
 	Cost             float64 `json:"cost"`
-	PromptDetails    struct {
+	// HasPromptTokens distinguishes an explicit count, including zero, from
+	// absent/null input accounting. Constructed values must set it explicitly.
+	HasPromptTokens bool `json:"-"`
+	// HasCompletionTokens records the same presence for output accounting.
+	HasCompletionTokens bool `json:"-"`
+	// HasCost records presence, not validity; use ReportedCost for enforcement.
+	HasCost       bool `json:"-"`
+	PromptDetails struct {
 		CachedTokens uint64 `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionDetails struct {
 		ReasoningTokens uint64 `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details"`
+}
+
+// UnmarshalJSON keeps legacy numeric fields while recording whether the
+// provider actually supplied each budget metric. Decode into a fresh value
+// so missing fields cannot inherit accounting from an earlier response.
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type wire Usage
+	var next Usage
+	fields := struct {
+		*wire
+		PromptTokens     *uint64  `json:"prompt_tokens"`
+		CompletionTokens *uint64  `json:"completion_tokens"`
+		Cost             *float64 `json:"cost"`
+	}{wire: (*wire)(&next)}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields.PromptTokens != nil {
+		next.PromptTokens, next.HasPromptTokens = *fields.PromptTokens, true
+	}
+	if fields.CompletionTokens != nil {
+		next.CompletionTokens, next.HasCompletionTokens = *fields.CompletionTokens, true
+	}
+	if fields.Cost != nil {
+		next.Cost, next.HasCost = *fields.Cost, true
+	}
+	*u = next
+	return nil
+}
+
+// ReportedTokens requires both input and output counts and a representable
+// sum. TotalTokens, cached tokens and reasoning tokens are not added: the
+// latter two are subsets, and a provider total cannot fill in missing counts.
+func (u *Usage) ReportedTokens() (uint64, bool) {
+	if u == nil || !u.HasPromptTokens || !u.HasCompletionTokens || u.PromptTokens > math.MaxUint64-u.CompletionTokens {
+		return 0, false
+	}
+	return u.PromptTokens + u.CompletionTokens, true
+}
+
+// ReportedCost distinguishes free responses from unavailable/invalid cost.
+// Nonfinite or negative accounting cannot authorize further budgeted work.
+func (u *Usage) ReportedCost() (float64, bool) {
+	if u == nil || !u.HasCost || u.Cost < 0 || math.IsNaN(u.Cost) || math.IsInf(u.Cost, 0) {
+		return 0, false
+	}
+	return u.Cost, true
 }
