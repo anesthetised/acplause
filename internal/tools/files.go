@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -39,9 +40,23 @@ func (tb *Toolbox) Instructions(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// ignored names noise that list_dir and search_code skip.
-func ignored(name string) bool {
-	return strings.HasPrefix(name, ".") || name == "node_modules" || name == "target" || name == "__pycache__"
+// ignored keeps generated names and Git metadata excluded even when the model
+// opts into hidden descendants. It does not interpret ignore files.
+func ignored(name string, includeHidden bool) bool {
+	return strings.EqualFold(name, ".git") || (!includeHidden && strings.HasPrefix(name, ".")) ||
+		name == "node_modules" || name == "target" || name == "__pycache__"
+}
+
+// checkTraversalPath also covers explicit starts and additional roots inside
+// .git, including case aliases on case-insensitive filesystems. This is a
+// traversal policy, separate from the file-tool sandbox.
+func checkTraversalPath(abs string) error {
+	if slices.ContainsFunc(strings.Split(filepath.ToSlash(abs), "/"), func(part string) bool {
+		return strings.EqualFold(part, ".git")
+	}) {
+		return errors.New(".git paths are excluded from traversal")
+	}
+	return nil
 }
 
 var readFileSpec = Spec{
@@ -128,23 +143,28 @@ func (tb *Toolbox) readFile(args readFileArgs) (*Call, error) {
 var listDirSpec = Spec{
 	Name:        "list_dir",
 	Kind:        acp.ToolRead,
-	Description: fmt.Sprintf("List a directory as a tree, %d levels deep and up to %d entries. Hidden entries and build output are skipped.", maxListDepth, maxListItems),
+	Description: fmt.Sprintf("List a directory as a tree, %d levels deep and up to %d entries. Hidden descendants are skipped unless include_hidden is true; an explicit hidden starting path is allowed. Git metadata (.git) and generated names are always skipped.", maxListDepth, maxListItems),
 	Parameters: []byte(`{
 		"type": "object",
 		"properties": {
-			"path": {"type": "string", "description": "Directory path, relative to the working directory or absolute (default '.')"}
+			"path": {"type": "string", "description": "Directory path, relative to the working directory or absolute (default '.')"},
+			"include_hidden": {"type": "boolean", "description": "Include hidden descendants except .git (default false); may expose hidden configuration to the model"}
 		}
 	}`),
 }
 
 type listDirArgs struct {
-	Path string `json:"path"`
+	Path          string       `json:"path"`
+	IncludeHidden optionalBool `json:"include_hidden"`
 }
 
 func (tb *Toolbox) listDir(args listDirArgs) (*Call, error) {
 	dir := cmp.Or(args.Path, ".")
 	t, err := tb.roots.resolve(dir)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkTraversalPath(t.abs); err != nil {
 		return nil, err
 	}
 	return &Call{
@@ -160,7 +180,7 @@ func (tb *Toolbox) listDir(args listDirArgs) (*Call, error) {
 					return err
 				}
 				for _, e := range entries {
-					if ignored(e.Name()) {
+					if ignored(e.Name(), bool(args.IncludeHidden)) {
 						continue
 					}
 					if items == maxListItems {
