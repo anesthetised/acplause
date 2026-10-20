@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -71,7 +72,23 @@ func (c *Client) Chat(ctx context.Context, req Request, onDelta func(Delta)) (*C
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mediaType == "application/json" {
+		return nil, jsonInsteadOfStream(resp.Body)
+	}
 	return readStream(ctx, resp.Body, onDelta)
+}
+
+// jsonInsteadOfStream reports a successful status whose body is JSON, such as
+// an error envelope, rather than the event stream that was requested.
+func jsonInsteadOfStream(body io.Reader) error {
+	data, _ := io.ReadAll(io.LimitReader(body, 64<<10))
+	var envelope struct {
+		Error *apiError `json:"error"`
+	}
+	if json.Unmarshal(data, &envelope) == nil && envelope.Error != nil {
+		return envelope.Error.toError()
+	}
+	return &Error{Kind: KindProtocol, Message: "expected an event stream, got a JSON response"}
 }
 
 // Model is an entry of the models list.

@@ -156,6 +156,22 @@ func TestChatSeparatesToolCallsWithoutIndex(t *testing.T) {
 	}
 }
 
+func TestChatJSONInsteadOfStream(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"code":"overloaded","message":"try later"}}`: "overloaded: try later",
+		`{"choices":[]}`: "expected an event stream",
+	} {
+		c := serve(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			fmt.Fprint(w, body)
+		})
+		_, _, err := collect(t, c)
+		if e, ok := errors.AsType[*Error](err); !ok || e.Kind == KindTruncated || !strings.Contains(e.Message, want) {
+			t.Errorf("%s: got %v", body, err)
+		}
+	}
+}
+
 func TestChatErrors(t *testing.T) {
 	tests := []struct {
 		name    string
