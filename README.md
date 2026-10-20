@@ -35,6 +35,27 @@ first, and works in your workspace through tools.
 go install github.com/anesthetised/acplause/cmd/acplause@latest
 ```
 
+## Diagnose setup
+
+```sh
+acplause doctor
+```
+
+`doctor` checks configuration syntax, the HTTP(S) API root structure, redacted
+API-key presence and data-directory writability. A missing key is informational
+for compatible local providers. The API root must have a host and contain no
+userinfo, query or fragment. All diagnostics go to stderr; stdout stays empty.
+Exit status is `0` when checks pass and `1` on failure. Reports identify failing
+checks/settings without printing URLs, keys, paths or raw error values.
+
+The local probe creates the effective data directory if needed (and reports
+that creation), writes one temporary file and removes it, including after write
+failure. Existing permissions and session databases/leases stay untouched.
+Doctor runs without a client, network requests, MCP startup or model inference.
+An invocation without arguments remains the ACP stdio server; unknown arguments
+fail with usage text. This local check does not establish provider inference or
+T3 client compatibility.
+
 ## Configure
 
 | Variable                | Default                         |                                       |

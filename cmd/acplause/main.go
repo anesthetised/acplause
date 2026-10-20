@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
 	"syscall"
 
@@ -47,6 +46,10 @@ func main() {
 }
 
 func run() error {
+	return dispatch(os.Args[1:], os.Getenv, os.Stderr, serve)
+}
+
+func serve() error {
 	cfg, err := loadConfig(os.Getenv)
 	if err != nil {
 		return err
@@ -64,13 +67,9 @@ func run() error {
 			"X-OpenRouter-Title": {"acplause"},
 		},
 	})
-	dir := cfg.DataDir
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("finding the data directory: %w; set ACPLAUSE_DATA_DIR", err)
-		}
-		dir = filepath.Join(home, ".acplause")
+	dir, err := dataDirectory(cfg.DataDir, os.UserHomeDir)
+	if err != nil {
+		return err
 	}
 	st, err := store.Open(dir, processID())
 	if err != nil {
