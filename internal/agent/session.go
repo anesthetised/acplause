@@ -27,17 +27,18 @@ const (
 
 // deps is what sessions share with the agent.
 type deps struct {
-	forms          *atomic.Bool // negotiated capabilities belong to this connection, never the store
-	out            Client
-	model          Model
-	maxRounds      int
-	mcpTimeout     time.Duration
-	turnTimeout    time.Duration
-	maxTurnTokens  uint64
-	maxTurnCostUSD float64
-	tools          tools.Options
-	log            *slog.Logger
-	store          Store // nil keeps sessions in memory only
+	forms           *atomic.Bool // negotiated capabilities belong to this connection, never the store
+	out             Client
+	model           Model
+	readConcurrency int
+	maxRounds       int
+	mcpTimeout      time.Duration
+	turnTimeout     time.Duration
+	maxTurnTokens   uint64
+	maxTurnCostUSD  float64
+	tools           tools.Options
+	log             *slog.Logger
+	store           Store // nil keeps sessions in memory only
 }
 
 // Session is one conversation. Prompts queue up and run one turn at a time
@@ -245,8 +246,8 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 	return nil
 }
 
-// acquireToolbox pins the current roots for one worker read or tool, not for an entire
-// model request. Resume can change the roots while the model is streaming.
+// acquireToolbox pins roots for one worker operation, including a read group,
+// not an entire model request. Resume can change roots while the model streams.
 func (s *Session) acquireToolbox() *tools.Toolbox {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -41,6 +41,7 @@ go install github.com/anesthetised/acplause/cmd/acplause@latest
 | ----------------------- | ------------------------------- | ------------------------------------- |
 | `ACPLAUSE_API_KEY`      | `$OPENROUTER_API_KEY`           | API key                               |
 | `ACPLAUSE_BASE_URL`     | `https://openrouter.ai/api/v1`  | any OpenAI-compatible API root        |
+| `ACPLAUSE_READ_CONCURRENCY` | `1`                         | concurrent built-in reads, integer `1..8` |
 | `ACPLAUSE_MAX_ROUNDS`   | `200`                           | model requests per turn; `0` disables |
 | `ACPLAUSE_BASH_TIMEOUT` | `30m`                           | bash tool timeout; `0` disables       |
 | `ACPLAUSE_MCP_TIMEOUT`  | `1h`                            | MCP call timeout; `0` disables        |
@@ -126,6 +127,22 @@ sandbox: configured MCP servers can remain connected and setup/discovery
 still runs. See [ADR 0013](docs/adr/0013-plan-build-mode.md).
 
 ## Tools
+
+`ACPLAUSE_READ_CONCURRENCY` defaults to `1` (serial); values `2..8` opt into
+parallel consecutive built-in `read_file`, `list_dir`, `search_code` and
+`get_instructions` calls. Every other tool is a strict serial barrier, including
+writes, bash, MCP (even read-only), permissions, forms and plans. A group holds
+one root selection through completion; resume changes the roots used by the
+next group or serial call. Filesystem contents themselves are not snapshotted.
+
+Progress patches can interleave; final cards and model results commit in original
+call order, with no next model request until every call has a result. Cancellation
+joins active reads and accounts for skipped siblings. At most N calls and their
+uncommitted outcomes occupy the read window; a slow first call can leave slots
+idle and delay later completion cards. Parallel disk work may be slower and use
+more memory. See [ADR 0021](docs/adr/0021-parallel-builtin-reads.md) and the
+[local benchmark record](docs/testing/parallel-reads-benchmark.md).
+
 
 | Tool          | Kind      |                                                   |
 | ------------- | --------- | ------------------------------------------------- |

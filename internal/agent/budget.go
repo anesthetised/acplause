@@ -10,7 +10,8 @@ import (
 )
 
 // turnBudget belongs to the single session worker. Only completed model
-// responses change it; tools share its sticky stop without charging again.
+// responses change it; read workers only inspect its sticky stop while the
+// session worker waits for their group to join, without charging again.
 type turnBudget struct {
 	maxTokens uint64
 	maxCost   float64

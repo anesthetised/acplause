@@ -54,9 +54,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 		s.appendHistory(completion.Message())
 		s.flush()
 
-		for _, call := range completion.ToolCalls {
-			s.runTool(ctx, call, req)
-		}
+		s.runTools(ctx, completion.ToolCalls, req)
 		if err := s.budget.check(ctx); err != nil {
 			return acp.StopError, turnError(err)
 		}
