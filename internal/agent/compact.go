@@ -59,6 +59,27 @@ func requestSize(req llm.Request) uint64 {
 	return uint64(len(data)) + uint64(len(req.Messages))*16 + 256 + images
 }
 
+// summaryPrefix starts the assistant message that replaces compacted history.
+const summaryPrefix = "Conversation summary:\n"
+
+// onlyCommands reports whether older history holds nothing but an earlier
+// summary and earlier /compact exchanges, which compacting again would only
+// re-summarize at the cost of a model call.
+func onlyCommands(msgs []llm.Message) bool {
+	for i := 0; i < len(msgs); i++ {
+		switch m := msgs[i]; {
+		case i == 0 && m.Role == llm.RoleAssistant && strings.HasPrefix(m.Content, summaryPrefix):
+		case m.Role == llm.RoleUser && len(m.Images) == 0 && strings.TrimSpace(m.Content) == "/compact":
+			if i+1 < len(msgs) && msgs[i+1].Role == llm.RoleAssistant {
+				i++ // the command's own reply
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // latest finds what compaction keeps verbatim and image budgeting protects:
 // the latest user prompt and the start of the most recent exchange in its
 // turn, which runs to the end of the history.
@@ -190,7 +211,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force
 		window := s.catalog.contextLength(req.Model)
 		budget := window - window/4
 		user, keep := latest(req.Messages)
-		if force && (window == 0 || user <= 1) {
+		if force && (window == 0 || user <= 1 || onlyCommands(req.Messages[1:user])) {
 			return round, false, nil
 		}
 		if window > 0 {
@@ -293,7 +314,7 @@ func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained
 			u.Status, u.Error = acp.CompactionFailed, err.Error()
 		default:
 			u.Status = acp.CompactionCompleted
-			u.Summary = []acp.ContentBlock{acp.Text(strings.TrimPrefix(messages[1].Content, "Conversation summary:\n"))}
+			u.Summary = []acp.ContentBlock{acp.Text(strings.TrimPrefix(messages[1].Content, summaryPrefix))}
 			s.replaceHistory(messages)
 		}
 		s.transcript[entry] = u
@@ -311,7 +332,7 @@ func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained
 	if err != nil {
 		return nil, err
 	}
-	messages = []llm.Message{req.Messages[0], {Role: llm.RoleAssistant, Content: "Conversation summary:\n" + summary}}
+	messages = []llm.Message{req.Messages[0], {Role: llm.RoleAssistant, Content: summaryPrefix + summary}}
 	messages = append(messages, retained...)
 	next := req
 	next.Messages = messages

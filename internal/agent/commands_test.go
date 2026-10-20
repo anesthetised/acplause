@@ -74,16 +74,25 @@ func TestCompactCommandForcesSummaryBelowThreshold(t *testing.T) {
 }
 
 func TestCompactCommandNoOp(t *testing.T) {
-	for _, unknown := range []bool{false, true} {
-		t.Run(map[bool]string{false: "no older history", true: "unknown window"}[unknown], func(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		unknown bool
+		history []llm.Message
+	}{
+		{name: "no older history"},
+		{name: "unknown window", unknown: true, history: []llm.Message{{Role: llm.RoleUser, Content: "earlier"}, {Role: llm.RoleAssistant, Content: "answer"}}},
+		{name: "only a summary", history: []llm.Message{{Role: llm.RoleAssistant, Content: summaryPrefix + "Task summary"}, {Role: llm.RoleUser, Content: "/compact"}, {Role: llm.RoleAssistant, Content: "Conversation context compacted."}}},
+		{name: "only commands", history: []llm.Message{{Role: llm.RoleUser, Content: " /compact"}, {Role: llm.RoleAssistant, Content: "Nothing to compact."}, {Role: llm.RoleUser, Content: "/compact"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			s, out := compactionSession(t, fakeModel(func(context.Context, llm.Request, func(llm.Delta)) (*llm.Completion, error) {
 				t.Error("no-op command reached the model")
 				return &llm.Completion{FinishReason: llm.FinishStop}, nil
 			}))
-			if unknown {
+			if tc.unknown {
 				s.catalog = newCatalog([]llm.Model{{ID: "m"}})
-				s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: "earlier"}, llm.Message{Role: llm.RoleAssistant, Content: "answer"})
 			}
+			s.history = append(s.history, tc.history...)
 			before := len(s.history)
 			s.Submit(context.Background(), []acp.ContentBlock{acp.Text("/compact")})
 			updates := out.untilIdle(t)
