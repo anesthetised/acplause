@@ -63,6 +63,11 @@ func (t target) writeFile(ctx context.Context, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Once truncation starts the write completes: cancelling it halfway
+	// would leave a truncated file. A regular-file write does not block.
+	if !stop() {
+		return ctx.Err()
+	}
 	if err := f.Truncate(0); err != nil {
 		return err
 	}

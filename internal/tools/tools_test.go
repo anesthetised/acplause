@@ -492,3 +492,26 @@ func TestInstructions(t *testing.T) {
 		t.Fatal("directory accepted")
 	}
 }
+
+func TestCancelledWriteNeverTruncates(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	old, updated := strings.Repeat("o", 4<<20), strings.Repeat("n", 4<<20)
+	for i := range 40 {
+		w.write("f.txt", old)
+		call, err := w.prepare("write_file", map[string]string{"path": "f.txt", "content": updated})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(time.Duration(i%8) * 250 * time.Microsecond)
+			cancel()
+		}()
+		call.Run(ctx)
+		cancel()
+		data, err := os.ReadFile(filepath.Join(w.cwd, "f.txt"))
+		if err != nil || (string(data) != old && string(data) != updated) {
+			t.Fatalf("attempt %d left %d bytes: %v", i, len(data), err)
+		}
+	}
+}
