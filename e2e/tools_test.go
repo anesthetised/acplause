@@ -144,15 +144,70 @@ func TestSearchMatchingOptionsInPlanMode(t *testing.T) {
 			continue
 		}
 		props := fn["parameters"].(map[string]any)["properties"].(map[string]any)
-		for _, name := range []string{"regex", "ignore_case"} {
-			prop, ok := props[name].(map[string]any)
-			if !ok || prop["type"] != "boolean" {
-				t.Errorf("missing boolean option %s: %v", name, props)
+		for _, option := range []struct{ name, kind string }{
+			{"regex", "boolean"}, {"ignore_case", "boolean"},
+			{"offset", "integer"}, {"limit", "integer"}, {"context_lines", "integer"},
+		} {
+			prop, ok := props[option.name].(map[string]any)
+			if !ok || prop["type"] != option.kind {
+				t.Errorf("missing %s option %s: %v", option.kind, option.name, props)
 			}
 		}
 		return
 	}
 	t.Fatal("search_code was not advertised")
+}
+
+func TestSearchPaginationAndContextInPlanMode(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(
+		callTool("search_code", `{"pattern":"^hit","regex":true,"ignore_case":true,"limit":2,"context_lines":1}`),
+		callTool("search_code", `{"pattern":"^hit","regex":true,"ignore_case":true,"offset":2,"limit":2,"context_lines":1}`),
+		callTool("search_code", `{"pattern":"^hit","regex":true,"ignore_case":true,"offset":3}`),
+		callTool("search_code", `{"pattern":"hit","offset":null}`),
+		reply("Inspected both pages and their context."),
+	)
+	a, sid, cwd := started(t, llm, askingUser)
+	for name, content := range map[string]string{
+		"a.txt": "before\nHIT one\nbetween\nhit two\nend\n",
+		"b.txt": "lead\nhit three\ntail",
+	} {
+		if err := os.WriteFile(filepath.Join(cwd, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setMode(t, a, sid, "plan")
+	a.accepted(a.prompt(sid, "inspect matches with context"))
+	updates := a.untilIdle(sid)
+	var done []update
+	for _, u := range filter(updates, "tool_call_update") {
+		if u.Status == "completed" || u.Status == "failed" {
+			done = append(done, u)
+		}
+	}
+	if len(done) != 4 || updates[len(updates)-1].StopReason != "end_turn" {
+		t.Fatalf("search updates: %v", kinds(updates))
+	}
+	for i, want := range []string{
+		"a.txt-1-before\na.txt:2:HIT one\na.txt-3-between\na.txt:4:hit two\na.txt-5-end\n... more matches; next offset: 2\n",
+		"b.txt-1-lead\nb.txt:2:hit three\nb.txt-3-tail\n... no more matches\n",
+		`No more matches for "^hit" at offset 3`,
+		"invalid arguments",
+	} {
+		status := "completed"
+		if i == 3 {
+			status = "failed"
+		}
+		if done[i].Status != status || (i < 3 && done[i].text() != want) || !strings.Contains(done[i].text(), want) {
+			t.Errorf("call %d: %q (%s), want %q (%s)", i, done[i].text(), done[i].Status, want, status)
+		}
+		msgs := llm.request(i + 1).Messages
+		result := msgs[len(msgs)-1]
+		if result["role"] != "tool" || result["tool_call_id"] != "call_search_code" || result["content"] != done[i].text() {
+			t.Errorf("call %d history: %v", i, result)
+		}
+	}
 }
 
 func TestRoundLimit(t *testing.T) {
