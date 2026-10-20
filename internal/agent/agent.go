@@ -405,7 +405,7 @@ func (a *Agent) listSessions(ctx context.Context, req acp.ListSessionsRequest) (
 		return nil, err
 	}
 	reply := jsonrpc.NewReply(ctx)
-	go func() {
+	a.jobs.Go(func() { // Shutdown waits for it: the store closes after Shutdown
 		sessions, more, err := a.cfg.Store.List(a.ctx, req.Cwd, offset, listPageSize)
 		if err != nil {
 			reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot list sessions: %v", err))
@@ -425,7 +425,7 @@ func (a *Agent) listSessions(ctx context.Context, req acp.ListSessionsRequest) (
 			resp.NextCursor = encodeCursor(offset + len(sessions))
 		}
 		reply.Resolve(resp)
-	}()
+	})
 	return reply, nil
 }
 

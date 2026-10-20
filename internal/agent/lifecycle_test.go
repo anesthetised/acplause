@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -140,4 +141,34 @@ func TestCloseRejectsOperationsThatCannotOpenSession(t *testing.T) {
 			}
 		})
 	}
+}
+
+// blockingListStore holds List until released.
+type blockingListStore struct {
+	Store
+	entered, release chan struct{}
+}
+
+func (s *blockingListStore) List(context.Context, string, int, int) ([]store.Session, bool, error) {
+	close(s.entered)
+	<-s.release
+	return nil, false, nil
+}
+
+func TestShutdownWaitsForSessionList(t *testing.T) {
+	st := &blockingListStore{entered: make(chan struct{}), release: make(chan struct{})}
+	a := New(Config{Store: st}, make(recorder, 8), nil, func(context.Context) ([]llm.Model, error) { return nil, nil })
+	if _, err := a.listSessions(context.Background(), acp.ListSessionsRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	<-st.entered
+	done := make(chan struct{})
+	go func() { a.Shutdown(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("Shutdown returned while the store was still in use")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(st.release)
+	<-done
 }
