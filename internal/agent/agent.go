@@ -438,7 +438,7 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	}
 	op := a.reserveOperation(ctx, req.SessionID, false)
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
-		s, err := a.open(ctx, req.SessionID, req.Cwd)
+		s, err := a.open(ctx, req.SessionID, req.Cwd, req.AdditionalDirectories)
 		if err != nil {
 			return err
 		}
@@ -454,7 +454,9 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 // open preserves a live local session only when Acquire proves this process
 // still owned it. Old saves must finish before ownership can return to this
 // process, or their process-owner check could overwrite the new history.
-func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
+// A restored session gets the request's directories, which Resume applies
+// anyway: a saved directory removed since must not block the session.
+func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Session, error) {
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
 	a.mu.Lock()
@@ -505,6 +507,7 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 		a.releaseID(id)
 		return nil, turnError(err)
 	}
+	l.Dirs = dirs
 	s, err := restoreSession(a.ctx, a.deps, c, l)
 	if err != nil {
 		a.releaseID(id)
