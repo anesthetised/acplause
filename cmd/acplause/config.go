@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anesthetised/acplause/internal/agent"
@@ -15,14 +17,16 @@ import (
 
 // config is read from the environment.
 type config struct {
-	BaseURL     string
-	APIKey      string
-	MaxRounds   int
-	BashTimeout time.Duration
-	MCPTimeout  time.Duration
-	TurnTimeout time.Duration
-	LogLevel    slog.Level
-	DataDir     string // "" selects ~/.acplause
+	BaseURL        string
+	APIKey         string
+	MaxRounds      int
+	BashTimeout    time.Duration
+	MCPTimeout     time.Duration
+	TurnTimeout    time.Duration
+	MaxTurnTokens  uint64
+	MaxTurnCostUSD float64
+	LogLevel       slog.Level
+	DataDir        string // "" selects ~/.acplause
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -36,6 +40,24 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 
 	var errs []error
+	if v := getenv("ACPLAUSE_MAX_TURN_TOKENS"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			errs = append(errs, errors.New("ACPLAUSE_MAX_TURN_TOKENS: want a nonnegative base-10 integer fitting uint64"))
+		} else {
+			cfg.MaxTurnTokens = n
+		}
+	}
+	if v := getenv("ACPLAUSE_MAX_TURN_COST_USD"); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		mantissa, _, _ := strings.Cut(strings.ToLower(v), "e")
+		underflow := n == 0 && strings.ContainsAny(mantissa, "123456789")
+		if err != nil || n < 0 || math.IsNaN(n) || math.IsInf(n, 0) || strings.ContainsAny(v, "xXpP_") || underflow {
+			errs = append(errs, errors.New("ACPLAUSE_MAX_TURN_COST_USD: want a finite nonnegative representable decimal USD value"))
+		} else {
+			cfg.MaxTurnCostUSD = n
+		}
+	}
 	if v := getenv("ACPLAUSE_TURN_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -22,6 +23,9 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 		remaining = new(s.deps.maxRounds)
 	}
 	for {
+		if err := s.budget.check(ctx); err != nil {
+			return acp.StopError, turnError(err)
+		}
 		if remaining != nil && *remaining == 0 {
 			return acp.StopMaxTurnRequests, nil
 		}
@@ -36,22 +40,26 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 			*remaining--
 		}
 		out := roundOutput{s: s}
+		if err := s.budget.check(ctx); err != nil {
+			return acp.StopError, turnError(err)
+		}
 		completion, err := s.deps.model.Chat(ctx, req.Request, out.delta)
 		if err != nil {
 			return acp.StopError, turnError(err)
 		}
+		s.budget.record(completion.Usage)
 		s.reportUsage(req.Model, completion.Usage)
 		s.appendHistory(completion.Message())
 		s.flush()
 
-		if len(completion.ToolCalls) == 0 {
-			return stopReason(completion.FinishReason)
-		}
 		for _, call := range completion.ToolCalls {
 			s.runTool(ctx, call, req)
 		}
-		if ctx.Err() != nil {
-			return acp.StopCancelled, nil
+		if err := s.budget.check(ctx); err != nil {
+			return acp.StopError, turnError(err)
+		}
+		if len(completion.ToolCalls) == 0 {
+			return stopReason(completion.FinishReason)
 		}
 	}
 }
@@ -107,8 +115,11 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 	var result toolOutput
 	entry := -1
 	var prepared *preparedTool
-	var err error
-	if !allowsTool(round.mode, name) {
+	err := s.budget.check(ctx)
+	if err != nil {
+		// Pair the call using the normal failed-result path, without preparing
+		// it or starting permission, forms, shell or MCP work.
+	} else if !allowsTool(round.mode, name) {
 		err = fmt.Errorf("tool %q is unavailable in Plan mode", name)
 	} else if name == "update_plan" {
 		prepared, err = s.preparePlan(call.Function.Arguments)
@@ -284,12 +295,17 @@ func (s *Session) reportUsage(model string, u *llm.Usage) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cost += u.Cost
+	if total := s.cost + u.Cost; u.Cost >= 0 && !math.IsNaN(total) && !math.IsInf(total, 0) {
+		s.cost = total
+	}
 	cost := s.cost
 
 	size := s.catalog.contextLength(model)
 	if size == 0 {
 		return // usage_update requires the window size
+	}
+	if u.PromptTokens > math.MaxUint64-u.CompletionTokens {
+		return // an invalid sum must not become a wrapped context-usage report
 	}
 	s.send(acp.UsageUpdate{
 		Used: u.PromptTokens + u.CompletionTokens,

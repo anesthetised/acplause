@@ -171,6 +171,9 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRoun
 // prepareModelRequest shares the automatic and forced paths. A forced command needs no
 // answer request or MCP recovery, and reports whether there was work to do.
 func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force bool) (modelRound, bool, error) {
+	if err := s.budget.check(ctx); err != nil {
+		return modelRound{}, false, err
+	}
 	// Refresh once for this operation, including all rolling summary chunks.
 	if err := s.refreshInstructions(ctx); err != nil {
 		return modelRound{}, false, err
@@ -366,11 +369,18 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		if remaining != nil {
 			*remaining--
 		}
+		if err := s.budget.check(ctx); err != nil {
+			return "", err
+		}
 		completion, err := s.deps.model.Chat(ctx, chunk, func(llm.Delta) {})
 		if err != nil {
 			return "", err
 		}
+		s.budget.record(completion.Usage)
 		s.reportUsage(req.Model, completion.Usage)
+		if err := s.budget.check(ctx); err != nil {
+			return "", err
+		}
 		if completion.FinishReason != llm.FinishStop || len(completion.ToolCalls) != 0 || strings.TrimSpace(completion.Content) == "" {
 			return "", fmt.Errorf("compaction did not produce a complete text summary")
 		}
