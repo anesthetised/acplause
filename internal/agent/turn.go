@@ -266,6 +266,9 @@ var errRejected = errors.New("the user rejected this tool call")
 // not asked about: it would fail anyway.
 func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, update *acp.ToolCallUpdate, call *preparedTool) (int, error) {
 	diff, err := call.Preview(ctx)
+	if err == nil {
+		err = ctx.Err() // cancelled during the preview: nothing left to ask about
+	}
 	if err != nil {
 		return entry, err
 	}
@@ -285,7 +288,11 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	s.setState(acp.StateUpdate{State: acp.StateRequiresAction})
 	s.flush() // a blocked turn is busy: it cannot be taken over
 	var resp acp.RequestPermissionResponse
-	err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
+	// Call sends even when ctx has ended; a dialog for a cancelled call would
+	// ask about work that never runs.
+	if err = ctx.Err(); err == nil {
+		err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
+	}
 	if turnCtx.Err() != nil {
 		return entry, turnCtx.Err() // the turn ends as cancelled; no running in between
 	}
