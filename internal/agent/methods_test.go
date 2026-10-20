@@ -396,7 +396,7 @@ func TestPromptOverProtocol(t *testing.T) {
 
 	c.selectModel(sid, "m")
 	model.callTool("w1", "write_file", `{"path":"a.txt","content":"hi"}`)
-	model.reply("written", llm.FinishLength, &llm.Usage{PromptTokens: 10, CompletionTokens: 5, Cost: 0.25})
+	model.reply("written", llm.FinishLength, &llm.Usage{PromptTokens: 10, CompletionTokens: 5, Cost: 0.25, HasPromptTokens: true, HasCompletionTokens: true})
 	c.await(c.prompt(sid, "write a file"))
 	updates := c.untilIdle(sid)
 	if idle := lastIdle(updates); idle.Update.StopReason != string(acp.StopMaxTokens) {

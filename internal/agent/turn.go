@@ -344,11 +344,12 @@ func (s *Session) reportUsage(model string, u *llm.Usage) {
 	if size == 0 {
 		return // usage_update requires the window size
 	}
-	if u.PromptTokens > math.MaxUint64-u.CompletionTokens {
-		return // an invalid sum must not become a wrapped context-usage report
+	used, ok := u.ReportedTokens()
+	if !ok {
+		return // missing counts or a wrapped sum must not reset the context meter
 	}
 	s.send(acp.UsageUpdate{
-		Used: u.PromptTokens + u.CompletionTokens,
+		Used: used,
 		Size: size,
 		Cost: &acp.Cost{Amount: cost, Currency: "USD"},
 	})
