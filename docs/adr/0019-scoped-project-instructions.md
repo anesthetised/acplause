@@ -1,9 +1,9 @@
 # ADR 0019: Resolve scoped project instructions explicitly
 
-- Status: accepted; bounded resolver implemented; activation pending #79
+- Status: accepted; resolver and lookup/refresh activation implemented (#78/#79)
 - Date: 2026-10-20
 - Issues: [#78](https://github.com/anesthetised/acplause/issues/78), [#79](https://github.com/anesthetised/acplause/issues/79)
-- Scope change: Extends the README's root-only, read-once instruction policy on activation
+- Scope change: Extends the previous root-only, read-once instruction policy
 
 ## Context
 
@@ -40,13 +40,13 @@ overhead. Establish a bounded resolver before changing agent requests.
    recursive discovery or network source. Concurrent filesystem changes do not
    form an atomic snapshot. Return no partial chain on cancellation or errors,
    and never log instruction contents.
-6. Activation in #79 exposes `get_instructions` with a required directory
+6. #79 exposes `get_instructions` with a required directory
    `path`, source labels and a precedence explanation. Allow this built-in read
    tool in Plan and Build without permission. Teach the model to look up the
    containing directory before editing there. Explicit lookup cannot guarantee
    that arbitrary shell or MCP writes honor prose; enforced mode, sandbox and
    permission policy always take precedence.
-7. On activation, replace the README's read-once behavior with a root refresh
+7. Replace the previous read-once behavior with a root refresh
    before each normal model round and once before manual compaction. Perform
    I/O on the worker, outside session locks and the JSON-RPC read loop. Publish
    only against the retained toolbox/root generation that was read; retry or
@@ -54,9 +54,9 @@ overhead. Establish a bounded resolver before changing agent requests.
    root read errors retain the existing warn-and-omit behavior, without stale
    fallback. Preserve system-message mode, directories and compaction accounting.
    One compaction uses a stable snapshot, without refresh per summary chunk.
-8. #78 is groundwork only: keep the existing `Instructions` reader, tool catalog
-   and agent requests unchanged. #79 activates lookup/refresh and updates README
-   and this ADR's implementation status. No `CLAUDE.md` fallback, parent lookup
+8. #78 supplied the bounded resolver; #79 activates lookup/refresh, keeping the
+   existing root `Instructions` reader's trim and warn-and-omit semantics.
+   No `CLAUDE.md` fallback, parent lookup
    above a selected workspace root, persistence migration or ACP schema change.
 
 ## Consequences

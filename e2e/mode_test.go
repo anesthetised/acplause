@@ -89,7 +89,7 @@ func TestModePlanBuildPolicyAndRestart(t *testing.T) {
 		names = append(names, tool["function"].(map[string]any)["name"].(string))
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"list_dir", "read_file", "search_code", "update_plan"}) {
+	if !slices.Equal(names, []string{"get_instructions", "list_dir", "read_file", "search_code", "update_plan"}) {
 		t.Fatalf("Plan tools: %v", names)
 	}
 	for _, part := range []string{"Plan mode", "Do not claim", cwd, "Keep project instructions."} {

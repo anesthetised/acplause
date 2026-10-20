@@ -265,7 +265,7 @@ func TestCompactionDescribesImages(t *testing.T) {
 	s, out := imageSession(t, fakeModel(func(_ context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
 		summaries = append(summaries, req)
 		return &llm.Completion{Content: "Earlier: a screenshot was taken.", FinishReason: llm.FinishStop}, nil
-	}), 20000) // the retained image and tool definitions fit an input budget of 15000
+	}), 22000) // the retained image and expanded tool catalog fit a 16500-byte input budget
 	s.history = append(s.history,
 		llm.Message{Role: llm.RoleUser, Content: strings.Repeat("old request ", 600), Images: []media.Image{img}},
 		callMessage("a"), imageResult("a", "old page\n"+projected.Output, projected.Images...),

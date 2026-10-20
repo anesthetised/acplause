@@ -72,8 +72,8 @@ provider's model list cannot be loaded or contains no models with tool
 support, session creation fails. See [ADR 0005](docs/adr/0005-remember-model-selection.md).
 
 The `mode` session config option selects **Build** (the default) or **Plan**.
-Plan permits only `read_file`, `list_dir`, `search_code`, `update_plan` and,
-on capable clients, `ask_user`. It rejects file changes, all shell commands
+Plan permits only `read_file`, `list_dir`, `search_code`, `get_instructions`,
+`update_plan` and, on capable clients, `ask_user`. It rejects file changes, all shell commands
 (including inspection commands) and all external MCP tool calls, even those
 marked read-only, before requesting permission or executing them. Build
 restores the usual tools and client-owned approval policy. Mode survives
@@ -95,6 +95,7 @@ still runs. See [ADR 0013](docs/adr/0013-plan-build-mode.md).
 | `read_file`   | `read`    | text files up to 1 MiB; `offset`, `limit` lines   |
 | `list_dir`    | `read`    | tree, 3 levels, 200 entries                       |
 | `search_code` | `search`  | literal or regex search, optional case folding, 50 matching lines |
+| `get_instructions` | `read` | source-labelled root-to-directory `AGENTS.md` rules |
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
 | `edit`        | `edit`    | replace one exact occurrence                      |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
@@ -170,10 +171,29 @@ are rejected. `write_file.content` and `edit.new_text` must be explicit
 strings: an empty string is valid, but an omitted or null value is an error.
 
 `AGENTS.md` at the root of the session's `cwd` is appended to the system
-prompt, read once when the session is created. Only that file, with no
-`CLAUDE.md` fallback and no parent directories. A missing file changes
-nothing; one that is not a regular text file or exceeds 32 KiB is skipped
-with a log line.
+prompt and reread before each normal model round and once before manual
+`/compact`, on the session worker. One compaction keeps a stable instruction
+snapshot across its summary requests. Missing or deleted files clear prior
+root instructions; unreadable, nonregular, invalid UTF-8 or oversized files
+(over 32 KiB) are omitted with a warning that does not include their contents.
+Restarts reread live rules before the next model request.
+
+Use `get_instructions` with a required directory `path`, such as
+`{"path":"internal/agent"}`, to read scoped rules before editing there. It
+returns source-labelled `AGENTS.md` files from the selected workspace root to
+that directory, in root-to-directory order. Later sources take precedence only
+in their subtree. Relative paths start at cwd; absolute paths select the first
+configured containing root, with no combination of unrelated roots. Lookup
+checks at most 32 directories, with 32 KiB per file and 128 KiB total text.
+Missing files are normal; invalid targets, unreadable sources or exceeded bounds
+fail the tool without a partial chain. Each lookup rereads live files; saved
+tool results still replay their original content.
+
+This read tool needs no permission in Plan or Build. Lookup is explicit: there
+is no recursive discovery, parent lookup above a workspace root, `CLAUDE.md`
+fallback or watcher. Project prose does not override enforced tool policies,
+and explicit lookup cannot guarantee that arbitrary shell or MCP writes obey
+scoped rules. See [ADR 0019](docs/adr/0019-scoped-project-instructions.md).
 
 A session is titled after the first line of its first prompt. The title is
 sent once, as a `session_info_update`, when that prompt is accepted, and is

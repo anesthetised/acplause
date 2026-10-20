@@ -58,7 +58,7 @@ func TestPromptLifecycle(t *testing.T) {
 	}
 
 	req := llm.request(0)
-	if req.Model != "test/model" || !req.Stream || len(req.Tools) != 7 || req.Reasoning != nil {
+	if req.Model != "test/model" || !req.Stream || len(req.Tools) != 8 || req.Reasoning != nil {
 		t.Fatalf("chat request: %+v", req)
 	}
 	if len(req.Messages) != 2 || req.Messages[0]["role"] != "system" || req.Messages[1]["content"] != "Say hi\n\n[main.go](file://"+cwd+"/main.go)" {

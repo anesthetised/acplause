@@ -384,7 +384,7 @@ func allowsTool(mode, name string) bool {
 		return true
 	}
 	switch name {
-	case "read_file", "list_dir", "search_code", "ask_user", "update_plan":
+	case "read_file", "list_dir", "search_code", "get_instructions", "ask_user", "update_plan":
 		return true
 	}
 	return false

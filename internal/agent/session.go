@@ -42,7 +42,7 @@ type deps struct {
 type Session struct {
 	id  string
 	cwd string
-	// instructions is AGENTS.md as read when the session was created.
+	// instructions is the last worker-refreshed root AGENTS.md, guarded by mu.
 	instructions string
 	deps         deps
 	catalog      *catalog
@@ -54,7 +54,7 @@ type Session struct {
 	dirs          []string
 	mcp           *mcp.Manager
 	toolbox       *tools.Toolbox
-	activeToolbox *tools.Toolbox // retained by the single worker until its current tool returns
+	activeToolbox *tools.Toolbox // retained by the single worker during a tool or instruction read
 	model         string
 	mode          string
 	effort        string
@@ -94,29 +94,24 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 	if err != nil {
 		return nil, err
 	}
-	instructions, err := toolbox.Instructions(parent)
-	if err != nil {
-		d.log.Warn("skipping AGENTS.md", "cwd", cwd, "err", err)
-	}
 	ctx, cancel := context.WithCancel(parent)
 	return &Session{
-		id:           newID(),
-		cwd:          cwd,
-		instructions: instructions,
-		deps:         d,
-		catalog:      c,
-		ctx:          ctx,
-		cancel:       cancel,
-		dirs:         dirs,
-		toolbox:      toolbox,
-		mcp:          mcp.New(ctx, cwd, d.log),
-		mode:         modeBuild,
-		effort:       effortDefault,
-		updatedAt:    time.Now(),
-		history:      []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, instructions, modeBuild)}},
-		state:        acp.StateUpdate{State: acp.StateIdle},
-		dirty:        map[int]bool{},
-		planIndex:    map[string]int{},
+		id:        newID(),
+		cwd:       cwd,
+		deps:      d,
+		catalog:   c,
+		ctx:       ctx,
+		cancel:    cancel,
+		dirs:      dirs,
+		toolbox:   toolbox,
+		mcp:       mcp.New(ctx, cwd, d.log),
+		mode:      modeBuild,
+		effort:    effortDefault,
+		updatedAt: time.Now(),
+		history:   []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, "", modeBuild)}},
+		state:     acp.StateUpdate{State: acp.StateIdle},
+		dirty:     map[int]bool{},
+		planIndex: map[string]int{},
 	}, nil
 }
 
@@ -246,7 +241,7 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 	return nil
 }
 
-// acquireToolbox pins the current roots for one tool, not for an entire
+// acquireToolbox pins the current roots for one worker read or tool, not for an entire
 // model request. Resume can change the roots while the model is streaming.
 func (s *Session) acquireToolbox() *tools.Toolbox {
 	s.mu.Lock()
@@ -257,9 +252,10 @@ func (s *Session) acquireToolbox() *tools.Toolbox {
 
 func (s *Session) releaseToolbox(tb *tools.Toolbox) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.activeToolbox = nil
-	if tb != s.toolbox {
+	retired := tb != s.toolbox
+	s.mu.Unlock()
+	if retired {
 		s.closeToolbox(tb)
 	}
 }

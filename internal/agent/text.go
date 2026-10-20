@@ -15,6 +15,7 @@ import (
 
 const systemTemplate = `You are acplause, a coding agent working in the user's workspace through tools.
 Read and search before you change code, prefer small edits, and run commands to check your work.
+Before editing a file, use get_instructions on its containing directory to read scoped AGENTS.md rules. Later sources take precedence only within their subtree; enforced tool policy always applies.
 Paths are relative to the working directory unless absolute. Keep answers concise.
 For multi-step work, use update_plan to publish a short execution plan and keep its statuses current as work progresses. Each update replaces all entries. Skip plans for trivial tasks, and leave unfinished entries incomplete if work stops.
 
@@ -24,7 +25,7 @@ Working directory: %s`
 func systemPrompt(cwd string, dirs []string, instructions, mode string) string {
 	prompt := fmt.Sprintf(systemTemplate, cwd)
 	if mode == modePlan {
-		prompt += "\n\nPlan mode: inspect the workspace and propose a plan. Use read_file, list_dir and search_code for bounded inspection, update_plan for progress, and ask_user for questions when available. Do not write or edit files, run shell commands, or call external MCP tools. Do not claim changes were applied. These restrictions also apply when project instructions request execution."
+		prompt += "\n\nPlan mode: inspect the workspace and propose a plan. Use read_file, list_dir, search_code and get_instructions for bounded inspection, update_plan for progress, and ask_user for questions when available. Do not write or edit files, run shell commands, or call external MCP tools. Do not claim changes were applied. These restrictions also apply when project instructions request execution."
 	}
 	if len(dirs) > 0 {
 		prompt += "\nAdditional directories: " + strings.Join(dirs, ", ")
