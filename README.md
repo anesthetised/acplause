@@ -109,6 +109,21 @@ numbers, with at most 50 matching lines and a 300-byte UTF-8-safe text preview
 per line. `path` and `file_glob` narrow the search; text files are limited to
 1 MiB. These options are also available in Plan mode.
 
+To continue a search, set `offset` (zero-based matching-line offset) and `limit`
+(1–50, default 50). `context_lines` (0–5, default 0) adds surrounding lines;
+overlapping windows within a file are merged. Matches use `path:line:text`,
+while context uses `path-line-text`. Only selected matching lines count toward
+the page; a skipped or later match may appear as context and be selected on
+another page. Every line keeps its original number and the same preview bound.
+For example, `{"pattern":"TODO","limit":10,"context_lines":2}` returns at most
+ten matches plus context. When any pagination/context option is explicit,
+the result ends with `... more matches; next offset: N` or `... no more matches`;
+an empty page reports `No more matches` with its offset. Calls omitting all three
+options keep the original output format. Each page traverses files afresh in
+lexical order, so edits between calls can shift offsets; pagination is not a
+filesystem snapshot. Explicit null, fractional and out-of-range values fail
+the tool without running the search.
+
 `write_file` and `edit` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
 
