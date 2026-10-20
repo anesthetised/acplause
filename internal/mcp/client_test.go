@@ -277,6 +277,33 @@ func TestMCPDeliveredResponseWinsDisconnect(t *testing.T) {
 	}
 }
 
+func TestMCPCancelDuringSendNotifiesServer(t *testing.T) {
+	for range 50 {
+		p := newPeer(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelled := make(chan struct{})
+		p.t = scriptedTransport{send: func(_ context.Context, b []byte) error {
+			var msg wire
+			_ = json.Unmarshal(b, &msg)
+			if msg.Method == "notifications/cancelled" {
+				close(cancelled)
+				return nil
+			}
+			cancel() // the request was written, then the caller left
+			return ctx.Err()
+		}}
+		if err := p.call(ctx, "tools/call", map[string]any{}, nil); err == nil {
+			t.Fatal("cancelled call succeeded")
+		}
+		select {
+		case <-cancelled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("server was not told the call was cancelled")
+		}
+		p.cancel()
+	}
+}
+
 func TestMCPStdioDeliversPongAndCancellation(t *testing.T) {
 	m := New(context.Background(), t.TempDir(), nil)
 	defer m.Close()
