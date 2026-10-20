@@ -314,7 +314,11 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 		}
 		if err != nil {
 			s.Close()
-			reply.Reject(acp.ErrInvalidParams("cannot configure MCP servers: %v", err))
+			if ctx.Err() != nil || a.ctx.Err() != nil {
+				reply.Reject(acp.ErrRequestCancelled())
+			} else {
+				reply.Reject(acp.ErrInvalidParams("cannot configure MCP servers: %v", err))
+			}
 			return
 		}
 		model, effort, err := a.cfg.Store.Selection(a.ctx)

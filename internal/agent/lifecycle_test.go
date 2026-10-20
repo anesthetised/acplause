@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -171,4 +174,53 @@ func TestShutdownWaitsForSessionList(t *testing.T) {
 	}
 	close(st.release)
 	<-done
+}
+
+// cancelledAcquireStore cancels the request while loading and fails, as a
+// store interrupted by its context does, without wrapping context.Canceled.
+type cancelledAcquireStore struct {
+	Store
+	cancel context.CancelFunc
+}
+
+func (s *cancelledAcquireStore) Acquire(context.Context, string) (*store.Loaded, error) {
+	s.cancel()
+	return nil, errors.New("interrupted")
+}
+
+func TestCancelledSetupReportsCancellation(t *testing.T) {
+	models := func(context.Context) ([]llm.Model, error) { return []llm.Model{{ID: "m"}}, nil }
+	t.Run("resume", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		a := New(Config{Store: &cancelledAcquireStore{cancel: cancel}}, make(recorder, 8), nil, models)
+		defer a.Shutdown()
+		value, err := a.resumeSession(ctx, acp.ResumeSessionRequest{SessionID: "s", Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.jobs.Wait()
+		if _, rpcErr := settledReply(t, value.(*jsonrpc.Reply)); rpcErr == nil || rpcErr.Code != -32800 {
+			t.Fatalf("got %+v, want a cancellation", rpcErr)
+		}
+	})
+	t.Run("new session MCP", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			cancel() // the request ends while setup fails for another reason
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		}))
+		defer peer.Close()
+		a := New(Config{Store: &cancelledCreateStore{}}, make(recorder, 8), nil, models)
+		defer a.Shutdown()
+		value, err := a.newSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir(), MCPServers: []acp.MCPServer{{Type: "http", Name: "slow", URL: peer.URL}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.jobs.Wait()
+		if _, rpcErr := settledReply(t, value.(*jsonrpc.Reply)); rpcErr == nil || rpcErr.Code != -32800 {
+			t.Fatalf("got %+v, want a cancellation", rpcErr)
+		}
+	})
 }

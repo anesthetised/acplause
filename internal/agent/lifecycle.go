@@ -74,7 +74,9 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			op.err = work(op.ctx)
 		}
 		if op.err != nil {
-			if errors.Is(op.err, context.Canceled) {
+			// Setup errors wrap their cause as text, so a store or MCP failure
+			// caused by cancellation is recognised by the context instead.
+			if errors.Is(op.err, context.Canceled) || op.ctx.Err() != nil {
 				op.err = acp.ErrRequestCancelled()
 			}
 			op.reply.Reject(op.err)
