@@ -3,7 +3,7 @@
 //
 // Configuration comes from the environment:
 //
-//	ACPLAUSE_API_KEY        API key; falls back to OPENROUTER_API_KEY
+//	ACPLAUSE_API_KEY        API key; default none
 //	ACPLAUSE_BASE_URL       API root; default https://openrouter.ai/api/v1
 //	ACPLAUSE_READ_CONCURRENCY built-in read workers; default 1, range 1..8
 //	ACPLAUSE_MAX_ROUNDS     model requests per turn; default 200, 0 disables

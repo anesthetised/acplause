@@ -18,7 +18,7 @@ func TestDoctorLocalChecksAndRedaction(t *testing.T) {
 	}{
 		{"no key", nil, true, "API key: INFO (not set"},
 		{"key", map[string]string{"ACPLAUSE_API_KEY": "secret-marker"}, true, "API key: PASS (set; redacted)"},
-		{"fallback key", map[string]string{"OPENROUTER_API_KEY": "secret-marker"}, true, "API key: PASS"},
+		{"other key", map[string]string{"OPENROUTER_API_KEY": "secret-marker"}, true, "API key: INFO (not set"},
 		{"bad URL", map[string]string{"ACPLAUSE_BASE_URL": "https://secret-marker:%xx"}, false, "API URL: FAIL"},
 		{"URL credentials", map[string]string{"ACPLAUSE_BASE_URL": "https://user:secret-marker@example.com/api"}, false, "API URL: FAIL"},
 		{"URL query", map[string]string{"ACPLAUSE_BASE_URL": "http://localhost/api?key=secret-marker#secret-marker"}, false, "API URL: FAIL"},

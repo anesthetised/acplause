@@ -76,7 +76,7 @@ Provider messages, model names/descriptions and credentials stay out of reports.
 
 | Variable                | Default                         |                                       |
 | ----------------------- | ------------------------------- | ------------------------------------- |
-| `ACPLAUSE_API_KEY`      | `$OPENROUTER_API_KEY`           | API key                               |
+| `ACPLAUSE_API_KEY`      |                                 | API key; unset sends no `Authorization` |
 | `ACPLAUSE_BASE_URL`     | `https://openrouter.ai/api/v1`  | any OpenAI-compatible API root        |
 | `ACPLAUSE_READ_CONCURRENCY` | `1`                         | concurrent built-in reads, integer `1..8` |
 | `ACPLAUSE_MAX_ROUNDS`   | `200`                           | model requests per turn; `0` disables |

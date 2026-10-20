@@ -33,7 +33,7 @@ type config struct {
 func loadConfig(getenv func(string) string) (config, error) {
 	cfg := config{
 		BaseURL:         cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
-		APIKey:          cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
+		APIKey:          getenv("ACPLAUSE_API_KEY"),
 		DataDir:         getenv("ACPLAUSE_DATA_DIR"),
 		ReadConcurrency: 1,
 		MaxRounds:       agent.DefaultMaxRounds,

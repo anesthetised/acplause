@@ -15,7 +15,7 @@ func env(kv map[string]string) func(string) string {
 
 func TestLoadConfig(t *testing.T) {
 	cfg, err := loadConfig(env(map[string]string{
-		"OPENROUTER_API_KEY":    "sk-or",
+		"ACPLAUSE_API_KEY":      "sk-or",
 		"ACPLAUSE_MAX_ROUNDS":   "7",
 		"ACPLAUSE_BASH_TIMEOUT": "90s",
 		"ACPLAUSE_LOG_LEVEL":    "debug",
@@ -28,9 +28,9 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
 
-	cfg, _ = loadConfig(env(map[string]string{"ACPLAUSE_API_KEY": "own", "OPENROUTER_API_KEY": "or"}))
-	if cfg.APIKey != "own" {
-		t.Fatalf("ACPLAUSE_API_KEY must win, got %q", cfg.APIKey)
+	cfg, _ = loadConfig(env(map[string]string{"OPENROUTER_API_KEY": "or"}))
+	if cfg.APIKey != "" {
+		t.Fatalf("only ACPLAUSE_API_KEY sets the key, got %q", cfg.APIKey)
 	}
 }
 
