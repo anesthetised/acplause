@@ -89,6 +89,72 @@ func TestToolErrorsGoBackToTheModel(t *testing.T) {
 	}
 }
 
+func TestSearchMatchingOptionsInPlanMode(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(
+		func(s *stream) {
+			// callTool uses | to delimit SSE fragments, so send alternation directly.
+			s.toolCall(0, "call_search_code", "search_code", `{"pattern":"^(todo|fixme):","regex":true,"ignore_case":true,"file_glob":"*.txt"}`)
+			s.finish("tool_calls")
+		},
+		callTool("search_code", `{"pattern":"п.р","ignore_case":true}`),
+		callTool("search_code", `{"pattern":"[","regex":true}`),
+		callTool("search_code", `{"pattern":"todo","ignore_case":"true"}`),
+		reply("Found the matching lines; invalid options failed."),
+	)
+	a, sid, cwd := started(t, llm, askingUser)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("TODO: first\nfixme: second\nП.Р\nПАР\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setMode(t, a, sid, "plan")
+	a.accepted(a.prompt(sid, "inspect matching lines"))
+	updates := a.untilIdle(sid)
+	if idle := updates[len(updates)-1]; idle.StopReason != "end_turn" {
+		t.Fatalf("idle: %+v", idle)
+	}
+	var done []update
+	for _, u := range filter(updates, "tool_call_update") {
+		if u.Status == "completed" || u.Status == "failed" {
+			done = append(done, u)
+		}
+	}
+	if len(done) != 4 {
+		t.Fatalf("tool results: %+v", done)
+	}
+	for i, want := range []struct{ status, text string }{
+		{"completed", "notes.txt:1:TODO: first\nnotes.txt:2:fixme: second\n"},
+		{"completed", "notes.txt:3:П.Р\n"},
+		{"failed", "invalid regex"},
+		{"failed", "invalid arguments"},
+	} {
+		got := done[i]
+		if got.Status != want.status || (want.status == "completed" && got.text() != want.text) || !strings.Contains(got.text(), want.text) {
+			t.Errorf("call %d: %+v, want %+v", i, got, want)
+		}
+		msgs := llm.request(i + 1).Messages
+		result := msgs[len(msgs)-1]
+		if result["role"] != "tool" || result["tool_call_id"] != "call_search_code" || result["content"] != got.text() {
+			t.Errorf("call %d history: %v", i, result)
+		}
+	}
+	for _, tool := range llm.request(0).Tools {
+		fn := tool["function"].(map[string]any)
+		if fn["name"] != "search_code" {
+			continue
+		}
+		props := fn["parameters"].(map[string]any)["properties"].(map[string]any)
+		for _, name := range []string{"regex", "ignore_case"} {
+			prop, ok := props[name].(map[string]any)
+			if !ok || prop["type"] != "boolean" {
+				t.Errorf("missing boolean option %s: %v", name, props)
+			}
+		}
+		return
+	}
+	t.Fatal("search_code was not advertised")
+}
+
 func TestRoundLimit(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
