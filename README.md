@@ -56,6 +56,11 @@ discovery and cleanup keep their separate deadlines. Summary requests also
 count toward `ACPLAUSE_MAX_ROUNDS` when it is enabled. See
 [ADR 0008](docs/adr/0008-long-task-limits.md).
 
+Opt-in per-turn time, token and USD budgets are specified in
+[ADR 0020](docs/adr/0020-turn-budgets.md). #81 provides usage-availability
+groundwork; the proposed settings are not parsed or enforced yet. Activation
+is tracked in #82 (time) and #83 (reported usage).
+
 The client receives the available models in `session/new` and selects one
 with `session/set_config_option`. Catalogs with multiple model-ID namespaces
 use labeled groups (for example `openai/…` and `anthropic/…`); unprefixed IDs
