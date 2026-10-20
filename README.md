@@ -269,7 +269,8 @@ most every 100 ms in chunks up to 16 KiB. Resume replays one bounded snapshot
 per terminal, ordered with ongoing output. Restarts preserve saved output and
 mark interrupted terminals ended with unknown exit status; recent unsaved
 chunks may be lost. The model still receives the usual bounded textual tool
-result. Terminals provide no stdin, PTY or detached jobs. See
+result. Terminals provide no stdin, PTY or detached jobs: on Unix, background
+processes a command leaves behind are killed when it exits. See
 [ADR 0014](docs/adr/0014-stream-agent-terminals.md). Actual T3 streaming,
 cancellation and restart replay were verified in the
 [runtime smoke record](docs/testing/t3-first-class-smoke.md).

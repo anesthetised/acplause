@@ -58,6 +58,22 @@ func fileExists(path string) bool {
 }
 
 // assertExited checks that the process whose pid is in pidFile is gone.
+func TestBashSuccessKillsBackgroundChildren(t *testing.T) {
+	for name, child := range map[string]string{
+		"holding output": "sleep 30 &",
+		"detached":       "sleep 30 >/dev/null 2>&1 &",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorkspace(t, Options{})
+			r := w.run("bash", map[string]string{"command": child + " echo $! > child.pid; echo started"})
+			if r.Failed || r.Output != "started\n" {
+				t.Fatalf("exit 0 reported as %+v", r)
+			}
+			assertExited(t, filepath.Join(w.cwd, "child.pid"))
+		})
+	}
+}
+
 func assertExited(t *testing.T, pidFile string) {
 	t.Helper()
 	data, err := os.ReadFile(pidFile)
@@ -146,7 +162,7 @@ func TestShellObserverPreservesWaitDelay(t *testing.T) {
 	defer syscall.Kill(-pid, syscall.SIGKILL)
 	select {
 	case r := <-done:
-		if !r.Failed || !strings.Contains(r.Output, "WaitDelay") {
+		if r.Failed || r.Output != "ready" {
 			t.Fatalf("pipe wait result: %+v", r)
 		}
 	case <-time.After(5 * time.Second):

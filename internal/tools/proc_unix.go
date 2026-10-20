@@ -13,6 +13,10 @@ func killProcessGroupOnCancel(cmd *exec.Cmd) {
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 }
 
+// killProcessGroup ends whatever the shell left running: terminals have no
+// detached jobs, and a stray child would outlive the session.
+func killProcessGroup(cmd *exec.Cmd) { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+
 // shellExit reports signals separately: exec's -1 is not an exit code.
 func shellExit(state *os.ProcessState) ShellExit {
 	if state == nil {
