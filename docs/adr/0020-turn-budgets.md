@@ -1,6 +1,6 @@
 # ADR 0020: Add opt-in budgets for each accepted turn
 
-- Status: accepted; usage availability (#81) and turn deadline (#82) implemented; token/USD enforcement pending #83
+- Status: accepted; usage availability (#81), turn deadline (#82) and token/USD enforcement (#83) implemented
 - Date: 2026-10-20
 - Issues: [#81](https://github.com/anesthetised/acplause/issues/81), [#82](https://github.com/anesthetised/acplause/issues/82), [#83](https://github.com/anesthetised/acplause/issues/83)
 - Extends: [ADR 0008](0008-long-task-limits.md); existing defaults remain in force
@@ -94,7 +94,7 @@ cancellation invariants.
 7. **Groundwork and activation.** #81 supplies this ADR and presence-aware
    decoding/checked accessors only. It introduces no active allowance or parsed
    environment setting. #82 implements the post-insertion deadline, and #83
-   activates token/USD accounting shared by normal and summary paths. Each
+   implements token/USD accounting shared by normal and summary paths. Each
    activation updates README and this status after lifecycle, race and
    schema-validating protocol tests. ACP shapes remain pinned to the existing
    schema; these tests do not establish real-T3 acceptance under #38/#25.

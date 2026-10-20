@@ -27,15 +27,17 @@ const (
 
 // deps is what sessions share with the agent.
 type deps struct {
-	forms       *atomic.Bool // negotiated capabilities belong to this connection, never the store
-	out         Client
-	model       Model
-	maxRounds   int
-	mcpTimeout  time.Duration
-	turnTimeout time.Duration
-	tools       tools.Options
-	log         *slog.Logger
-	store       Store // nil keeps sessions in memory only
+	forms          *atomic.Bool // negotiated capabilities belong to this connection, never the store
+	out            Client
+	model          Model
+	maxRounds      int
+	mcpTimeout     time.Duration
+	turnTimeout    time.Duration
+	maxTurnTokens  uint64
+	maxTurnCostUSD float64
+	tools          tools.Options
+	log            *slog.Logger
+	store          Store // nil keeps sessions in memory only
 }
 
 // Session is one conversation. Prompts queue up and run one turn at a time
@@ -50,6 +52,7 @@ type Session struct {
 
 	ctx    context.Context // cancelled by Close
 	cancel context.CancelFunc
+	budget *turnBudget // owned only by the worker during one accepted turn; never persisted
 
 	mu            sync.Mutex
 	dirs          []string
@@ -378,6 +381,8 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 		return
 	}
 	outer := ctx
+	s.budget = &turnBudget{maxTokens: s.deps.maxTurnTokens, maxCost: s.deps.maxTurnCostUSD}
+	defer func() { s.budget = nil }()
 	if s.deps.turnTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, s.deps.turnTimeout, errTurnTimeout)

@@ -50,13 +50,15 @@ type ListModels func(ctx context.Context) ([]llm.Model, error)
 
 // Config configures an Agent. Zero values select defaults.
 type Config struct {
-	Info        acp.Implementation
-	MaxRounds   *int           // nil selects DefaultMaxRounds; zero disables the request limit
-	MCPTimeout  *time.Duration // nil selects DefaultMCPTimeout; zero disables the tool deadline
-	TurnTimeout *time.Duration // nil or zero disables the post-insertion turn deadline
-	Tools       tools.Options
-	Log         *slog.Logger
-	Store       Store // required: where sessions are kept
+	Info           acp.Implementation
+	MaxRounds      *int           // nil selects DefaultMaxRounds; zero disables the request limit
+	MCPTimeout     *time.Duration // nil selects DefaultMCPTimeout; zero disables the tool deadline
+	TurnTimeout    *time.Duration // nil or zero disables the post-insertion turn deadline
+	MaxTurnTokens  uint64         // zero disables the reported input+output token limit
+	MaxTurnCostUSD float64        // zero disables the reported USD limit
+	Tools          tools.Options
+	Log            *slog.Logger
+	Store          Store // required: where sessions are kept
 }
 
 const (
@@ -108,7 +110,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	}
 	a := &Agent{
 		cfg:        cfg,
-		deps:       deps{forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
+		deps:       deps{forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*Session),
