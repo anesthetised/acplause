@@ -339,7 +339,10 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 	ctx = context.WithValue(ctx, replyContextKey{}, reply)
 	result, err := c.invoke(ctx, method, handler, params)
 	if deferred, ok := result.(*Reply); ok && err == nil {
-		if deferred != reply {
+		if deferred == nil {
+			c.log.Error("handler returned a nil reply", "method", method)
+			reply.settle(nil, NewError(CodeInternalError, "internal error"))
+		} else if deferred != reply {
 			// Standalone replies can be settled outside a request, then
 			// returned by a handler to read their stored result.
 			deferred.bind(reply.settle)

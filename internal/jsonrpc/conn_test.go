@@ -372,6 +372,12 @@ func TestDuplicateRequestIDStaysCancellable(t *testing.T) {
 	p.expect(`{"jsonrpc":"2.0","id":7,"error":{"code":-32800,"message":"cancelled"}}`)
 }
 
+func TestNilReplyIsAnInternalError(t *testing.T) {
+	p := newPeer(t, Methods{"nil": func(context.Context, json.RawMessage) (any, error) { return (*Reply)(nil), nil }})
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"nil"}`)
+	p.expect(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"internal error"}}`)
+}
+
 func TestCallReturnsWhenContextEnds(t *testing.T) {
 	p := newPeer(t, Methods{"echo": echo})
 	ctx, cancel := context.WithCancel(context.Background())
