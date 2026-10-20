@@ -98,6 +98,7 @@ still runs. See [ADR 0013](docs/adr/0013-plan-build-mode.md).
 | `get_instructions` | `read` | source-labelled root-to-directory `AGENTS.md` rules |
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
 | `edit`        | `edit`    | replace one exact occurrence                      |
+| `edit_batch`  | `edit`    | 1–50 ordered replacements in one file, one approved diff |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
 | `ask_user`    | `other`   | one to three text/choice questions, when supported |
 | `update_plan` | `other`   | replace the current turn's execution plan          |
@@ -134,10 +135,30 @@ the tool. Generated names (`node_modules`, `target`, `__pycache__`) remain
 excluded during traversal, and directory symlinks are not followed. This policy does not interpret
 `.gitignore` and does not restrict direct `read_file` or `bash` access.
 
-`write_file` and `edit` report what they changed as a diff in the tool call,
+`write_file`, `edit` and `edit_batch` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
 
-`write_file`, `edit` and `bash` run only after the user allows them through
+`edit_batch` takes a required `path` and `edits` array of 1–50 objects with
+explicit string `old_text` and `new_text`. It operates on one existing regular
+UTF-8 file; input and final output must each fit within 5 MiB. Replacements
+apply in array order to an in-memory candidate, and each nonempty `old_text`
+must occur exactly once at its step, including overlapping occurrences. An
+empty `new_text` deletes the match. For example:
+
+```json
+{"path":"main.go","edits":[{"old_text":"oldName","new_text":"newName"},{"old_text":"newName()","new_text":"newName(ctx)"}]}
+```
+
+The whole batch is validated before one diff is shown for one permission.
+Preview retains the original bytes and the final candidate. Before writing,
+the tool rereads the bounded file and compares its bytes with that original.
+A changed, deleted or nonregular target fails without writing and requires a
+new read, call and approval. Failed validation or a rejection/cancellation while
+permission is pending never writes. The successful diff describes the retained candidate that was
+approved. This is validation before writing, not crash-atomic persistence or a
+lock against external changes racing after the final comparison.
+
+`write_file`, `edit`, `edit_batch` and `bash` run only after the user allows them through
 `session/request_permission`, with the diff or command shown in the request.
 acplause offers "allow once" and "reject once"; anything else, including a
 cancelled or unrecognised answer, is a rejection, which the model is told

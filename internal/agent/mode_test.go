@@ -42,6 +42,7 @@ func TestModeToolsAndRoundAdmission(t *testing.T) {
 	for _, call := range []llm.ToolCall{
 		{ID: "write", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"changed","content":"bad"}`}},
 		{ID: "edit", Function: llm.FunctionCall{Name: "edit", Arguments: `{}`}},
+		{ID: "batch", Function: llm.FunctionCall{Name: "edit_batch", Arguments: `{}`}},
 		{ID: "shell-read", Function: llm.FunctionCall{Name: "bash", Arguments: `{"command":"cat AGENTS.md; touch changed"}`}},
 		{ID: "external", Function: llm.FunctionCall{Name: "external", Arguments: `{}`}},
 		{ID: "unknown", Function: llm.FunctionCall{Name: "_future", Arguments: `{}`}},
