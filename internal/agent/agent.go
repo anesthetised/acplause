@@ -175,17 +175,6 @@ func (a *Agent) renew() {
 	}
 }
 
-// drop forgets a session another process now owns, ending its work here
-// without writing to it again.
-func (a *Agent) drop(id string) {
-	a.ownershipMu.Lock()
-	defer a.ownershipMu.Unlock()
-	a.mu.Lock()
-	pending := a.operations[id]
-	a.mu.Unlock()
-	a.dropLocked(id, pending)
-}
-
 // dropLocked applies a loss to the session and setup captured by its check.
 // Requires ownershipMu. A later resume may already be waiting for that lock;
 // cancelling its reservation would prevent it from restoring the session.
