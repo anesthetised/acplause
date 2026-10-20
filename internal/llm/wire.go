@@ -68,6 +68,9 @@ func wireMessages(msgs []Message, vision bool) []wireMessage {
 				w.Content = appendImages(parts, m)
 			}
 		}
+		if w.Content == nil && m.Role == RoleAssistant && len(m.ToolCalls) == 0 {
+			w.Content = "" // required without tool calls, e.g. after a reasoning-only answer
+		}
 		out = append(out, w)
 	}
 	flush()

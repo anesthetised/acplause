@@ -50,6 +50,20 @@ func TestWireTextOnlyKeepsShape(t *testing.T) {
 	}
 }
 
+// Chat Completions requires assistant content unless tool calls are present,
+// so a reasoning-only answer must not lose the field.
+func TestWireEmptyAssistantKeepsContent(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleAssistant, Reasoning: "thinking"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Type: "function", Function: FunctionCall{Name: "f", Arguments: "{}"}}}},
+	}
+	want := `[{"role":"assistant","content":"","reasoning":"thinking"},` +
+		`{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}]`
+	if got := wireJSON(t, msgs, false); got != want {
+		t.Fatalf("\n got %s\nwant %s", got, want)
+	}
+}
+
 func TestWireToolImagesFollowAllSiblingResults(t *testing.T) {
 	a, b := testImage(t, 1), testImage(t, 2)
 	msgs := []Message{
