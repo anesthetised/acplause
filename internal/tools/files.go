@@ -91,6 +91,9 @@ func lineRange(text string, offset, limit *int) (string, error) {
 	if offset != nil {
 		first = *offset
 	}
+	if len(lines) == 0 && first == 1 {
+		return "[empty file]\n", nil // the first page of nothing is not out of range
+	}
 	if first > len(lines) {
 		return "", fmt.Errorf("offset %d is beyond the end of the file (%d lines)", first, len(lines))
 	}

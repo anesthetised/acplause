@@ -188,6 +188,8 @@ func TestReadFileRange(t *testing.T) {
 		{"f.txt", map[string]any{"offset": 2, "limit": math.MaxInt}, "[lines 2-5 of 5]\nb\nc\nd\ne\n"},
 		{"nonl.txt", map[string]any{"offset": 2}, "[lines 2-2 of 2]\ny"},
 		{"f.txt", map[string]any{}, "a\nb\nc\nd\ne\n"}, // no range, no header
+		{"empty.txt", map[string]any{"offset": 1, "limit": 50}, "[empty file]\n"},
+		{"empty.txt", map[string]any{"limit": 50}, "[empty file]\n"},
 	}
 	for _, tc := range tests {
 		tc.args["path"] = tc.path
@@ -196,7 +198,7 @@ func TestReadFileRange(t *testing.T) {
 		}
 	}
 	w.fails("read_file", map[string]any{"path": "f.txt", "offset": 6}, "offset 6 is beyond the end of the file (5 lines)")
-	w.fails("read_file", map[string]any{"path": "empty.txt", "offset": 1}, "(0 lines)")
+	w.fails("read_file", map[string]any{"path": "empty.txt", "offset": 2}, "(0 lines)")
 }
 
 func TestReadFileRangeRejectsInvalidArguments(t *testing.T) {
