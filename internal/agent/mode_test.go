@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -73,13 +74,13 @@ func TestModeToolsAndRoundAdmission(t *testing.T) {
 }
 
 func TestModeBusyAdmissionAndIdempotence(t *testing.T) {
-	for _, busy := range []string{"worker", "queue", "state", "setup"} {
+	for _, busy := range []string{"claimed turn", "queue", "state", "setup"} {
 		t.Run(busy, func(t *testing.T) {
 			s, _ := testSession(t, nil)
 			a := &Agent{sessions: map[string]*Session{s.id: s}, operations: map[string]*sessionOperation{}}
 			switch busy {
-			case "worker":
-				s.worker = make(chan struct{})
+			case "claimed turn":
+				s.claimed = true
 			case "queue":
 				s.queue = []*submission{{}}
 			case "state":
@@ -87,7 +88,7 @@ func TestModeBusyAdmissionAndIdempotence(t *testing.T) {
 			case "setup":
 				a.operations[s.id] = &sessionOperation{}
 			}
-			defer func() { s.worker = nil; s.queue = nil }()
+			defer func() { s.claimed = false; s.queue = nil }()
 			req := acp.SetConfigOptionRequest{SessionID: s.id, ConfigID: "mode", Type: "id", Value: jsonString("plan")}
 			_, err := a.setConfigOption(context.Background(), req)
 			if err == nil || jsonrpc.AsError(err).Code != -32602 || !strings.Contains(err.Error(), "retry") {
@@ -224,4 +225,32 @@ func TestModeConfigOverWireFencesSetupAndPreservesPreferences(t *testing.T) {
 			t.Errorf("queued prompt: %+v", r.Error)
 		}
 	})
+}
+
+func TestModeChangeWhileTheFinishedTurnSaves(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	st := &saveStore{save: func(_ context.Context, sess store.Session, _, _ []store.Row) error {
+		if sess.State == string(acp.StateIdle) {
+			once.Do(func() { close(entered); <-release }) // only the turn's final save
+		}
+		return nil
+	}}
+	out := make(recorder, 32)
+	model := fakeModel(func(context.Context, llm.Request, func(llm.Delta)) (*llm.Completion, error) {
+		return &llm.Completion{Content: "done", FinishReason: llm.FinishStop}, nil
+	})
+	s, err := newSession(context.Background(), deps{out: out, model: model, store: st}, newCatalog([]llm.Model{{ID: "m"}}), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.model = "m"
+	s.Submit(context.Background(), []acp.ContentBlock{acp.Text("hi")})
+	out.untilIdle(t)
+	<-entered
+	defer close(release)
+	if err := s.SetConfigOption(configMode, acp.ConfigValueID, jsonString(modePlan)); err != nil {
+		t.Fatalf("mode change after idle: %v", err)
+	}
 }

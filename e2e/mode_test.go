@@ -7,28 +7,21 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
-// setMode retries the documented busy response: idle can precede the worker's
-// final store flush. Every response is still checked against the pinned schema.
+// setMode changes the mode, which an idle session accepts at once, even
+// while the finished turn is still being saved.
 func setMode(t *testing.T, a *agent, sid, mode string) []configOption {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		response := a.response(a.request("session/set_config_option", map[string]any{"sessionId": sid, "configId": "mode", "type": "id", "value": mode}))
-		if response.Error == nil {
-			var result struct{ ConfigOptions []configOption }
-			if err := json.Unmarshal(response.Result, &result); err != nil {
-				t.Fatal(err)
-			}
-			return result.ConfigOptions
-		}
-		if response.Error.Code != -32602 || !strings.Contains(response.Error.Message, "busy") || time.Now().After(deadline) {
-			t.Fatalf("set mode: %+v", response.Error)
-		}
-		time.Sleep(time.Millisecond)
+	response := a.response(a.request("session/set_config_option", modeRequest(sid, mode)))
+	if response.Error != nil {
+		t.Fatalf("set mode: %+v", response.Error)
 	}
+	var result struct{ ConfigOptions []configOption }
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result.ConfigOptions
 }
 
 func modeRequest(sid, value string) map[string]any {
