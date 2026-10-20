@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
@@ -79,7 +78,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if v := getenv("ACPLAUSE_MCP_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < 0 {
-			errs = append(errs, fmt.Errorf("ACPLAUSE_MCP_TIMEOUT: want a nonnegative duration, got %q", v))
+			errs = append(errs, errors.New("ACPLAUSE_MCP_TIMEOUT: want a nonnegative duration such as 1h"))
 		} else {
 			cfg.MCPTimeout = d
 		}
@@ -87,20 +86,20 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if v := getenv("ACPLAUSE_MAX_ROUNDS"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			errs = append(errs, fmt.Errorf("ACPLAUSE_MAX_ROUNDS: want a nonnegative integer, got %q", v))
+			errs = append(errs, errors.New("ACPLAUSE_MAX_ROUNDS: want a nonnegative integer"))
 		}
 		cfg.MaxRounds = n
 	}
 	if v := getenv("ACPLAUSE_BASH_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < 0 {
-			errs = append(errs, fmt.Errorf("ACPLAUSE_BASH_TIMEOUT: want a nonnegative duration such as 90s, got %q", v))
+			errs = append(errs, errors.New("ACPLAUSE_BASH_TIMEOUT: want a nonnegative duration such as 90s"))
 		}
 		cfg.BashTimeout = d
 	}
 	if v := getenv("ACPLAUSE_LOG_LEVEL"); v != "" {
 		if err := cfg.LogLevel.UnmarshalText([]byte(v)); err != nil {
-			errs = append(errs, fmt.Errorf("ACPLAUSE_LOG_LEVEL: %w", err))
+			errs = append(errs, errors.New("ACPLAUSE_LOG_LEVEL: want debug, info, warn or error"))
 		}
 	}
 	return cfg, errors.Join(errs...)

@@ -47,6 +47,36 @@ func TestLoadConfigErrors(t *testing.T) {
 	}
 }
 
+func TestLoadConfigErrorsOmitValues(t *testing.T) {
+	keys := []string{"ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_MCP_TIMEOUT", "ACPLAUSE_LOG_LEVEL"}
+	settings := map[string]string{}
+	for _, k := range keys {
+		settings[k] = "secret-marker"
+	}
+	_, err := loadConfig(env(settings))
+	for _, k := range keys {
+		if err == nil || !strings.Contains(err.Error(), k) {
+			t.Errorf("want an error about %s, got %v", k, err)
+		}
+	}
+	if err != nil && strings.Contains(err.Error(), "secret-marker") {
+		t.Fatalf("error echoes a value: %v", err)
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://openrouter.ai/api/v1":                              "https://openrouter.ai/api/v1",
+		"https://user:secret-marker@gateway/v1?key=secret-marker#x": "https://gateway/v1",
+		"https://secret-marker@gateway/v1?":                         "https://gateway/v1",
+		"https://secret-marker:%xx@gateway":                         "(invalid)",
+	} {
+		if got := redactURL(raw); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestLoadConfigWithoutModel(t *testing.T) {
 	if _, err := loadConfig(env(nil)); err != nil {
 		t.Fatalf("model selection belongs to the ACP client: %v", err)

@@ -60,7 +60,7 @@ T3 client compatibility.
 
 `--online` adds an explicit catalog check against the configured provider after
 local checks pass. It uses the existing OpenAI-compatible `/models` client and
-its retry/redirect policy, with one 15-second deadline covering requests,
+its retry policy, without following redirects, with one 15-second deadline covering requests,
 retries and response decoding. Missing API keys do not block unauthenticated
 compatible endpoints. The report gives only a count of distinct selectable
 model IDs with tool support: absent parameter metadata is assumed supported,
@@ -89,6 +89,13 @@ Provider messages, model names/descriptions and credentials stay out of reports.
 | `ACPLAUSE_LOG_LEVEL`    | `info`                          | logs go to stderr                     |
 
 Point your ACP v2 client at the `acplause` binary with these variables set.
+
+The key is sent only to `ACPLAUSE_BASE_URL`, as `Authorization: Bearer`.
+Redirects are not followed: a provider that redirects fails until the final API
+root is configured. Commands the bash tool runs inherit the environment without
+`ACPLAUSE_API_KEY`. This prevents accidental exposure, not a deliberate read:
+commands run as the same user. See [ADR 0022](docs/adr/0022-provider-key-exposure.md).
+
 The defaults allow sustained tool work, long builds and tests, and delegated
 MCP tasks. An unset or empty variable selects its default; explicit `0`
 disables only that limit. Negative values are rejected. Cancellation still

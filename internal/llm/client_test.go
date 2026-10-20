@@ -239,6 +239,28 @@ func TestChatDoesNotRetryPermanentErrors(t *testing.T) {
 	}
 }
 
+func TestRedirectsAreNotFollowed(t *testing.T) {
+	var target atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { target.Add(1) }))
+	t.Cleanup(other.Close)
+	var calls atomic.Int32
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	})
+	_, _, err := collect(t, c)
+	e, ok := errors.AsType[*Error](err)
+	if !ok || e.Status != http.StatusTemporaryRedirect || e.Retryable() || !strings.Contains(e.Message, "redirect") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := c.Models(context.Background()); err == nil {
+		t.Fatal("models followed the redirect")
+	}
+	if calls.Load() != 2 || target.Load() != 0 {
+		t.Fatalf("calls=%d target=%d, want 2 and 0", calls.Load(), target.Load())
+	}
+}
+
 func TestChatCancellationAbortsTheStream(t *testing.T) {
 	aborted := make(chan struct{})
 	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
