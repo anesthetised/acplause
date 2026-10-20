@@ -49,6 +49,19 @@ func TestRememberLastSelection(t *testing.T) {
 	}
 }
 
+func TestModelListRecoversWithoutRestart(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.modelsDown.Store(true)
+	a := start(t, llm)
+	a.initialize()
+	a.fails("session/new", map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}}, -32603)
+	llm.modelsDown.Store(false)
+	if session := a.newSession(t.TempDir()); session.SessionID == "" {
+		t.Fatalf("session after recovery: %+v", session)
+	}
+}
+
 func TestRememberedModelUnavailable(t *testing.T) {
 	t.Parallel()
 	for _, catalog := range []string{

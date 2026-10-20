@@ -144,7 +144,8 @@ same data directory. If there is no remembered selection or the model is no
 longer available, sessions show "Select a model"; prompts are rejected until
 the client selects one. The agent never picks a substitute model. If the
 provider's model list cannot be loaded or contains no models with tool
-support, session creation fails. See [ADR 0005](docs/adr/0005-remember-model-selection.md).
+support, session creation fails; the next request retries the list, and a
+loaded list is kept for the process lifetime. See [ADR 0005](docs/adr/0005-remember-model-selection.md).
 
 The `mode` session config option selects **Build** (the default) or **Plan**.
 Plan permits only `read_file`, `list_dir`, `search_code`, `get_instructions`,

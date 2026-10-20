@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/llm"
@@ -26,6 +27,45 @@ var efforts = []acp.ConfigOptionValue{
 	{Value: "low", Name: "Low"},
 	{Value: "medium", Name: "Medium"},
 	{Value: "high", Name: "High"},
+}
+
+// cacheCatalog keeps only a successful load, so one provider outage does not
+// fail new sessions and resumes after it recovers. Callers that arrive during
+// a load share it, failure included.
+func cacheCatalog(load func() (*catalog, error)) func() (*catalog, error) {
+	var (
+		mu      sync.Mutex
+		loaded  *catalog
+		attempt chan struct{} // closed when the load in flight ends
+		err     error         // of the last finished load
+	)
+	return func() (*catalog, error) {
+		mu.Lock()
+		if loaded != nil {
+			mu.Unlock()
+			return loaded, nil
+		}
+		done := attempt
+		if done == nil {
+			done = make(chan struct{})
+			attempt = done
+			go func() {
+				c, e := load()
+				mu.Lock()
+				loaded, err, attempt = c, e, nil
+				mu.Unlock()
+				close(done)
+			}()
+		}
+		mu.Unlock()
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		if loaded != nil {
+			return loaded, nil
+		}
+		return nil, err
+	}
 }
 
 // catalog is the set of models a session may use: those that accept tools.

@@ -2,8 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -68,4 +71,40 @@ func TestSingleProviderModelOptionsStayFlat(t *testing.T) {
 			t.Fatalf("flat options changed: %s, %v", data, err)
 		}
 	}
+}
+
+func TestCacheCatalogSharesAttemptsAndRetriesFailures(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan error)
+		var calls atomic.Int32
+		get := cacheCatalog(func() (*catalog, error) {
+			calls.Add(1)
+			if err := <-release; err != nil {
+				return nil, err
+			}
+			return newCatalog(testModels), nil
+		})
+		results := make(chan error, 2)
+		for range 2 {
+			go func() {
+				_, err := get()
+				results <- err
+			}()
+		}
+		synctest.Wait() // both callers wait on one load
+		release <- errors.New("down")
+		for range 2 {
+			if err := <-results; err == nil {
+				t.Fatal("shared attempt succeeded")
+			}
+		}
+		go func() { release <- nil }()
+		first, err := get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again, err := get(); err != nil || again != first || calls.Load() != 2 {
+			t.Fatalf("cached catalog: %p, %p, %v, %d loads", first, again, err, calls.Load())
+		}
+	})
 }
