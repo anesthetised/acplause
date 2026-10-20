@@ -18,7 +18,9 @@ func TestSaveFailureNotice(t *testing.T) {
 	llm := newMockLLM(t)
 	llm.enqueue(reply("Still working."), reply("Saved."), reply("Still working again."))
 	a, sid, cwd := started(t, llm, withDataDir(dir))
-	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db"))
+	// Protocol responses and idle updates do not wait for session saves.
+	// Let the agent's write transactions finish before changing the schema.
+	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db")+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
