@@ -188,7 +188,7 @@ more memory. See [ADR 0021](docs/adr/0021-parallel-builtin-reads.md) and the
 | `search_code` | `search`  | literal or regex search, optional case folding, 50 matching lines |
 | `get_instructions` | `read` | source-labelled root-to-directory `AGENTS.md` rules |
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
-| `edit`        | `edit`    | replace one exact occurrence                      |
+| `edit`        | `edit`    | replace one exact occurrence in a UTF-8 file up to 5 MiB |
 | `edit_batch`  | `edit`    | 1–50 ordered replacements in one file, one approved diff |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
 | `ask_user`    | `other`   | one to three text/choice questions, when supported |

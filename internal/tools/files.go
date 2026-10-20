@@ -313,9 +313,12 @@ func (tb *Toolbox) edit(args editArgs) (*Call, error) {
 		return nil, errors.New("new_text is required")
 	}
 	plan := func(ctx context.Context) (string, *acp.ToolCallContent, error) {
-		data, err := t.readFile(ctx, 0)
+		data, err := t.readFile(ctx, maxWriteSize)
 		if err != nil {
 			return "", nil, err
+		}
+		if !utf8.Valid(data) {
+			return "", nil, fmt.Errorf("%s is not valid UTF-8", args.Path)
 		}
 		content := string(data)
 		switch n := strings.Count(content, args.OldText); n {
@@ -326,6 +329,9 @@ func (tb *Toolbox) edit(args editArgs) (*Call, error) {
 			return "", nil, fmt.Errorf("old_text occurs %d times in %s; add context to make it unique", n, args.Path)
 		}
 		updated := strings.Replace(content, args.OldText, *args.NewText, 1)
+		if len(updated) > maxWriteSize {
+			return "", nil, fmt.Errorf("edited content is too large (max %d bytes)", maxWriteSize)
+		}
 		d := fileDiff(t.abs, content, true, updated)
 		return updated, &d, nil
 	}

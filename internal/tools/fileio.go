@@ -28,8 +28,8 @@ func (t target) openRegular(ctx context.Context, flags int) (*os.File, error) {
 	return f, nil
 }
 
-// readFile bounds read_file output even if the file grows after Stat.
-// A zero limit is used by edit, which needs the whole existing file.
+// readFile is always bounded, even if the file grows after Stat: an unbounded
+// read of a huge workspace file could exhaust memory before permission is asked.
 func (t target) readFile(ctx context.Context, limit int64) ([]byte, error) {
 	f, err := t.openRegular(ctx, os.O_RDONLY)
 	if err != nil {
@@ -38,15 +38,11 @@ func (t target) readFile(ctx context.Context, limit int64) ([]byte, error) {
 	defer f.Close()
 	stop := context.AfterFunc(ctx, func() { _ = f.Close() })
 	defer stop()
-	var r io.Reader = f
-	if limit > 0 {
-		r = io.LimitReader(f, limit+1)
-	}
-	data, err := io.ReadAll(r)
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if limit > 0 && int64(len(data)) > limit {
+	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("%s is too large (max %d bytes)", t.abs, limit)
 	}
 	return data, err

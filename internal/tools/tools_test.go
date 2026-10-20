@@ -414,6 +414,32 @@ func TestWriteFileAndEdit(t *testing.T) {
 	}
 }
 
+func TestEditInvalidPreviewNeverWrites(t *testing.T) {
+	for _, tc := range []struct{ name, original, old, new string }{
+		{"invalid UTF-8", "one\xff", "one", "new"},
+		{"oversized input", strings.Repeat("a", maxWriteSize) + "b", "b", "c"},
+		{"oversized output", "one", "one", strings.Repeat("a", maxWriteSize+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorkspace(t, Options{})
+			path := w.write("a", tc.original)
+			c, err := w.prepare("edit", map[string]string{"path": "a", "old_text": tc.old, "new_text": tc.new})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if preview, err := c.Preview(context.Background()); err == nil || preview != nil {
+				t.Fatalf("invalid preview: %+v, %v", preview, err)
+			}
+			if got := c.Run(context.Background()); !got.Failed || got.Diff != nil {
+				t.Fatalf("failed preview permitted a write: %+v", got)
+			}
+			if data, err := os.ReadFile(path); err != nil || string(data) != tc.original {
+				t.Fatalf("file changed: %d bytes, %v", len(data), err)
+			}
+		})
+	}
+}
+
 func TestWriteArgumentsRequireExplicitContent(t *testing.T) {
 	for _, tc := range []struct{ name, args string }{
 		{"write_file", `{"path":"a.txt"}`},
