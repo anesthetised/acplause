@@ -30,7 +30,7 @@ func TestDoctorLocalChecksAndRedaction(t *testing.T) {
 				settings[k] = v
 			}
 			var report bytes.Buffer
-			err := doctor(env(settings), &report, os.UserHomeDir, os.CreateTemp)
+			err := doctor(env(settings), &report, os.UserHomeDir, os.CreateTemp, false)
 			if (err == nil) != tc.valid || !strings.Contains(report.String(), tc.want) || strings.Contains(report.String(), "secret-marker") || strings.Contains(report.String(), settings["ACPLAUSE_DATA_DIR"]) {
 				t.Fatalf("unsafe or wrong report: %s / %v", &report, err)
 			}
@@ -72,7 +72,7 @@ func TestDoctorProbeCleanupAndDefaultDirectory(t *testing.T) {
 				}
 			}
 			var report bytes.Buffer
-			err := doctor(env(nil), &report, homeDir, create)
+			err := doctor(env(nil), &report, homeDir, create, false)
 			if (err == nil) != (failure == "") || strings.Contains(report.String(), "secret-marker") || strings.Contains(report.String(), home) {
 				t.Fatalf("probe status: %s / %v", &report, err)
 			}
@@ -101,7 +101,7 @@ func TestDoctorProbeCleanupAndDefaultDirectory(t *testing.T) {
 }
 
 func TestDoctorDispatcherDoesNotEnterServer(t *testing.T) {
-	for _, args := range [][]string{nil, {"doctor"}, {"secret-marker"}, {"doctor", "--online"}, {"doctor", "secret-marker"}} {
+	for _, args := range [][]string{nil, {"doctor"}, {"secret-marker"}, {"doctor", "--unknown"}, {"doctor", "secret-marker"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			called := false
 			var report bytes.Buffer
@@ -120,7 +120,7 @@ func TestDoctorSanitizesEveryParsedSetting(t *testing.T) {
 	for _, key := range []string{"ACPLAUSE_READ_CONCURRENCY", "ACPLAUSE_MAX_TURN_TOKENS", "ACPLAUSE_MAX_TURN_COST_USD", "ACPLAUSE_TURN_TIMEOUT", "ACPLAUSE_MCP_TIMEOUT", "ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_LOG_LEVEL"} {
 		t.Run(key, func(t *testing.T) {
 			var report bytes.Buffer
-			err := doctor(env(map[string]string{key: "secret-marker", "ACPLAUSE_DATA_DIR": t.TempDir()}), &report, os.UserHomeDir, os.CreateTemp)
+			err := doctor(env(map[string]string{key: "secret-marker", "ACPLAUSE_DATA_DIR": t.TempDir()}), &report, os.UserHomeDir, os.CreateTemp, false)
 			if err == nil || !strings.Contains(report.String(), key) || strings.Contains(report.String(), "secret-marker") {
 				t.Fatalf("setting redaction: %s", &report)
 			}
@@ -148,7 +148,7 @@ func TestDoctorDirectoryInspectionFailuresAreSafe(t *testing.T) {
 	}
 	for _, dir := range []string{filepath.Join(file, "child"), "secret-marker\x00invalid"} {
 		var report bytes.Buffer
-		err := doctor(env(map[string]string{"ACPLAUSE_DATA_DIR": dir}), &report, os.UserHomeDir, os.CreateTemp)
+		err := doctor(env(map[string]string{"ACPLAUSE_DATA_DIR": dir}), &report, os.UserHomeDir, os.CreateTemp, false)
 		if err == nil || !strings.Contains(report.String(), "data directory: FAIL") || strings.Contains(report.String(), "secret-") {
 			t.Fatalf("unsafe inspect failure: %s", &report)
 		}
