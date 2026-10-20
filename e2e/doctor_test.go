@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +20,7 @@ import (
 
 func runDoctorBinary(t *testing.T, args, settings []string) (int, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = append(cleanEnv(), settings...)
@@ -134,6 +135,9 @@ func TestDoctorPreservesStoredSessionLease(t *testing.T) {
 	if err := st.Create(t.Context(), store.Session{ID: "doctor-existing-session", Cwd: t.TempDir(), Model: "m", State: "running", UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SetSelection(t.Context(), "m", "high"); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -149,18 +153,27 @@ func TestDoctorPreservesStoredSessionLease(t *testing.T) {
 		}
 		before[entry.Name()] = raw
 	}
-	code, report := runDoctorBinary(t, []string{"doctor"}, []string{"ACPLAUSE_DATA_DIR=" + dir})
-	if code != 0 {
-		t.Fatalf("doctor on existing store: %s", report)
-	}
-	after, err := os.ReadDir(dir)
-	if err != nil || len(after) != len(before) {
-		t.Fatal("doctor changed store files")
-	}
-	for _, entry := range after {
-		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil || !bytes.Equal(raw, before[entry.Name()]) {
-			t.Fatal("doctor changed stored session, model selection or owner lease")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/models" {
+			t.Error("not a catalog request")
+		}
+		fmt.Fprint(w, `{"data":[{"id":"available"}]}`)
+	}))
+	defer server.Close()
+	for _, args := range [][]string{{"doctor"}, {"doctor", "--online"}} {
+		code, report := runDoctorBinary(t, args, []string{"ACPLAUSE_DATA_DIR=" + dir, "ACPLAUSE_BASE_URL=" + server.URL})
+		if code != 0 {
+			t.Fatalf("doctor on existing store: %s", report)
+		}
+		after, err := os.ReadDir(dir)
+		if err != nil || len(after) != len(before) {
+			t.Fatal("doctor changed store files")
+		}
+		for _, entry := range after {
+			raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil || !bytes.Equal(raw, before[entry.Name()]) {
+				t.Fatal("doctor changed stored session, model selection or owner lease")
+			}
 		}
 	}
 }

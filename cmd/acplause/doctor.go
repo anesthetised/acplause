@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,18 +10,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/anesthetised/acplause/internal/llm"
 )
 
 // dispatch decides before server setup, so diagnostics cannot open the live
-// store, load models or read protocol input. Supplied arguments are never echoed.
+// store or read protocol input. Only explicit online diagnostics load models.
+// Supplied arguments are never echoed.
 func dispatch(args []string, getenv func(string) string, stderr io.Writer, serve func() error) error {
 	if len(args) == 0 {
 		return serve()
 	}
-	if len(args) == 1 && args[0] == "doctor" {
-		return doctor(getenv, stderr, os.UserHomeDir, os.CreateTemp)
+	online := len(args) == 2 && args[1] == "--online"
+	if args[0] == "doctor" && (len(args) == 1 || online) {
+		return doctor(getenv, stderr, os.UserHomeDir, os.CreateTemp, online)
 	}
-	return errors.New("usage: acplause [doctor]")
+	return errors.New("usage: acplause [doctor [--online]]")
 }
 
 // dataDirectory is shared by serving and diagnostics; only the caller decides
@@ -39,7 +44,7 @@ func dataDirectory(configured string, home func() (string, error)) (string, erro
 // doctor emits only constant categories and trusted setting names, never a raw
 // parsing/filesystem error. The temp-file seam allows deterministic I/O failure
 // tests without relying on permissions that privileged users can bypass.
-func doctor(getenv func(string) string, stderr io.Writer, home func() (string, error), createTemp func(string, string) (*os.File, error)) error {
+func doctor(getenv func(string) string, stderr io.Writer, home func() (string, error), createTemp func(string, string) (*os.File, error), online bool) error {
 	cfg, err := loadConfig(getenv)
 	failed := false
 	report := func(name, status, reason string) {
@@ -94,6 +99,19 @@ func doctor(getenv func(string) string, stderr io.Writer, home func() (string, e
 			reason += "; created directory"
 		}
 		report("data directory", status, reason)
+	}
+	if online {
+		if failed {
+			report("provider catalog", "INFO", "skipped until local checks pass")
+		} else {
+			client := llm.New(llm.Config{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey})
+			count, reason := checkCatalog(context.Background(), client.Models)
+			if reason != "" {
+				report("provider catalog", "FAIL", reason)
+			} else {
+				report("provider catalog", "PASS", fmt.Sprintf("%d selectable tool-capable models", count))
+			}
+		}
 	}
 	if failed {
 		return errors.New("doctor checks failed")
