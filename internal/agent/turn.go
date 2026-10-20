@@ -7,11 +7,13 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
 	"github.com/anesthetised/acplause/internal/mcp"
+	"github.com/anesthetised/acplause/internal/tools"
 )
 
 // converse runs model rounds until the model stops calling tools, the round
@@ -94,15 +96,29 @@ func (s *Session) request() modelRound {
 	return modelRound{Request: req, bindings: bindings, mode: s.mode}
 }
 
-// runTool reports and executes one tool call. Every call gets a result in
-// the history, so the conversation stays valid even when cancelled.
+// toolOutcome keeps completion unpublished until the worker commits its model
+// result. Progress may already be visible; the toolbox stays pinned by the caller.
+type toolOutcome struct {
+	entry   int
+	final   acp.ToolCallUpdate
+	message llm.Message
+}
+
+// runTool remains serial: execution and its history commit finish before the
+// next call starts. One root snapshot covers both steps.
 func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRound) {
-	if ctx.Err() != nil {
-		s.appendHistory(toolResult(call.ID, "Cancelled before it ran."))
-		return
-	}
 	toolbox := s.acquireToolbox()
 	defer s.releaseToolbox(toolbox)
+	s.commitToolOutcome(s.executeToolCall(ctx, call, round, toolbox))
+}
+
+// executeToolCall uses normal preparation, policy and progress reporting, but
+// returns the final patch and matching result without committing either.
+// The caller owns the toolbox pin and must commit each outcome exactly once.
+func (s *Session) executeToolCall(ctx context.Context, call llm.ToolCall, round modelRound, toolbox *tools.Toolbox) toolOutcome {
+	if ctx.Err() != nil {
+		return toolOutcome{message: toolResult(call.ID, "Cancelled before it ran.")}
+	}
 
 	name := call.Function.Name
 	update := acp.ToolCallUpdate{
@@ -205,11 +221,25 @@ func (s *Session) runTool(ctx context.Context, call llm.ToolCall, round modelRou
 	if update.Status == "" { // never reported: send everything at once
 		final = update.Merge(final)
 	}
-	s.reportTool(entry, final)
 	message := toolResult(call.ID, result.Output)
 	message.Images = result.Images
-	s.appendHistory(message)
-	s.flush()
+	return toolOutcome{entry: entry, final: final, message: message}
+}
+
+// commitToolOutcome publishes completion and history under one lock, so a
+// concurrent save or resume cannot see a completed card without its result.
+// Cancellation after execution does not rewrite an already produced outcome.
+func (s *Session) commitToolOutcome(outcome toolOutcome) {
+	s.mu.Lock()
+	if outcome.final.ToolCallID != "" {
+		s.reportToolLocked(outcome.entry, outcome.final)
+	}
+	s.history = append(s.history, outcome.message)
+	s.updatedAt = time.Now()
+	s.mu.Unlock()
+	if outcome.final.ToolCallID != "" {
+		s.flush()
+	}
 }
 
 // asksPermission reports whether tools of a kind change the workspace and so
@@ -278,6 +308,11 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 func (s *Session) reportTool(entry int, patch acp.ToolCallUpdate) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.reportToolLocked(entry, patch)
+}
+
+// reportToolLocked also serves the atomic outcome commit. Requires s.mu.
+func (s *Session) reportToolLocked(entry int, patch acp.ToolCallUpdate) int {
 	if entry < 0 {
 		entry = len(s.transcript)
 		s.transcript = append(s.transcript, patch)
