@@ -124,6 +124,15 @@ lexical order, so edits between calls can shift offsets; pagination is not a
 filesystem snapshot. Explicit null, fractional and out-of-range values fail
 the tool without running the search.
 
+`search_code` and `list_dir` skip hidden descendants by default. An explicit
+hidden starting directory such as `{"path":".github"}` is inspectable;
+`include_hidden: true` also reveals hidden descendants and can expose hidden
+configuration to the model. Every `.git` entry is excluded case-insensitively,
+including worktree metadata files. Explicitly traversing a `.git` path fails
+the tool. Generated names (`node_modules`, `target`, `__pycache__`) remain
+excluded during traversal, and directory symlinks are not followed. This policy does not interpret
+`.gitignore` and does not restrict direct `read_file` or `bash` access.
+
 `write_file` and `edit` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
 

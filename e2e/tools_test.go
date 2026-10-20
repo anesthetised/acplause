@@ -210,6 +210,82 @@ func TestSearchPaginationAndContextInPlanMode(t *testing.T) {
 	}
 }
 
+func TestHiddenSearchAndListInPlanMode(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		tool, args, want string
+		failed           bool
+	}{
+		{"list_dir", `{"path":".github"}`, "workflows/\n  ci.yml\n", false},
+		{"search_code", `{"pattern":"needle","path":".github"}`, ".github/workflows/ci.yml:1:needle\n", false},
+		{"list_dir", `{"path":".github","include_hidden":true}`, ".settings\nworkflows/\n  ci.yml\n", false},
+		{"search_code", `{"pattern":"needle","include_hidden":true}`, ".env:1:needle\n.github/.settings:1:needle\n.github/workflows/ci.yml:1:needle\n", false},
+		{"list_dir", `{"path":".git","include_hidden":true}`, ".git paths are excluded", true},
+		{"search_code", `{"pattern":"needle","path":".github/.git"}`, ".git paths are excluded", true},
+		{"list_dir", `{"include_hidden":null}`, "invalid arguments", true},
+	}
+	llm := newMockLLM(t)
+	for _, tc := range cases {
+		llm.enqueue(callTool(tc.tool, tc.args))
+	}
+	llm.enqueue(reply("Inspected the repository configuration."))
+	a, sid, cwd := started(t, llm, askingUser)
+	for name, content := range map[string]string{
+		".env": "needle\n", ".github/workflows/ci.yml": "needle\n", ".github/.settings": "needle\n",
+		".github/.git": "needle\n", ".git/HEAD": "needle\n", "node_modules/dep.js": "needle\n",
+	} {
+		p := filepath.Join(cwd, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setMode(t, a, sid, "plan")
+	a.accepted(a.prompt(sid, "inspect hidden configuration"))
+	updates := a.untilIdle(sid)
+	var done []update
+	for _, u := range filter(updates, "tool_call_update") {
+		if u.Status == "completed" || u.Status == "failed" {
+			done = append(done, u)
+		}
+	}
+	if len(done) != len(cases) || updates[len(updates)-1].StopReason != "end_turn" {
+		t.Fatalf("hidden traversal updates: %v", kinds(updates))
+	}
+	for i, tc := range cases {
+		status := "completed"
+		if tc.failed {
+			status = "failed"
+		}
+		if done[i].Status != status || (!tc.failed && done[i].text() != tc.want) || !strings.Contains(done[i].text(), tc.want) {
+			t.Errorf("call %d: %q (%s), want %q (%s)", i, done[i].text(), done[i].Status, tc.want, status)
+		}
+		msgs := llm.request(i + 1).Messages
+		result := msgs[len(msgs)-1]
+		if result["role"] != "tool" || result["tool_call_id"] != "call_"+tc.tool || result["content"] != done[i].text() {
+			t.Errorf("call %d history: %v", i, result)
+		}
+	}
+	found := 0
+	for _, tool := range llm.request(0).Tools {
+		fn := tool["function"].(map[string]any)
+		if fn["name"] != "search_code" && fn["name"] != "list_dir" {
+			continue
+		}
+		found++
+		props := fn["parameters"].(map[string]any)["properties"].(map[string]any)
+		flag, ok := props["include_hidden"].(map[string]any)
+		if !ok || flag["type"] != "boolean" {
+			t.Errorf("%s did not advertise include_hidden: %v", fn["name"], props)
+		}
+	}
+	if found != 2 {
+		t.Fatalf("advertised traversal tools: %d, want 2", found)
+	}
+}
+
 func TestRoundLimit(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)

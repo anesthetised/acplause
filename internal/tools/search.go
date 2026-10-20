@@ -37,6 +37,7 @@ var searchCodeSpec = Spec{
 			"offset": {"type": "integer", "minimum": 0, "description": "Skip this many matching lines, not context lines (default 0)"},
 			"limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum matching lines in the page (default 50)"},
 			"context_lines": {"type": "integer", "minimum": 0, "maximum": 5, "description": "Lines before and after each page match, with overlapping windows merged (default 0)"},
+			"include_hidden": {"type": "boolean", "description": "Include hidden descendants except .git (default false); an explicit hidden starting path is allowed, and hidden configuration may reach the model"},
 			"file_glob": {"type": "string", "description": "Only search files whose name matches this glob (e.g. '*.go')"},
 			"path": {"type": "string", "description": "Directory to search, relative to the working directory or absolute (default '.')"}
 		},
@@ -45,14 +46,15 @@ var searchCodeSpec = Spec{
 }
 
 type searchCodeArgs struct {
-	Pattern      string       `json:"pattern"`
-	Regex        optionalBool `json:"regex"`
-	IgnoreCase   optionalBool `json:"ignore_case"`
-	FileGlob     string       `json:"file_glob"`
-	Path         string       `json:"path"`
-	Offset       optionalInt  `json:"offset"`
-	Limit        optionalInt  `json:"limit"`
-	ContextLines optionalInt  `json:"context_lines"`
+	Pattern       string       `json:"pattern"`
+	Regex         optionalBool `json:"regex"`
+	IgnoreCase    optionalBool `json:"ignore_case"`
+	FileGlob      string       `json:"file_glob"`
+	Path          string       `json:"path"`
+	Offset        optionalInt  `json:"offset"`
+	Limit         optionalInt  `json:"limit"`
+	ContextLines  optionalInt  `json:"context_lines"`
+	IncludeHidden optionalBool `json:"include_hidden"`
 }
 
 // optionalInt distinguishes an omitted option from an explicit zero and rejects
@@ -130,12 +132,16 @@ func (tb *Toolbox) searchCode(args searchCodeArgs) (*Call, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkTraversalPath(t.abs); err != nil {
+		return nil, err
+	}
 	return &Call{
 		Title:     fmt.Sprintf("Search for %q", args.Pattern),
 		Locations: []string{t.abs},
 		run: func(ctx context.Context) (string, error) {
 			s := searcher{pattern: []byte(args.Pattern), re: re, glob: args.FileGlob,
 				offset: args.Offset.value, limit: args.Limit.value, contextLines: args.ContextLines.value,
+				start: filepath.ToSlash(t.rel), includeHidden: bool(args.IncludeHidden),
 				show: func(rel string) string {
 					return tb.roots.display(t.root, filepath.FromSlash(rel))
 				}}
@@ -172,21 +178,25 @@ func (tb *Toolbox) searchCode(args searchCodeArgs) (*Call, error) {
 var errSearchFull = errors.New("enough matches")
 
 type searcher struct {
-	pattern      []byte
-	re           *regexp.Regexp
-	glob         string
-	show         func(rel string) string
-	out          strings.Builder
-	matches      int
-	offset       int
-	limit        int
-	contextLines int
-	skipped      int
+	pattern       []byte
+	re            *regexp.Regexp
+	glob          string
+	show          func(rel string) string
+	out           strings.Builder
+	matches       int
+	offset        int
+	limit         int
+	contextLines  int
+	skipped       int
+	start         string
+	includeHidden bool
 }
 
 func (s *searcher) visit(ctx context.Context, t target, d fs.DirEntry) error {
 	name := filepath.ToSlash(t.rel)
-	if name != "." && ignored(d.Name()) {
+	// Only the explicitly selected start bypasses the hidden-name default;
+	// generated names and .git still use the shared exclusion predicate.
+	if name != "." && ignored(d.Name(), s.includeHidden || name == s.start) {
 		if d.IsDir() {
 			return fs.SkipDir
 		}

@@ -235,6 +235,132 @@ func TestListDir(t *testing.T) {
 	}
 }
 
+func TestHiddenTraversal(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	for _, name := range []string{
+		".env", ".github/workflows/ci.yml", ".github/.settings", ".github/.nested/config",
+		".git/HEAD", ".GIT/HEAD", ".github/.git/config", "nested/.git", "nested/.config", "visible.txt",
+		"node_modules/pkg/data", "target/data", "__pycache__/data",
+	} {
+		w.write(name, "needle\n")
+	}
+	for _, tc := range []struct {
+		name, tool string
+		args       map[string]any
+		want       string
+	}{
+		{"list default", "list_dir", map[string]any{}, "nested/\nvisible.txt\n"},
+		{"list explicit hidden root", "list_dir", map[string]any{"path": ".github"}, "workflows/\n  ci.yml\n"},
+		{"list hidden descendants", "list_dir", map[string]any{"path": ".github", "include_hidden": true}, ".nested/\n  config\n.settings\nworkflows/\n  ci.yml\n"},
+		{"search default", "search_code", map[string]any{"pattern": "needle"}, "visible.txt:1:needle\n"},
+		{"search explicit false", "search_code", map[string]any{"pattern": "needle", "include_hidden": false}, "visible.txt:1:needle\n"},
+		{"search explicit hidden root", "search_code", map[string]any{"pattern": "needle", "path": ".github"}, ".github/workflows/ci.yml:1:needle\n"},
+		{"search explicit nested hidden root", "search_code", map[string]any{"pattern": "needle", "path": ".github/.nested"}, ".github/.nested/config:1:needle\n"},
+		{"search explicit dot file", "search_code", map[string]any{"pattern": "needle", "path": ".env"}, ".env:1:needle\n"},
+		{"search hidden descendants", "search_code", map[string]any{"pattern": "needle", "include_hidden": true}, ".env:1:needle\n.github/.nested/config:1:needle\n.github/.settings:1:needle\n.github/workflows/ci.yml:1:needle\nnested/.config:1:needle\nvisible.txt:1:needle\n"},
+		{"list hidden descendants from root", "list_dir", map[string]any{"include_hidden": true}, ".env\n.github/\n  .nested/\n    config\n  .settings\n  workflows/\n    ci.yml\nnested/\n  .config\nvisible.txt\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := w.ok(tc.tool, tc.args); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// Traversal policy does not block direct file reads.
+	if got := w.ok("read_file", map[string]string{"path": ".git/HEAD"}); got != "needle\n" {
+		t.Fatalf("direct read changed: %q", got)
+	}
+}
+
+func TestHiddenTraversalRejectsGitPathsAndInvalidFlags(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	for _, tool := range []string{"search_code", "list_dir"} {
+		for _, name := range []string{".git", ".GIT", ".git/HEAD", "nested/.GiT", "nested/.git", ".github/.git/config", filepath.Join(w.extra, ".git")} {
+			for _, hidden := range []bool{false, true} {
+				_, err := w.prepare(tool, map[string]any{"path": name, "pattern": "needle", "include_hidden": hidden})
+				if err == nil || !strings.Contains(err.Error(), ".git") {
+					t.Errorf("%s accepted .git path %s (hidden=%v): %v", tool, name, hidden, err)
+				}
+			}
+		}
+		for _, value := range []string{`null`, `1`, `"true"`, `[]`, `{}`} {
+			args := `{"pattern":"needle","include_hidden":` + value + `}`
+			if _, err := w.tb.Prepare(tool, args); err == nil {
+				t.Errorf("%s accepted invalid flag: %s", tool, args)
+			}
+		}
+	}
+}
+
+func TestHiddenTraversalAdditionalRootsAndSymlinks(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	hidden := filepath.Join(w.extra, ".github")
+	w.write(filepath.Join(hidden, "ci.yml"), "needle\n")
+	w.write(filepath.Join(hidden, ".settings"), "needle\n")
+	w.write(filepath.Join(w.extra, ".git"), "needle\n") // worktree metadata file
+	if got := w.ok("search_code", map[string]any{"pattern": "needle", "path": hidden}); got != filepath.Join(hidden, "ci.yml")+":1:needle\n" {
+		t.Fatalf("explicit hidden additional-root path: %q", got)
+	}
+	if got := w.ok("list_dir", map[string]any{"path": hidden}); got != "ci.yml\n" {
+		t.Fatalf("explicit hidden additional-root listing: %q", got)
+	}
+	want := filepath.Join(hidden, ".settings") + ":1:needle\n" + filepath.Join(hidden, "ci.yml") + ":1:needle\n"
+	if got := w.ok("search_code", map[string]any{"pattern": "needle", "path": w.extra, "include_hidden": true}); got != want {
+		t.Fatalf("hidden additional-root search: %q, want %q", got, want)
+	}
+	if got := w.ok("list_dir", map[string]any{"path": w.extra, "include_hidden": true}); got != ".github/\n  .settings\n  ci.yml\n" {
+		t.Fatalf("worktree .git file was listed: %q", got)
+	}
+	outside := filepath.Join(filepath.Dir(w.cwd), "outside")
+	w.write(filepath.Join(outside, "secret.txt"), "needle\n")
+	if err := os.Symlink(outside, filepath.Join(w.cwd, ".external")); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.ok("search_code", map[string]any{"pattern": "needle", "include_hidden": true}); got != `No matches for "needle"` {
+		t.Fatalf("followed hidden symlink: %q", got)
+	}
+	if got := w.ok("list_dir", map[string]any{"include_hidden": true}); got != ".external\n" {
+		t.Fatalf("followed hidden directory symlink: %q", got)
+	}
+	w.fails("search_code", map[string]any{"pattern": "needle", "path": ".external"}, "escapes")
+	w.fails("list_dir", map[string]any{"path": ".external"}, "escapes")
+
+	gitRoot := filepath.Dir(w.write(filepath.Join(w.extra, "repo/.git/HEAD"), "needle\n"))
+	tb, err := New(w.cwd, []string{gitRoot}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tb.Close() })
+	for _, tool := range []string{"search_code", "list_dir"} {
+		args, err := json.Marshal(map[string]any{"pattern": "needle", "path": gitRoot, "include_hidden": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tb.Prepare(tool, string(args)); err == nil || !strings.Contains(err.Error(), ".git") {
+			t.Errorf("%s accepted .git as an additional root: %v", tool, err)
+		}
+	}
+}
+
+func TestHiddenTraversalKeepsLimits(t *testing.T) {
+	w := newWorkspace(t, Options{})
+	for i := range maxListItems + 5 {
+		w.write(fmt.Sprintf(".many/.f%03d", i), "needle\n")
+	}
+	got := w.ok("list_dir", map[string]any{"path": ".many", "include_hidden": true})
+	if strings.Count(got, "\n") != maxListItems+1 || !strings.Contains(got, "truncated") {
+		t.Fatalf("hidden listing exceeded cap: %q", got)
+	}
+	got = w.ok("search_code", map[string]any{"pattern": "needle", "include_hidden": true})
+	if strings.Count(got, ":1:needle\n") != maxMatches || !strings.Contains(got, "stopped after 50 matches") {
+		t.Fatalf("hidden search exceeded cap: %q", got)
+	}
+	w.write(".tree/a/b/c/deep.txt", "needle\n")
+	if got := w.ok("list_dir", map[string]any{"path": ".tree", "include_hidden": true}); got != "a/\n  b/\n    c/\n" {
+		t.Fatalf("hidden listing changed depth: %q", got)
+	}
+}
+
 func TestSearchCode(t *testing.T) {
 	w := newWorkspace(t, Options{})
 	w.write("main.go", "package main\nfunc needle() {}\n")
