@@ -77,7 +77,7 @@ func TestElicitationArguments(t *testing.T) {
 		{"long option", strings.Replace(questionArgs, `["a","b"]`, `["`+strings.Repeat("x", 201)+`"]`, 1), false},
 		{"too many options", strings.Replace(questionArgs, `["a","b"]`, `["a","b","c","d","e","f","g","h","i","j","k"]`, 1), false},
 		{"wrong type", strings.Replace(questionArgs, `"title":"Choice"`, `"title":3`, 1), false},
-		{"unicode limits", strings.Replace(questionArgs, `"title":"Choice"`, `"title":"`+strings.Repeat("я", 120)+`"`, 1), true},
+		{"unicode limits", strings.Replace(questionArgs, `"title":"Choice"`, `"title":"`+strings.Repeat("\u00e9", 120)+`"`, 1), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

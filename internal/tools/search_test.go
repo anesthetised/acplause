@@ -9,7 +9,7 @@ import (
 
 func TestSearchCodeMatchingOptions(t *testing.T) {
 	w := newWorkspace(t, Options{})
-	w.write("lines.txt", "a.b\naxb\nA.B\nПривет\nПРИВЕТ\nfoo foo\nbar\n\n")
+	w.write("lines.txt", "a.b\naxb\nA.B\nCaf\u00e9\nCAF\u00c9\nfoo foo\nbar\n\n")
 	for _, tc := range []struct {
 		name, args, want string
 	}{
@@ -18,10 +18,10 @@ func TestSearchCodeMatchingOptions(t *testing.T) {
 		{"literal invalid regex", `{"pattern":"[","ignore_case":true}`, `No matches for "["`},
 		{"regex", `{"pattern":"^a.b$","regex":true}`, "lines.txt:1:a.b\nlines.txt:2:axb\n"},
 		{"literal case folding", `{"pattern":"a.b","ignore_case":true}`, "lines.txt:1:a.b\nlines.txt:3:A.B\n"},
-		{"unicode case folding", `{"pattern":"привет","ignore_case":true}`, "lines.txt:4:Привет\nlines.txt:5:ПРИВЕТ\n"},
+		{"unicode case folding", `{"pattern":"caf\u00e9","ignore_case":true}`, "lines.txt:4:Caf\u00e9\nlines.txt:5:CAF\u00c9\n"},
 		{"combined options", `{"pattern":"^a.b$","regex":true,"ignore_case":true}`, "lines.txt:1:a.b\nlines.txt:2:axb\nlines.txt:3:A.B\n"},
 		{"alternation once per line", `{"pattern":"foo|bar","regex":true}`, "lines.txt:6:foo foo\nlines.txt:7:bar\n"},
-		{"empty matches once per line", `{"pattern":"^|$","regex":true}`, "lines.txt:1:a.b\nlines.txt:2:axb\nlines.txt:3:A.B\nlines.txt:4:Привет\nlines.txt:5:ПРИВЕТ\nlines.txt:6:foo foo\nlines.txt:7:bar\nlines.txt:8:\n"},
+		{"empty matches once per line", `{"pattern":"^|$","regex":true}`, "lines.txt:1:a.b\nlines.txt:2:axb\nlines.txt:3:A.B\nlines.txt:4:Caf\u00e9\nlines.txt:5:CAF\u00c9\nlines.txt:6:foo foo\nlines.txt:7:bar\nlines.txt:8:\n"},
 		{"line local", `{"pattern":"(?s)foo.*bar","regex":true}`, `No matches for "(?s)foo.*bar"`},
 		{"unknown field", `{"pattern":"bar","regex":true,"future_option":{}}`, "lines.txt:7:bar\n"},
 	} {
