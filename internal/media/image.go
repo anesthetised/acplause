@@ -10,6 +10,8 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+
+	"github.com/anesthetised/acplause/internal/jsonrpc"
 )
 
 // Bounds from ADR 0009. The set limits apply to the images of one prompt or
@@ -98,7 +100,7 @@ type imageJSON struct {
 
 // MarshalJSON encodes the image as it is persisted.
 func (i Image) MarshalJSON() ([]byte, error) {
-	return json.Marshal(imageJSON{MIMEType: i.mime, Data: base64.StdEncoding.EncodeToString(i.data)})
+	return jsonrpc.Marshal(imageJSON{MIMEType: i.mime, Data: base64.StdEncoding.EncodeToString(i.data)})
 }
 
 // UnmarshalJSON validates a persisted image again, so a damaged row fails to
