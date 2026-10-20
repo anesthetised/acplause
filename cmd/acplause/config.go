@@ -20,6 +20,7 @@ type config struct {
 	MaxRounds   int
 	BashTimeout time.Duration
 	MCPTimeout  time.Duration
+	TurnTimeout time.Duration
 	LogLevel    slog.Level
 	DataDir     string // "" selects ~/.acplause
 }
@@ -35,6 +36,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 
 	var errs []error
+	if v := getenv("ACPLAUSE_TURN_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			errs = append(errs, errors.New("ACPLAUSE_TURN_TIMEOUT: want a nonnegative duration such as 15m"))
+		} else {
+			cfg.TurnTimeout = d
+		}
+	}
 	if v := getenv("ACPLAUSE_MCP_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < 0 {
