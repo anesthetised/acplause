@@ -81,7 +81,14 @@ func TestListResumeAndClose(t *testing.T) {
 		t.Fatalf("session/list after close: %+v", after)
 	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
+	if snapshot := a.nextUpdate(sid); !snapshot.is("state_update") || snapshot.State != "idle" {
+		t.Fatalf("resume after close: %+v", snapshot)
+	}
 	a.accepted(a.prompt(sid, "again"))
+	// Finish the turn: stopping the agent mid-request fails the mock LLM.
+	if answer := joinChunks(a.untilIdle(sid), "agent_message_chunk"); answer.text != "Still Paris." {
+		t.Fatalf("resumed turn: %+v", answer)
+	}
 }
 
 func (a *agent) cwdOf(sid string, list listResult) string {
