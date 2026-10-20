@@ -8,6 +8,7 @@
 //	ACPLAUSE_MAX_ROUNDS     model requests per turn; default 200, 0 disables
 //	ACPLAUSE_BASH_TIMEOUT   bash tool timeout; default 30m, 0 disables
 //	ACPLAUSE_MCP_TIMEOUT    MCP tool timeout; default 1h, 0 disables
+//	ACPLAUSE_TURN_TIMEOUT   accepted turn timeout; default 0 (unlimited)
 //	ACPLAUSE_LOG_LEVEL      debug, info, warn or error; default info
 //	ACPLAUSE_DATA_DIR       session store directory; default ~/.acplause
 //
@@ -76,12 +77,13 @@ func run() error {
 
 	conn := jsonrpc.NewConn(os.Stdin, os.Stdout, log)
 	ag := agent.New(agent.Config{
-		Info:       acp.Implementation{Name: "acplause", Version: version()},
-		MaxRounds:  &cfg.MaxRounds,
-		MCPTimeout: &cfg.MCPTimeout,
-		Tools:      tools.Options{BashTimeout: &cfg.BashTimeout},
-		Log:        log,
-		Store:      st,
+		Info:        acp.Implementation{Name: "acplause", Version: version()},
+		MaxRounds:   &cfg.MaxRounds,
+		MCPTimeout:  &cfg.MCPTimeout,
+		TurnTimeout: &cfg.TurnTimeout,
+		Tools:       tools.Options{BashTimeout: &cfg.BashTimeout},
+		Log:         log,
+		Store:       st,
 	}, conn, client, client.Models)
 
 	log.Info("serving", "base_url", cfg.BaseURL, "data_dir", dir)

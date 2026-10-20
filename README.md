@@ -44,6 +44,7 @@ go install github.com/anesthetised/acplause/cmd/acplause@latest
 | `ACPLAUSE_MAX_ROUNDS`   | `200`                           | model requests per turn; `0` disables |
 | `ACPLAUSE_BASH_TIMEOUT` | `30m`                           | bash tool timeout; `0` disables       |
 | `ACPLAUSE_MCP_TIMEOUT`  | `1h`                            | MCP call timeout; `0` disables        |
+| `ACPLAUSE_TURN_TIMEOUT` | `0`                             | accepted turn timeout; `0` disables   |
 | `ACPLAUSE_DATA_DIR`    | `~/.acplause`                    | session database directory            |
 | `ACPLAUSE_LOG_LEVEL`    | `info`                          | logs go to stderr                     |
 
@@ -56,10 +57,18 @@ discovery and cleanup keep their separate deadlines. Summary requests also
 count toward `ACPLAUSE_MAX_ROUNDS` when it is enabled. See
 [ADR 0008](docs/adr/0008-long-task-limits.md).
 
-Opt-in per-turn time, token and USD budgets are specified in
-[ADR 0020](docs/adr/0020-turn-budgets.md). #81 provides usage-availability
-groundwork; the proposed settings are not parsed or enforced yet. Activation
-is tracked in #82 (time) and #83 (reported usage).
+`ACPLAUSE_TURN_TIMEOUT` accepts a nonnegative Go duration such as `15m`.
+It starts after prompt insertion, excluding queue, setup and insertion waiting,
+and resets for the next accepted prompt. It covers model requests, built-in/MCP
+tools, permission/form waiting and automatic/manual compaction. Expiry cancels
+active work and ends once with `idle(cancelled)`, preceded by a live warning
+notice explaining the turn deadline. User/session cancellation takes priority
+and does not produce that timeout notice. Notices are not conversation replay.
+
+[ADR 0020](docs/adr/0020-turn-budgets.md) specifies the opt-in turn-budget
+policy. Usage availability and the time limit are implemented; token/USD
+settings and enforcement remain inactive until #83. Current request/tool
+defaults and MCP setup/cleanup deadlines remain unchanged.
 
 The client receives the available models in `session/new` and selects one
 with `session/set_config_option`. Catalogs with multiple model-ID namespaces

@@ -27,14 +27,15 @@ const (
 
 // deps is what sessions share with the agent.
 type deps struct {
-	forms      *atomic.Bool // negotiated capabilities belong to this connection, never the store
-	out        Client
-	model      Model
-	maxRounds  int
-	mcpTimeout time.Duration
-	tools      tools.Options
-	log        *slog.Logger
-	store      Store // nil keeps sessions in memory only
+	forms       *atomic.Bool // negotiated capabilities belong to this connection, never the store
+	out         Client
+	model       Model
+	maxRounds   int
+	mcpTimeout  time.Duration
+	turnTimeout time.Duration
+	tools       tools.Options
+	log         *slog.Logger
+	store       Store // nil keeps sessions in memory only
 }
 
 // Session is one conversation. Prompts queue up and run one turn at a time
@@ -368,10 +369,19 @@ func (s *Session) next() (*submission, context.Context) {
 	return sub, ctx
 }
 
-// runTurn inserts the prompt and runs foreground work until it ends.
+var errTurnTimeout = errors.New("turn time limit reached")
+
+// runTurn inserts the prompt before starting its optional work deadline. The
+// outer context retains user/session cancellation independently of that timer.
 func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	if !s.insert(ctx, sub) {
 		return
+	}
+	outer := ctx
+	if s.deps.turnTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, s.deps.turnTimeout, errTurnTimeout)
+		defer cancel()
 	}
 	var stop acp.StopReason
 	var err *jsonrpc.Error
@@ -380,13 +390,24 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	} else {
 		stop, err = s.converse(ctx)
 	}
-	if ctx.Err() != nil {
+	// Serialize finalization with Cancel, close/loss and replay. An outer
+	// cancellation that raced the deadline must not produce a timeout notice.
+	s.mu.Lock()
+	if ctx.Err() != nil || outer.Err() != nil {
 		stop, err = acp.StopCancelled, nil
+		if context.Cause(ctx) == errTurnTimeout && outer.Err() == nil && !s.closed && !s.lost {
+			s.send(acp.Notice{
+				Severity: "warning", Title: "Turn time limit reached",
+				Description: fmt.Sprintf("The configured turn time limit of %s elapsed.", s.deps.turnTimeout),
+			})
+		}
 	}
+	s.state = acp.StateUpdate{State: acp.StateIdle, StopReason: stop, Error: err}
+	s.send(s.state)
+	s.mu.Unlock()
 	if err != nil {
 		s.deps.log.Warn("turn failed", "session", s.id, "err", err)
 	}
-	s.setState(acp.StateUpdate{State: acp.StateIdle, StopReason: stop, Error: err})
 	s.flush()
 }
 
