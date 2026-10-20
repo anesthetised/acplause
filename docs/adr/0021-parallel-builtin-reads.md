@@ -1,6 +1,6 @@
 # ADR 0021: Bound opt-in concurrency to consecutive built-in reads
 
-- Status: accepted; outcome/commit separation (#84) implemented, activation (#85) pending
+- Status: accepted; outcome/commit separation (#84) and opt-in activation (#85) implemented
 - Date: 2026-10-20
 - Issues: [#84](https://github.com/anesthetised/acplause/issues/84), [#85](https://github.com/anesthetised/acplause/issues/85)
 - Extends: [ADR 0003](0003-permissions.md), [ADR 0004](0004-sqlite-storage.md), [ADR 0019](0019-scoped-project-instructions.md), [ADR 0020](0020-turn-budgets.md)
@@ -100,5 +100,5 @@ concurrency is enabled.
 Independent reads can later overlap within an explicit resource bound, while
 history stays deterministic. A slow first read delays later completion cards
 and prefix saves. Concurrent disk-heavy reads may be slower and consume more
-memory, so concurrency remains opt-in. This preparation changes no advertised
-tool, setting, permission or scheduling behavior.
+memory, so concurrency remains opt-in. The default remains serial; opt-in activation changes read scheduling only,
+without new tools, permission rules or wire shapes.

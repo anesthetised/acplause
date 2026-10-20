@@ -17,29 +17,39 @@ import (
 
 // config is read from the environment.
 type config struct {
-	BaseURL        string
-	APIKey         string
-	MaxRounds      int
-	BashTimeout    time.Duration
-	MCPTimeout     time.Duration
-	TurnTimeout    time.Duration
-	MaxTurnTokens  uint64
-	MaxTurnCostUSD float64
-	LogLevel       slog.Level
-	DataDir        string // "" selects ~/.acplause
+	BaseURL         string
+	APIKey          string
+	ReadConcurrency int
+	MaxRounds       int
+	BashTimeout     time.Duration
+	MCPTimeout      time.Duration
+	TurnTimeout     time.Duration
+	MaxTurnTokens   uint64
+	MaxTurnCostUSD  float64
+	LogLevel        slog.Level
+	DataDir         string // "" selects ~/.acplause
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
 	cfg := config{
-		BaseURL:     cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
-		APIKey:      cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
-		DataDir:     getenv("ACPLAUSE_DATA_DIR"),
-		MaxRounds:   agent.DefaultMaxRounds,
-		BashTimeout: tools.DefaultBashTimeout,
-		MCPTimeout:  agent.DefaultMCPTimeout,
+		BaseURL:         cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
+		APIKey:          cmp.Or(getenv("ACPLAUSE_API_KEY"), getenv("OPENROUTER_API_KEY")),
+		DataDir:         getenv("ACPLAUSE_DATA_DIR"),
+		ReadConcurrency: 1,
+		MaxRounds:       agent.DefaultMaxRounds,
+		BashTimeout:     tools.DefaultBashTimeout,
+		MCPTimeout:      agent.DefaultMCPTimeout,
 	}
 
 	var errs []error
+	if v := getenv("ACPLAUSE_READ_CONCURRENCY"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 8 {
+			errs = append(errs, errors.New("ACPLAUSE_READ_CONCURRENCY: want an integer from 1 through 8"))
+		} else {
+			cfg.ReadConcurrency = n
+		}
+	}
 	if v := getenv("ACPLAUSE_MAX_TURN_TOKENS"); v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {

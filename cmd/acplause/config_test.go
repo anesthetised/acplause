@@ -23,7 +23,7 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config{BaseURL: llm.DefaultBaseURL, APIKey: "sk-or", MaxRounds: 7, BashTimeout: 90 * time.Second, MCPTimeout: time.Hour, LogLevel: slog.LevelDebug}
+	want := config{ReadConcurrency: 1, BaseURL: llm.DefaultBaseURL, APIKey: "sk-or", MaxRounds: 7, BashTimeout: 90 * time.Second, MCPTimeout: time.Hour, LogLevel: slog.LevelDebug}
 	if cfg != want {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
