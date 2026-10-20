@@ -171,6 +171,10 @@ func (s *Session) prepareRequest(ctx context.Context, remaining *int) (modelRoun
 // prepareModelRequest shares the automatic and forced paths. A forced command needs no
 // answer request or MCP recovery, and reports whether there was work to do.
 func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force bool) (modelRound, bool, error) {
+	// Refresh once for this operation, including all rolling summary chunks.
+	if err := s.refreshInstructions(ctx); err != nil {
+		return modelRound{}, false, err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return modelRound{}, false, err

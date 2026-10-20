@@ -7,8 +7,56 @@ import (
 	"io/fs"
 	"path/filepath"
 	"slices"
+	"strings"
 	"unicode/utf8"
+
+	"github.com/anesthetised/acplause/internal/acp"
 )
+
+var getInstructionsSpec = Spec{
+	Name:        "get_instructions",
+	Kind:        acp.ToolRead,
+	Description: "Read source-labelled AGENTS.md instructions from the workspace root to a directory. Before editing a file, look up its containing directory. Later sources take precedence only within their subtree; tool policy still applies.",
+	Parameters: []byte(`{
+		"type": "object",
+		"properties": {
+			"path": {"type": "string", "description": "Existing directory, relative to cwd or absolute within a workspace root"}
+		},
+		"required": ["path"]
+	}`),
+}
+
+type getInstructionsArgs struct {
+	Path string `json:"path"`
+}
+
+func (tb *Toolbox) getInstructions(args getInstructionsArgs) (*Call, error) {
+	if err := required("path", args.Path); err != nil {
+		return nil, err
+	}
+	t, err := tb.roots.resolve(args.Path)
+	if err != nil {
+		return nil, err
+	}
+	return &Call{
+		Title: "Instructions for " + args.Path, Locations: []string{t.abs},
+		run: func(ctx context.Context) (string, error) {
+			chain, err := tb.ResolveInstructions(ctx, args.Path)
+			if err != nil {
+				return "", err
+			}
+			var out strings.Builder
+			out.WriteString("Project instructions in root-to-directory order. Later sources take precedence only within their directory's subtree. Enforced mode, sandbox and permission policy always apply.\n")
+			if len(chain) == 0 {
+				out.WriteString("No AGENTS.md files found along this directory chain.\n")
+			}
+			for _, source := range chain {
+				fmt.Fprintf(&out, "\nSource: %s\n%s\n", source.Path, source.Text)
+			}
+			return out.String(), nil
+		},
+	}, nil
+}
 
 const (
 	maxInstructionDirs  = 32

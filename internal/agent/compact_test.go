@@ -55,6 +55,10 @@ func TestPrepareTrimsOldToolOutputFirst(t *testing.T) {
 		t.Fatal("trimming should avoid a summary request")
 		return nil, nil
 	}))
+	// Leave room for the expanded built-in catalog plus the untrimmed latest
+	// result; only the oldest result should need trimming in this fixture.
+	const window = 18000
+	s.catalog = newCatalog([]llm.Model{{ID: "m", ContextLength: window}})
 	old := strings.Repeat("old ", 2000)
 	latest := strings.Repeat("new ", 750)
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: "read"}, callMessage("a"), toolResult("a", old), callMessage("b"), toolResult("b", latest))
@@ -66,7 +70,7 @@ func TestPrepareTrimsOldToolOutputFirst(t *testing.T) {
 	if len(req.Messages[3].Content) > 2048 || !strings.Contains(req.Messages[3].Content, "omitted") || req.Messages[5].Content != latest {
 		t.Fatal("did not trim the oldest result first")
 	}
-	if requestSize(req.Request) > 12000 || req.MaxTokens != 4000 || remaining != 3 || len(out) != 0 {
+	if requestSize(req.Request) > window-window/4 || req.MaxTokens != window/4 || remaining != 3 || len(out) != 0 {
 		t.Fatalf("unexpected budget or summary: size=%d, remaining=%d", requestSize(req.Request), remaining)
 	}
 	assertToolPairs(t, req.Messages)

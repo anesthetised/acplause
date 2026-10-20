@@ -33,7 +33,7 @@ func TestModeToolsAndRoundAdmission(t *testing.T) {
 		names = append(names, tool.Function.Name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"list_dir", "read_file", "search_code", "update_plan"}) {
+	if !slices.Equal(names, []string{"get_instructions", "list_dir", "read_file", "search_code", "update_plan"}) {
 		t.Fatalf("Plan tools: %v", names)
 	}
 	// A later session selection cannot change the policy of an old round.

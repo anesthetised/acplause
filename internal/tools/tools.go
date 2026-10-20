@@ -116,6 +116,7 @@ func New(cwd string, extra []string, opts Options) (*Toolbox, error) {
 		newTool(readFileSpec, tb.readFile),
 		newTool(listDirSpec, tb.listDir),
 		newTool(searchCodeSpec, tb.searchCode),
+		newTool(getInstructionsSpec, tb.getInstructions),
 		newTool(writeFileSpec, tb.writeFile),
 		newTool(editSpec, tb.edit),
 		newTool(bashSpec, tb.bash),
