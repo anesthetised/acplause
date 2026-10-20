@@ -94,12 +94,20 @@ still runs. See [ADR 0013](docs/adr/0013-plan-build-mode.md).
 | ------------- | --------- | ------------------------------------------------- |
 | `read_file`   | `read`    | text files up to 1 MiB; `offset`, `limit` lines   |
 | `list_dir`    | `read`    | tree, 3 levels, 200 entries                       |
-| `search_code` | `search`  | plain-text search, 50 matches                     |
+| `search_code` | `search`  | literal or regex search, optional case folding, 50 matching lines |
 | `write_file`  | `edit`    | create or overwrite, up to 5 MiB                  |
 | `edit`        | `edit`    | replace one exact occurrence                      |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
 | `ask_user`    | `other`   | one to three text/choice questions, when supported |
 | `update_plan` | `other`   | replace the current turn's execution plan          |
+
+`search_code` is literal and case-sensitive by default: `{"pattern":"a.b"}`
+matches the dot literally. Set `ignore_case: true` for Unicode case-insensitive
+matching, or use `{"pattern":"^(TODO|FIXME):","regex":true,"ignore_case":true}`
+to match a Go regular expression on each line. Results keep file order and line
+numbers, with at most 50 matching lines and a 300-byte UTF-8-safe text preview
+per line. `path` and `file_glob` narrow the search; text files are limited to
+1 MiB. These options are also available in Plan mode.
 
 `write_file` and `edit` report what they changed as a diff in the tool call,
 with a `git_patch` unless the change is too large to diff.
