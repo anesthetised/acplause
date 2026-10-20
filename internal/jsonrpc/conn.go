@@ -131,7 +131,7 @@ func (c *Conn) callPeer(ctx context.Context, method string, params, result any, 
 	case <-c.quit:
 		return ErrClosed
 	}
-	if msg.Error != nil {
+	if msg.failed() {
 		var e Error
 		if err := json.Unmarshal(msg.Error, &e); err != nil {
 			return fmt.Errorf("jsonrpc: decode error of %s: %w", method, err)

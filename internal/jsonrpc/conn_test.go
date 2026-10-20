@@ -328,6 +328,23 @@ func TestCallRoutesResponsesByID(t *testing.T) {
 	p.expectSilence()
 }
 
+func TestCallIgnoresNullError(t *testing.T) {
+	p := newPeer(t, Methods{})
+	var r struct{ N int }
+	errs := make(chan error, 1)
+	go func() { errs <- p.conn.Call(context.Background(), "ask", nil, &r) }()
+	var req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(p.recv()), &req); err != nil {
+		t.Fatal(err)
+	}
+	p.send(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"n":1},"error":null}`)
+	if err := <-errs; err != nil || r.N != 1 {
+		t.Fatalf("Call: %v, %+v", err, r)
+	}
+}
+
 func TestCallReturnsWhenContextEnds(t *testing.T) {
 	p := newPeer(t, Methods{"echo": echo})
 	ctx, cancel := context.WithCancel(context.Background())
