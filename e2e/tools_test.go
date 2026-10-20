@@ -98,13 +98,13 @@ func TestSearchMatchingOptionsInPlanMode(t *testing.T) {
 			s.toolCall(0, "call_search_code", "search_code", `{"pattern":"^(todo|fixme):","regex":true,"ignore_case":true,"file_glob":"*.txt"}`)
 			s.finish("tool_calls")
 		},
-		callTool("search_code", `{"pattern":"п.р","ignore_case":true}`),
+		callTool("search_code", `{"pattern":"k.\u00e9","ignore_case":true}`),
 		callTool("search_code", `{"pattern":"[","regex":true}`),
 		callTool("search_code", `{"pattern":"todo","ignore_case":"true"}`),
 		reply("Found the matching lines; invalid options failed."),
 	)
 	a, sid, cwd := started(t, llm, askingUser)
-	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("TODO: first\nfixme: second\nП.Р\nПАР\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("TODO: first\nfixme: second\nK.\u00c9\nKX\u00c9\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	setMode(t, a, sid, "plan")
@@ -124,7 +124,7 @@ func TestSearchMatchingOptionsInPlanMode(t *testing.T) {
 	}
 	for i, want := range []struct{ status, text string }{
 		{"completed", "notes.txt:1:TODO: first\nnotes.txt:2:fixme: second\n"},
-		{"completed", "notes.txt:3:П.Р\n"},
+		{"completed", "notes.txt:3:K.\u00c9\n"},
 		{"failed", "invalid regex"},
 		{"failed", "invalid arguments"},
 	} {

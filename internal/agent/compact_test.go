@@ -225,9 +225,9 @@ func TestCompactionUsesNewConfigAfterSummary(t *testing.T) {
 }
 
 func TestTrimToolOutputPreservesUTF8(t *testing.T) {
-	text := strings.Repeat("пример 🐈\n", 1000)
+	text := strings.Repeat("caf\u00e9 \U0001f408\n", 1000)
 	got := trimToolOutput(text)
-	if !utf8.ValidString(got) || len(got) > 2048 || !strings.HasPrefix(got, "пример") || !strings.HasSuffix(got, "🐈\n") {
+	if !utf8.ValidString(got) || len(got) > 2048 || !strings.HasPrefix(got, "caf\u00e9") || !strings.HasSuffix(got, "\U0001f408\n") {
 		t.Fatalf("invalid trimmed text: %q", got)
 	}
 }
