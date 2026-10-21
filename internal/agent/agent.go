@@ -303,7 +303,11 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 		}
 		if err != nil {
 			s.Close()
-			reply.Reject(acp.ErrInvalidParams("cannot configure MCP servers: %v", err))
+			if ctx.Err() != nil || a.ctx.Err() != nil {
+				reply.Reject(acp.ErrRequestCancelled())
+			} else {
+				reply.Reject(acp.ErrInvalidParams("cannot configure MCP servers: %v", err))
+			}
 			return
 		}
 		model, effort, err := a.cfg.Store.Selection(a.ctx)
@@ -394,7 +398,7 @@ func (a *Agent) listSessions(ctx context.Context, req acp.ListSessionsRequest) (
 		return nil, err
 	}
 	reply := jsonrpc.NewReply(ctx)
-	go func() {
+	a.jobs.Go(func() { // Shutdown waits for it: the store closes after Shutdown
 		sessions, more, err := a.cfg.Store.List(a.ctx, req.Cwd, offset, listPageSize)
 		if err != nil {
 			reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot list sessions: %v", err))
@@ -414,7 +418,7 @@ func (a *Agent) listSessions(ctx context.Context, req acp.ListSessionsRequest) (
 			resp.NextCursor = encodeCursor(offset + len(sessions))
 		}
 		reply.Resolve(resp)
-	}()
+	})
 	return reply, nil
 }
 

@@ -35,6 +35,21 @@ func wireJSON(t *testing.T, msgs []Message, vision bool) string {
 	return string(b)
 }
 
+func TestWireLocalCommandStaysInternal(t *testing.T) {
+	m := Message{Role: RoleUser, Content: "/compact", LocalCommand: "compact"}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Message
+	if err := json.Unmarshal(data, &restored); err != nil || restored.LocalCommand != "compact" {
+		t.Fatalf("stored command: %+v, %v", restored, err)
+	}
+	if got := wireJSON(t, []Message{restored}, false); got != `[{"role":"user","content":"/compact"}]` {
+		t.Fatalf("internal command reached provider: %s", got)
+	}
+}
+
 func TestWireTextOnlyKeepsShape(t *testing.T) {
 	msgs := []Message{
 		{Role: RoleSystem, Content: "sys"},

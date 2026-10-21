@@ -259,3 +259,48 @@ func TestStoredEntriesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// cancellingClient cancels when the session reports a state and counts the
+// permission requests that still reach the client.
+type cancellingClient struct {
+	recorder
+	on     acp.State
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (c *cancellingClient) Notify(method string, params any) error {
+	if u, ok := params.(acp.SessionNotification).Update.(acp.StateUpdate); ok && u.State == c.on {
+		c.cancel()
+	}
+	return c.recorder.Notify(method, params)
+}
+
+func (c *cancellingClient) Call(ctx context.Context, method string, params, result any) error {
+	c.calls++
+	return c.recorder.Call(ctx, method, params, result)
+}
+
+func TestNoPermissionRequestAfterCancellation(t *testing.T) {
+	for _, during := range []string{"preview", "requires_action"} {
+		t.Run(during, func(t *testing.T) {
+			s, out := testSession(t, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			client := &cancellingClient{recorder: out, on: acp.StateRequiresAction, cancel: cancel}
+			s.deps.out = client
+			call := &preparedTool{Title: "Write a.txt", permission: true, preview: func(context.Context) (*acp.ToolCallContent, error) {
+				if during == "preview" {
+					cancel()
+				}
+				return nil, nil
+			}}
+			update := acp.ToolCallUpdate{ToolCallID: "c1", Title: call.Title}
+			if _, err := s.requestPermission(ctx, ctx, -1, &update, call); err == nil || client.calls != 0 {
+				t.Fatalf("err=%v, permission requests=%d", err, client.calls)
+			}
+			if during == "preview" && len(out) != 0 {
+				t.Fatalf("reported a call nobody will be asked about: %v", <-out)
+			}
+		})
+	}
+}

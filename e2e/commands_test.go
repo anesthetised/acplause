@@ -47,6 +47,26 @@ func seedCommandHistory(t *testing.T, llm *mockLLM, opts ...option) (*agent, str
 	return a, sid, cwd
 }
 
+func TestRepeatedCompactCommandIsANoOp(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t, compactionModels)
+	a, sid, _ := seedCommandHistory(t, llm)
+	llm.enqueue(reply("Remember the inspected directory."))
+	a.accepted(a.prompt(sid, "/compact"))
+	if updates := a.untilIdle(sid); len(filter(updates, "compaction_update")) != 2 {
+		t.Fatalf("first command: %v", kinds(updates))
+	}
+	requests := llm.requestCount()
+	a.accepted(a.prompt(sid, "/compact"))
+	updates := a.untilIdle(sid)
+	if idle := updates[len(updates)-1]; idle.StopReason != "end_turn" || len(filter(updates, "compaction_update")) != 0 || llm.requestCount() != requests {
+		t.Fatalf("second command summarized again: %v", kinds(updates))
+	}
+	if answer := joinChunks(updates, "agent_message_chunk"); !strings.Contains(answer.text, "Nothing to compact") {
+		t.Fatalf("no-op message: %+v", answer)
+	}
+}
+
 func TestCompactCommandForcesAndPersistsFullReplay(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

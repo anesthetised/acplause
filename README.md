@@ -158,8 +158,8 @@ independently of remembered model and reasoning preferences.
 A mode change requires an idle session with no queued prompts or pending
 setup. While work, permissions or resume/setup are pending, a different mode
 is rejected with `-32602`: cancel or wait for completion, then retry. The
-worker's final save may briefly keep it busy after the idle update. Selecting
-the current mode is idempotent. Plan is an agent tool policy, not an OS
+idle update ends the turn: the mode can change while its final save finishes.
+Selecting the current mode is idempotent. Plan is an agent tool policy, not an OS
 sandbox: configured MCP servers can remain connected and setup/discovery
 still runs. See [ADR 0013](docs/adr/0013-plan-build-mode.md).
 

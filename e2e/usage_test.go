@@ -12,7 +12,9 @@ func TestUsageAccountingCompatibilityWithoutTurnLimits(t *testing.T) {
 	}{
 		{"absent", "", false, 0, 0},
 		{"null", `,"usage":null`, false, 0, 0},
-		{"empty", `,"usage":{}`, true, 0, 0},
+		{"empty", `,"usage":{}`, false, 0, 0},
+		{"only cost", `,"usage":{"cost":0.5}`, false, 0, 0},
+		{"one count", `,"usage":{"prompt_tokens":10,"cost":0.5}`, false, 0, 0},
 		{"free", `,"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0}`, true, 15, 0},
 		{"zero", `,"usage":{"prompt_tokens":0,"completion_tokens":0,"cost":0}`, true, 0, 0},
 		{"missing cost", `,"usage":{"prompt_tokens":10,"completion_tokens":5}`, true, 15, 0},

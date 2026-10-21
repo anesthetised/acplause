@@ -73,6 +73,7 @@ type Session struct {
 	state         acp.StateUpdate // last reported foreground state
 	queue         []*submission   // prompts not yet inserted
 	worker        chan struct{}   // closed when the running worker exits; nil when idle
+	claimed       bool            // a prompt left the queue and its turn has not ended
 	stopTurn      context.CancelFunc
 	closed        bool
 
@@ -294,7 +295,8 @@ func (s *Session) setConfigOption(id, valueType string, raw json.RawMessage, set
 		if s.mode == value {
 			return nil
 		}
-		if setupPending || s.worker != nil || len(s.queue) > 0 || s.state.State != acp.StateIdle {
+		// The worker outlives the turn while it saves; only a claimed turn is busy.
+		if setupPending || s.claimed || len(s.queue) > 0 || s.state.State != acp.StateIdle {
 			return acp.ErrInvalidParams("cannot change mode while the session is busy; cancel or wait for work and setup to finish, then retry")
 		}
 		if s.closed || s.lost {
@@ -355,6 +357,7 @@ func (s *Session) next() (*submission, context.Context) {
 		s.stopTurn()
 		s.stopTurn = nil
 	}
+	s.claimed = len(s.queue) > 0
 	if len(s.queue) == 0 {
 		s.worker = nil
 		return nil, nil
@@ -403,6 +406,7 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 		}
 	}
 	s.state = acp.StateUpdate{State: acp.StateIdle, StopReason: stop, Error: err}
+	s.claimed = false
 	s.send(s.state)
 	s.mu.Unlock()
 	if err != nil {
@@ -452,6 +456,9 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	}
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
 	user := llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt), Images: images}
+	if isCompactCommand(sub.prompt) {
+		user.LocalCommand = "compact"
+	}
 	updated := time.Now()
 	// Until the transaction commits, neither replay nor the model may see
 	// the prompt. Cancellation remains available while SQLite is busy.

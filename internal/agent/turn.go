@@ -266,6 +266,9 @@ var errRejected = errors.New("the user rejected this tool call")
 // not asked about: it would fail anyway.
 func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, update *acp.ToolCallUpdate, call *preparedTool) (int, error) {
 	diff, err := call.Preview(ctx)
+	if err == nil {
+		err = ctx.Err() // cancelled during the preview: nothing left to ask about
+	}
 	if err != nil {
 		return entry, err
 	}
@@ -285,7 +288,11 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	s.setState(acp.StateUpdate{State: acp.StateRequiresAction})
 	s.flush() // a blocked turn is busy: it cannot be taken over
 	var resp acp.RequestPermissionResponse
-	err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
+	// Call sends even when ctx has ended; a dialog for a cancelled call would
+	// ask about work that never runs.
+	if err = ctx.Err(); err == nil {
+		err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
+	}
 	if turnCtx.Err() != nil {
 		return entry, turnCtx.Err() // the turn ends as cancelled; no running in between
 	}
@@ -337,11 +344,12 @@ func (s *Session) reportUsage(model string, u *llm.Usage) {
 	if size == 0 {
 		return // usage_update requires the window size
 	}
-	if u.PromptTokens > math.MaxUint64-u.CompletionTokens {
-		return // an invalid sum must not become a wrapped context-usage report
+	used, ok := u.ReportedTokens()
+	if !ok {
+		return // missing counts or a wrapped sum must not reset the context meter
 	}
 	s.send(acp.UsageUpdate{
-		Used: u.PromptTokens + u.CompletionTokens,
+		Used: used,
 		Size: size,
 		Cost: &acp.Cost{Amount: cost, Currency: "USD"},
 	})
