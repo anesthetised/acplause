@@ -25,6 +25,16 @@ Both transports use the same discovery, permissions and tool history:
 }
 ```
 
+## Credentials
+
+The client supplies any server credentials through the stdio `env` or HTTP
+`headers` configuration shown above. acplause uses those supplied values and
+keeps the configuration in memory; it does not obtain or refresh credentials
+through OAuth or interactive sign-in. The client supplies updated configuration
+on resume. This follows the same
+[external credential-management boundary](adr/0023-external-credential-management.md)
+as provider setup; `ACPLAUSE_API_KEY` is not an implicit MCP credential.
+
 ## Transports and discovery
 
 Stdio executes the absolute command directly, without a shell, in the

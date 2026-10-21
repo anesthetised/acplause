@@ -21,11 +21,37 @@ Use [setup diagnostics](troubleshooting.md) to check the configuration.
 See [parallel reads](tools.md#parallel-reads) for the read concurrency policy
 and [model selection](usage.md#model-and-reasoning-selection) for session settings.
 
+## Credentials and authentication scope
+
+The ACP client, launcher or operator supplies `ACPLAUSE_API_KEY` in the
+agent process's environment. acplause reads it at startup and uses it for
+provider requests. Leave it unset for a compatible endpoint that accepts
+unauthenticated requests. After changing the key, restart the agent with the
+updated environment; resuming a saved session does not restore credentials.
+
+Provider sign-in and credential management are deliberately outside acplause's
+scope. It has no login/logout commands, browser or device-code flows, OAuth
+token refresh, credential store or OS keychain integration, and implements no
+ACP authentication methods. Obtain, store and rotate credentials outside the
+agent, using the provider and your chosen client or launch environment.
+
+This keeps the agent independent of provider-specific account flows and lets
+each client choose how to manage secrets. It also avoids a second credential
+store alongside session storage. Using the supplied key is supported;
+implementing its acquisition and lifecycle is excluded by design. See
+[ADR 0023](adr/0023-external-credential-management.md) for the rationale and
+trade-offs.
+
 The key is sent only to `ACPLAUSE_BASE_URL`, as `Authorization: Bearer`.
 Redirects are not followed: a provider that redirects fails until the final API
 root is configured. Commands the bash tool runs inherit the environment without
 `ACPLAUSE_API_KEY`. This prevents accidental exposure, not a deliberate read:
 commands run as the same user. See [ADR 0022](adr/0022-provider-key-exposure.md).
+
+MCP credentials are supplied separately through the client's server
+configuration; see [MCP credentials](mcp.md#credentials). Provider credentials
+do not grant permission to edit files or run tools: those actions retain the
+[client permission flow](tools.md#permissions).
 
 ## Request and tool limits
 

@@ -132,7 +132,14 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 ## Out of scope
 
-Auth methods, audio prompts/results and image formats beyond validated PNG/JPEG
+Provider sign-in and credential management are deliberately excluded:
+`ACPLAUSE_API_KEY` is supplied by the client/launcher environment. Do not add
+ACP auth methods, login/OAuth flows, token refresh or credential/keychain
+storage; MCP uses client-supplied credentials. Rationale and trade-offs are in
+[ADR 0023](docs/adr/0023-external-credential-management.md). This exclusion does
+not change tool permissions or credential-handling protections.
+
+Audio prompts/results and image formats beyond validated PNG/JPEG
 prompts and tool results ([ADR 0009](docs/adr/0009-image-tool-results.md),
 [ADR 0010](docs/adr/0010-image-prompts.md)),
 non-OpenAI-compatible backends, legacy MCP HTTP+SSE and MCP server capabilities
