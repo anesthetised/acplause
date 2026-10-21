@@ -8,6 +8,7 @@ just e2e -v  # end-to-end tests only
 ```
 
 GitHub Actions runs `just check` on every pull request and push to `main`.
+The checks also need Python 3 and git-cliff 2.14.2 for release automation tests.
 CI reads the Go version from `go.mod` and pins just 1.59.0 and Staticcheck
 2026.2.2 (v0.8.2).
 
@@ -21,3 +22,5 @@ a scripted SSE server and validate every message it writes against the ACP
 schema. Decisions are recorded in [architecture decisions](adr).
 
 Notes for coding agents are in [AGENTS.md](../AGENTS.md).
+
+See [releases](releases.md) for publishing, recovery and local packaging.

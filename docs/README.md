@@ -17,6 +17,7 @@ Completions API. Start with [installation and client setup](../README.md#install
 ## Development and design
 
 - [Development and testing](development.md): checks, CI, coverage and the e2e harness.
+- [Releases](releases.md): manual publishing, Homebrew, provenance and recovery.
 - [Architecture decisions](adr): scope, protocol and implementation decisions.
 - [Coding-agent instructions](../AGENTS.md): repository rules and invariants.
 

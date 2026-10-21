@@ -14,6 +14,13 @@ agent. Your editor talks to it over stdio; it thinks with any
 OpenAI-compatible Chat Completions API, [OpenRouter](https://openrouter.ai)
 first, and works in your workspace through tools.
 
+Inspired by [acp-bridge](https://github.com/BlakeHung/acp-bridge), which serves
+as a behavioral reference for the tool loop, limits and error handling.
+acplause follows the pinned ACP v2 specification for its wire protocol.
+
+acplause is experimental. Calendar versions identify releases; they do not
+promise compatibility. Breaking changes are highlighted in release notes.
+
 - ACP v2 only, validated against the pinned schema (`testdata/schema/v2`).
 - Streaming text and reasoning, tool calls, usage and cost reporting.
 - Live bash terminal output with bounded snapshots for session replay.
@@ -71,6 +78,7 @@ acplause sends no `Authorization` header, supporting compatible local providers.
 Check setup from an environment with the same variables as the client:
 
 ```sh
+acplause --version       # version and source commit
 acplause doctor          # local configuration and data-directory checks
 acplause doctor --online # also check the provider's model catalog
 ```
