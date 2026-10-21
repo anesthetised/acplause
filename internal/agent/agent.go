@@ -431,12 +431,9 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	}
 	op := a.reserveOperation(ctx, req.SessionID, false)
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
-		s, err := a.open(ctx, req.SessionID, req.Cwd)
+		s, err := a.resume(ctx, req)
 		if err != nil {
 			return err
-		}
-		if err := s.Resume(ctx, req.AdditionalDirectories, req.MCPServers, replay); err != nil {
-			return acp.ErrInvalidParams("cannot configure session: %v", err)
 		}
 		op.reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()})
 		return nil
@@ -444,10 +441,61 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	return op.reply, nil
 }
 
+// resume keeps a restored session private until setup succeeds. In particular,
+// a failed MCP connection must not publish or save the requested directories.
+// Live sessions retain Resume's transactional configuration replacement.
+func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest) (s *Session, err error) {
+	s, restored, err := a.open(ctx, req.SessionID, req.Cwd, req.AdditionalDirectories)
+	if err != nil {
+		return nil, err
+	}
+	if restored {
+		defer func() {
+			if err != nil {
+				s.Close()
+				a.release(s)
+			}
+		}()
+	}
+	if err = s.Resume(ctx, req.AdditionalDirectories, req.MCPServers, req.ReplayFrom != nil); err != nil {
+		return s, acp.ErrInvalidParams("cannot configure session: %v", err)
+	}
+	if restored {
+		err = a.publishRestored(ctx, s)
+	}
+	return s, err
+}
+
+// publishRestored fences publication and the first save against lease renewal.
+// MCP setup has already finished outside the ownership lock, so a slow server
+// cannot prevent other sessions from renewing their leases.
+func (a *Agent) publishRestored(ctx context.Context, s *Session) error {
+	a.ownershipMu.Lock()
+	defer a.ownershipMu.Unlock()
+	if ctx.Err() != nil || a.ctx.Err() != nil {
+		return acp.ErrRequestCancelled()
+	}
+	s.flush() // persist requested roots and any repaired history only after setup
+	if s.isLost() {
+		return errSessionLost()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if ctx.Err() != nil || a.shuttingDown || a.ctx.Err() != nil {
+		return acp.ErrRequestCancelled()
+	}
+	a.sessions[s.id] = s
+	delete(a.lost, s.id)
+	return nil
+}
+
 // open preserves a live local session only when Acquire proves this process
 // still owned it. Old saves must finish before ownership can return to this
 // process, or their process-owner check could overwrite the new history.
-func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
+// A restored session gets the request's directories, which Resume applies
+// anyway: a saved directory removed since must not block the session. The bool
+// identifies a private restored session whose caller must publish or close it.
+func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Session, bool, error) {
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
 	a.mu.Lock()
@@ -457,7 +505,7 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 		// Reject a bad workspace before changing ownership of a cached
 		// session. Its cwd is immutable for the session's lifetime.
 		if old.cwd != cwd {
-			return nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, old.cwd)
+			return nil, false, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, old.cwd)
 		}
 		old.flushMu.Lock()
 		defer old.flushMu.Unlock()
@@ -465,21 +513,21 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 	l, err := a.cfg.Store.Acquire(ctx, id)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return nil, acp.ErrSessionNotFound(id)
+		return nil, false, acp.ErrSessionNotFound(id)
 	case errors.Is(err, store.ErrBusy):
-		return nil, errSessionBusy()
+		return nil, false, errSessionBusy()
 	case err != nil:
-		return nil, jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot load the session: %v", err)
+		return nil, false, jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot load the session: %v", err)
 	}
 	if l.Cwd != cwd {
 		if old == nil {
 			a.releaseID(id)
 		}
-		return nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
+		return nil, false, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
 	}
 	if old != nil {
 		if l.AlreadyOwned && !old.isLost() {
-			return old, nil
+			return old, false, nil
 		}
 		// A lost context/MCP manager cannot be revived. Mark loss while
 		// flushMu still fences queued flushes and prompt insertions.
@@ -496,25 +544,15 @@ func (a *Agent) open(ctx context.Context, id, cwd string) (*Session, error) {
 	c, err := a.catalog()
 	if err != nil {
 		a.releaseID(id)
-		return nil, turnError(err)
+		return nil, false, turnError(err)
 	}
+	l.Dirs = dirs
 	s, err := restoreSession(a.ctx, a.deps, c, l)
 	if err != nil {
 		a.releaseID(id)
-		return nil, acp.ErrInvalidParams("cannot restore the session: %v", err)
+		return nil, false, acp.ErrInvalidParams("cannot restore the session: %v", err)
 	}
-	a.mu.Lock()
-	if ctx.Err() != nil || a.shuttingDown || a.ctx.Err() != nil {
-		a.mu.Unlock()
-		s.Close()
-		a.releaseID(id)
-		return nil, acp.ErrRequestCancelled()
-	}
-	a.sessions[id] = s
-	delete(a.lost, id)
-	a.mu.Unlock()
-	s.flush() // store a repair and the idle state
-	return s, nil
+	return s, true, nil
 }
 
 // closeSession cancels the session's work at once, to keep ordering with

@@ -136,7 +136,7 @@ func issue50RetakeDrainsOldSaves(t *testing.T, claim bool) {
 	failed := make(chan error, 1)
 	openDone := make(chan struct{})
 	go func() {
-		s, err := a.agent.open(context.Background(), old.id, cwd)
+		s, err := a.agent.resume(context.Background(), acp.ResumeSessionRequest{SessionID: old.id, Cwd: cwd})
 		opened <- s
 		failed <- err
 		close(openDone)

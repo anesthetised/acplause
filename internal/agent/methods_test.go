@@ -620,3 +620,26 @@ func TestResumeTakesOverFromAnotherProcess(t *testing.T) {
 	b.agent.drop(sid)
 	b.fails(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "gone"}}}, jsonrpc.CodeInternalError)
 }
+
+// Resume applies the request's directories, so a saved directory that was
+// removed meanwhile cannot make the session unrecoverable.
+func TestResumeAfterSavedDirectoryRemoved(t *testing.T) {
+	c := startAgent(t, t.TempDir(), make(scriptedModel), nil)
+	c.initialize()
+	cwd, extra := t.TempDir(), filepath.Join(t.TempDir(), "extra")
+	if err := os.Mkdir(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var res acp.NewSessionResponse
+	c.ok(acp.MethodSessionNew, map[string]any{"cwd": cwd, "additionalDirectories": []string{extra}, "mcpServers": []any{}}, &res)
+	c.ok(acp.MethodSessionClose, map[string]any{"sessionId": res.SessionID}, nil)
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	resume := func(dirs []string) map[string]any {
+		return map[string]any{"sessionId": res.SessionID, "cwd": cwd, "additionalDirectories": dirs, "mcpServers": []any{}}
+	}
+	c.fails(acp.MethodSessionResume, resume([]string{extra}), jsonrpc.CodeInvalidParams)
+	c.ok(acp.MethodSessionResume, resume([]string{}), nil)
+	c.untilIdle(res.SessionID)
+}

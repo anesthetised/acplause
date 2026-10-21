@@ -56,3 +56,20 @@ func TestResumeChangesRootsDuringModelRequest(t *testing.T) {
 		t.Fatalf("system prompt did not replace roots: %s", system)
 	}
 }
+
+func TestResumeAfterSavedDirectoryRemoved(t *testing.T) {
+	t.Parallel()
+	a := start(t, newMockLLM(t))
+	a.initialize()
+	cwd, extra := t.TempDir(), filepath.Join(t.TempDir(), "extra")
+	if err := os.Mkdir(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := a.newSession(cwd, extra).SessionID
+	a.ok("session/close", map[string]any{"sessionId": sid}, nil)
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	a.fails("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "additionalDirectories": []string{extra}, "mcpServers": []any{}}, -32602)
+	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "additionalDirectories": []string{}, "mcpServers": []any{}}, nil)
+}
