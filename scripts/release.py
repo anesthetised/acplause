@@ -190,11 +190,13 @@ def publish(plan, directory):
         if commit != sha:
             raise ValueError('Remote tag points to another commit')
     if release is None:
-        run('gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
-            '--title', tag, '--notes-file', str(directory / 'notes.md'))
-        release = find_release(repo, tag)
-        if release is None:
-            raise RuntimeError('Created draft is not visible yet; re-run this workflow')
+        # Use the create response: GitHub's release list can lag behind this
+        # write, so an immediate list lookup can incorrectly report no draft.
+        release = api(f'repos/{repo}/releases', {
+            'tag_name': tag, 'target_commitish': sha, 'name': tag,
+            'body': (directory / 'notes.md').read_text(),
+            'draft': True, 'prerelease': False,
+        })
     existing = {a['name'] for a in release['assets']}
     # A retry verifies uploaded bytes and only supplies missing assets. Published
     # releases are read-only even if repository immutability is not enabled.

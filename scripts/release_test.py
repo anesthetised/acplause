@@ -106,6 +106,14 @@ class ReleaseTest(unittest.TestCase):
             mutations = []
 
             def api(endpoint, body=None, **kwargs):
+                if endpoint.endswith('/releases'):
+                    self.assertEqual(body, {
+                        'tag_name': plan['tag'], 'target_commitish': plan['sha'],
+                        'name': plan['tag'], 'body': '', 'draft': True, 'prerelease': False,
+                    })
+                    mutations.append(('draft', body))
+                    remote['release'] = {'draft': True, 'assets': []}
+                    return remote['release']
                 if endpoint.endswith('/git/refs'):
                     mutations.append(('tag', body))
                     remote['ref'] = body
@@ -120,12 +128,7 @@ class ReleaseTest(unittest.TestCase):
                 if args[:2] == ('gh', 'api'):
                     return '[[]]'
                 action = args[2]
-                if action == 'create':
-                    self.assertIn('--draft', args)
-                    self.assertIn('--verify-tag', args)
-                    self.assertEqual(Path(args[-1]).read_text(), '')
-                    remote['release'] = {'draft': True, 'assets': []}
-                elif action == 'upload':
+                if action == 'upload':
                     asset = Path(args[-1])
                     remote['assets'][asset.name] = asset.read_bytes()
                     remote['release']['assets'].append({'name': asset.name})
@@ -142,7 +145,9 @@ class ReleaseTest(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, GITHUB_REPOSITORY='owner/repo'),
-                patch.object(release, 'find_release', side_effect=lambda *_: remote['release']),
+                # The first request sees no release; the retry sees it only after
+                # publication. Never re-read a newly created draft through the list.
+                patch.object(release, 'find_release', side_effect=lambda *_: remote['release'] if remote['release'] and not remote['release']['draft'] else None),
                 patch.object(release, 'api', side_effect=api),
                 patch.object(release, 'run', side_effect=run),
             ):
