@@ -31,6 +31,32 @@ first, and works in your workspace through tools.
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install anesthetised/tap/acplause
+```
+
+The formula builds the tagged source on your machine, installing Go as a
+build dependency. On macOS, local compilation lets us distribute acplause
+without a paid Apple Developer ID certificate or an install hook that removes
+quarantine from downloaded binaries. The trade-off is a slower first install,
+including compilation of the SQLite dependency.
+
+### Release archives
+
+For a ready-to-run binary without installing Go, download the archive for your
+OS (macOS or Linux) and architecture (arm64 or amd64) from
+[GitHub Releases](https://github.com/anesthetised/acplause/releases).
+Extract it and put `acplause` in a directory on your `PATH`. Release archives
+include SHA256 checksums and GitHub artifact attestations. Prebuilt macOS
+binaries are not Developer ID signed or notarized, so macOS may require
+you to explicitly allow them to run.
+
+### Go
+
+If you already have Go installed:
+
 ```sh
 go install github.com/anesthetised/acplause/cmd/acplause@latest
 ```
