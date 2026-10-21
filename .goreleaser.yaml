@@ -1,0 +1,27 @@
+version: 2
+project_name: acplause
+builds:
+  - main: ./cmd/acplause
+    binary: acplause
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.buildVersion={{ .Tag }} -X main.buildCommit={{ .FullCommit }}
+archives:
+  - formats: [tar.gz]
+    name_template: 'acplause_{{ .Tag }}_{{ .Os }}_{{ .Arch }}'
+    files: [LICENSE, README.md]
+source:
+  enabled: true
+  name_template: 'acplause_{{ .Tag }}_source'
+  format: tar.gz
+  prefix_template: 'acplause_{{ .Tag }}/'
+checksum:
+  name_template: checksums.txt
+# The workflow publishes the saved, attested bundle with gh so retries never
+# rebuild or replace published bytes. git-cliff supplies the release body.
+changelog:
+  disable: true
+release:
+  disable: true

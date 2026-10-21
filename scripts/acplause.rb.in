@@ -1,0 +1,20 @@
+class Acplause < Formula
+  desc "ACP v2 agent for OpenAI-compatible APIs"
+  homepage "https://github.com/anesthetised/acplause"
+  url "https://github.com/anesthetised/acplause/releases/download/@TAG@/acplause_@TAG@_source.tar.gz"
+  version "@TAG@"
+  sha256 "@SHA256@"
+  license "MIT"
+
+  depends_on "go" => :build
+
+  def install
+    ENV["CGO_ENABLED"] = "0"
+    ldflags = %w[-s -w -X main.buildVersion=@TAG@ -X main.buildCommit=@COMMIT@]
+    system "go", "build", *std_go_args(ldflags:), "./cmd/acplause"
+  end
+
+  test do
+    assert_match "acplause @TAG@ (commit @COMMIT@)", shell_output("#{bin}/acplause --version 2>&1")
+  end
+end
