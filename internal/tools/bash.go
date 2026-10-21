@@ -74,6 +74,10 @@ func runShell(ctx context.Context, dir, command string, opts Options, observer *
 		out.wake()
 		out.mu.Unlock()
 		err = cmd.Wait()
+		killProcessGroup(cmd)
+		if errors.Is(err, exec.ErrWaitDelay) {
+			err = nil // the shell exited 0; only a stray child held the output open
+		}
 		out.mu.Lock()
 		status := shellExit(cmd.ProcessState)
 		out.exit = &status

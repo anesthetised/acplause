@@ -10,6 +10,8 @@ import (
 // killProcessGroupOnCancel keeps exec's default of killing only the shell.
 func killProcessGroupOnCancel(*exec.Cmd) {}
 
+func killProcessGroup(*exec.Cmd) {}
+
 func shellExit(state *os.ProcessState) ShellExit {
 	if state != nil {
 		if code := state.ExitCode(); code >= 0 {
