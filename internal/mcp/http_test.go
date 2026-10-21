@@ -101,6 +101,51 @@ func TestMCPHTTPDroppedResultNeverRepeatsCall(t *testing.T) {
 	}
 }
 
+func TestMCPHTTPZeroRetryBacksOff(t *testing.T) {
+	var gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gets.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "retry: 0\n\n") // and close, again and again
+			return
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(204)
+			return
+		}
+		var req wire
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.ID == nil {
+			w.WriteHeader(202)
+			return
+		}
+		result := map[string]any{"tools": []any{}}
+		if req.Method == "initialize" {
+			result = map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "fixture", "version": "1"}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer srv.Close()
+	m := New(context.Background(), t.TempDir(), nil)
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	change, err := m.Prepare(ctx, []Config{{Type: "http", Name: "s", URL: srv.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+	// Floors of 100, 200, 400 and 800 ms allow about four reconnections.
+	if n := gets.Load(); n == 0 || n > 8 {
+		t.Fatalf("%d GETs in a second", n)
+	}
+}
+
 func TestMCPHTTPDoesNotFollowRedirect(t *testing.T) {
 	var leaked atomic.Bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked.Store(true) }))

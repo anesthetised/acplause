@@ -328,6 +328,56 @@ func TestCallRoutesResponsesByID(t *testing.T) {
 	p.expectSilence()
 }
 
+func TestCallIgnoresNullError(t *testing.T) {
+	p := newPeer(t, Methods{})
+	var r struct{ N int }
+	errs := make(chan error, 1)
+	go func() { errs <- p.conn.Call(context.Background(), "ask", nil, &r) }()
+	var req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(p.recv()), &req); err != nil {
+		t.Fatal(err)
+	}
+	p.send(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"n":1},"error":null}`)
+	if err := <-errs; err != nil || r.N != 1 {
+		t.Fatalf("Call: %v, %+v", err, r)
+	}
+}
+
+func TestDuplicateRequestIDStaysCancellable(t *testing.T) {
+	release := make(chan struct{})
+	p := newPeer(t, Methods{"wait": func(ctx context.Context, params json.RawMessage) (any, error) {
+		reply := NewReply(ctx)
+		first := string(params) == `"first"`
+		go func() {
+			select {
+			case <-release:
+				if first {
+					reply.Resolve("released")
+					return
+				}
+			case <-ctx.Done():
+			}
+			<-ctx.Done()
+			reply.Reject(NewError(-32800, "cancelled"))
+		}()
+		return reply, nil
+	}})
+	p.send(`{"jsonrpc":"2.0","id":7,"method":"wait","params":"first"}`)
+	p.send(`{"jsonrpc":"2.0","id":7,"method":"wait","params":"second"}`)
+	close(release)
+	p.expect(`{"jsonrpc":"2.0","id":7,"result":"released"}`)
+	p.send(`{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":7}}`)
+	p.expect(`{"jsonrpc":"2.0","id":7,"error":{"code":-32800,"message":"cancelled"}}`)
+}
+
+func TestNilReplyIsAnInternalError(t *testing.T) {
+	p := newPeer(t, Methods{"nil": func(context.Context, json.RawMessage) (any, error) { return (*Reply)(nil), nil }})
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"nil"}`)
+	p.expect(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"internal error"}}`)
+}
+
 func TestCallReturnsWhenContextEnds(t *testing.T) {
 	p := newPeer(t, Methods{"echo": echo})
 	ctx, cancel := context.WithCancel(context.Background())

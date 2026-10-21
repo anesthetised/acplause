@@ -278,12 +278,6 @@ func (s *Session) ConfigOptions() []acp.ConfigOption {
 	return s.catalog.options(s.model, s.effort, s.mode)
 }
 
-// SetConfigOption changes a setting; mode transitions additionally require an
-// idle session. Protocol handlers also fence lifecycle setup reservations.
-func (s *Session) SetConfigOption(id, valueType string, raw json.RawMessage) error {
-	return s.setConfigOption(id, valueType, raw, false)
-}
-
 // setConfigOption admits a mode change under the same locks as setup and prompts.
 func (s *Session) setConfigOption(id, valueType string, raw json.RawMessage, setupPending bool) error {
 	var value string

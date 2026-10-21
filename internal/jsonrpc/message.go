@@ -90,7 +90,10 @@ type inbound struct {
 	Error   json.RawMessage `json:"error"`
 }
 
-func (m *inbound) isResponse() bool { return m.Method == "" && (m.Result != nil || m.Error != nil) }
+func (m *inbound) isResponse() bool { return m.Method == "" && (m.Result != nil || m.failed()) }
+
+// failed treats "error": null as absent: some peers send it next to a result.
+func (m *inbound) failed() bool { return m.Error != nil && string(m.Error) != "null" }
 
 type response struct {
 	JSONRPC string          `json:"jsonrpc"`

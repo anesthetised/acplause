@@ -208,8 +208,11 @@ func (t *httpTransport) post(ctx context.Context, data []byte, msg wire, isCall 
 	_ = json.Unmarshal(msg.ID, &id)
 	cursor := ""
 	retry := time.Second
+	empty := 0
 	for {
-		err = t.stream(ctx, resp, id, &cursor, &retry)
+		var received bool
+		received, err = t.stream(ctx, resp, id, &cursor, &retry)
+		empty = emptyStreams(empty, received)
 		if !t.p.pending(id) {
 			return nil
 		}
@@ -222,7 +225,7 @@ func (t *httpTransport) post(ctx context.Context, data []byte, msg wire, isCall 
 		if cursor == "" {
 			return errors.New("MCP response stream lost without replay cursor; operation outcome unknown")
 		}
-		if err := waitRetry(ctx, retry); err != nil {
+		if err := waitRetry(ctx, retryDelay(retry, empty)); err != nil {
 			return err
 		}
 		// Resume a response stream by GET. Repeating the POST could execute the
@@ -238,13 +241,16 @@ func (t *httpTransport) post(ctx context.Context, data []byte, msg wire, isCall 
 		}
 	}
 }
-func (t *httpTransport) stream(ctx context.Context, resp *http.Response, requestID string, cursor *string, retry *time.Duration) error {
+
+// stream reads events until the response ends, reporting whether any carried
+// data.
+func (t *httpTransport) stream(ctx context.Context, resp *http.Response, requestID string, cursor *string, retry *time.Duration) (received bool, err error) {
 	defer resp.Body.Close()
 	r := newEventReader(resp.Body)
 	for {
 		e, err := r.next()
 		if err != nil {
-			return err
+			return received, err
 		}
 		if e.hasID {
 			*cursor = e.id
@@ -253,21 +259,43 @@ func (t *httpTransport) stream(ctx context.Context, resp *http.Response, request
 			*retry = e.retry
 		}
 		if len(e.data) > 0 {
+			received = true
 			t.p.receive(e.data)
 		}
 		if requestID != "" && !t.p.pending(requestID) {
-			return nil
+			return received, nil
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return received, ctx.Err()
 		}
 	}
+}
+
+// Reconnection floors: a server may send retry: 0 and close every stream.
+const (
+	minRetry   = 100 * time.Millisecond
+	maxBackoff = 30 * time.Second
+)
+
+func emptyStreams(n int, received bool) int {
+	if received {
+		return 0
+	}
+	return n + 1
+}
+
+// retryDelay honours the server's retry field above a floor that doubles
+// with each consecutive stream that ended without data, so a server cannot
+// drive back-to-back reconnections.
+func retryDelay(retry time.Duration, empty int) time.Duration {
+	return max(retry, min(minRetry<<min(empty, 16), maxBackoff))
 }
 func (t *httpTransport) startGET() {
 	t.getOnce.Do(func() {
 		_, _ = t.launch(t.p.ctx, t.p.ctx, func(ctx context.Context) error {
 			cursor := ""
 			retry := time.Second
+			empty := 0
 			for ctx.Err() == nil {
 				resp, err := t.request(ctx, http.MethodGet, nil, cursor, nil)
 				if errors.Is(err, errSessionExpired) {
@@ -285,13 +313,15 @@ func (t *httpTransport) startGET() {
 						t.p.fail(errors.New("invalid MCP GET event stream"))
 						return nil
 					}
-					err = t.stream(ctx, resp, "", &cursor, &retry)
+					var received bool
+					received, err = t.stream(ctx, resp, "", &cursor, &retry)
+					empty = emptyStreams(empty, received)
 					if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, errStreamInterrupted) && ctx.Err() == nil {
 						t.p.fail(err)
 						return err
 					}
 				}
-				if err := waitRetry(ctx, retry); err != nil {
+				if err := waitRetry(ctx, retryDelay(retry, empty)); err != nil {
 					return err
 				}
 			}

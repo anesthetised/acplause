@@ -57,8 +57,8 @@ type Conn struct {
 	writerDone chan struct{}
 
 	mu       sync.Mutex
-	inflight map[ID]context.CancelFunc // deferred requests by id
-	calls    map[ID]chan *inbound      // our requests awaiting a response
+	inflight map[ID]*context.CancelFunc // deferred requests by id; the latest wins a duplicate
+	calls    map[ID]chan *inbound       // our requests awaiting a response
 	lastCall int64
 }
 
@@ -71,7 +71,7 @@ func NewConn(in io.Reader, out io.Writer, log *slog.Logger) *Conn {
 		queue:      make(chan []byte, 256),
 		quit:       make(chan struct{}),
 		writerDone: make(chan struct{}),
-		inflight:   make(map[ID]context.CancelFunc),
+		inflight:   make(map[ID]*context.CancelFunc),
 		calls:      make(map[ID]chan *inbound),
 	}
 	go c.writeLoop()
@@ -131,7 +131,7 @@ func (c *Conn) callPeer(ctx context.Context, method string, params, result any, 
 	case <-c.quit:
 		return ErrClosed
 	}
-	if msg.Error != nil {
+	if msg.failed() {
 		var e Error
 		if err := json.Unmarshal(msg.Error, &e); err != nil {
 			return fmt.Errorf("jsonrpc: decode error of %s: %w", method, err)
@@ -330,16 +330,19 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 
 	ctx, cancel := context.WithCancel(ctx)
 	reply := &Reply{}
-	c.track(id, cancel)
+	tracked := c.track(id, cancel)
 	reply.bind(func(result any, err error) {
-		c.untrack(id)
+		c.untrack(id, tracked)
 		cancel()
 		respond(newResponse(id, result, err))
 	})
 	ctx = context.WithValue(ctx, replyContextKey{}, reply)
 	result, err := c.invoke(ctx, method, handler, params)
 	if deferred, ok := result.(*Reply); ok && err == nil {
-		if deferred != reply {
+		if deferred == nil {
+			c.log.Error("handler returned a nil reply", "method", method)
+			reply.settle(nil, NewError(CodeInternalError, "internal error"))
+		} else if deferred != reply {
 			// Standalone replies can be settled outside a request, then
 			// returned by a handler to read their stored result.
 			deferred.bind(reply.settle)
@@ -388,20 +391,26 @@ func (c *Conn) cancelRequest(params json.RawMessage) {
 	cancel := c.inflight[p.RequestID]
 	c.mu.Unlock()
 	if cancel != nil {
-		cancel()
+		(*cancel)()
 	}
 }
 
-func (c *Conn) track(id ID, cancel context.CancelFunc) {
+func (c *Conn) track(id ID, cancel context.CancelFunc) *context.CancelFunc {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.inflight[id] = cancel
+	tracked := &cancel
+	c.inflight[id] = tracked
+	return tracked
 }
 
-func (c *Conn) untrack(id ID) {
+// untrack removes only its own entry: a client that reuses the id of a
+// request still in flight must not make the other one uncancellable.
+func (c *Conn) untrack(id ID, tracked *context.CancelFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.inflight, id)
+	if c.inflight[id] == tracked {
+		delete(c.inflight, id)
+	}
 }
 
 func (c *Conn) respond(r *response) { c.sendOrLog(r) }

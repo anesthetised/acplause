@@ -166,7 +166,9 @@ func (p *peer) callDispatch(ctx context.Context, method string, params, result a
 	if len(msg) > maxMessage {
 		return errors.New("MCP request exceeds 8 MiB")
 	}
-	if err = p.t.sendRequest(ctx, msg, dispatch); err != nil {
+	// A send that ends with the caller's context may still have reached the
+	// server; it takes the cancellation path below, which notifies the server.
+	if err = p.t.sendRequest(ctx, msg, dispatch); err != nil && ctx.Err() == nil {
 		p.complete(id, callResponse{err: err})
 	}
 	var response callResponse

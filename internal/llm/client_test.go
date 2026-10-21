@@ -134,6 +134,44 @@ func TestChatAssemblesToolCallFragments(t *testing.T) {
 	}
 }
 
+func TestChatSeparatesToolCallsWithoutIndex(t *testing.T) {
+	c := serve(t, func(w http.ResponseWriter, _ *http.Request) {
+		sse(w,
+			data(`{"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}`),
+			data(`{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"\"x\"}"}}]}}]}`),
+			data(`{"choices":[{"delta":{"tool_calls":[{"id":"call_b","function":{"name":"list_dir","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`),
+			data(`[DONE]`),
+		)
+	})
+	comp, _, err := collect(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ToolCall{
+		{ID: "call_a", Type: "function", Function: FunctionCall{"read_file", `{"path":"x"}`}},
+		{ID: "call_b", Type: "function", Function: FunctionCall{"list_dir", `{}`}},
+	}
+	if !reflect.DeepEqual(comp.ToolCalls, want) {
+		t.Fatalf("got %+v", comp.ToolCalls)
+	}
+}
+
+func TestChatJSONInsteadOfStream(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"code":"overloaded","message":"try later"}}`: "overloaded: try later",
+		`{"choices":[]}`: "expected an event stream",
+	} {
+		c := serve(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			fmt.Fprint(w, body)
+		})
+		_, _, err := collect(t, c)
+		if e, ok := errors.AsType[*Error](err); !ok || e.Kind == KindTruncated || !strings.Contains(e.Message, want) {
+			t.Errorf("%s: got %v", body, err)
+		}
+	}
+}
+
 func TestChatErrors(t *testing.T) {
 	tests := []struct {
 		name    string
