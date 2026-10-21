@@ -75,8 +75,7 @@ type accumulator struct {
 	content   strings.Builder
 	reasoning strings.Builder
 	details   []ReasoningDetail
-	calls     []*ToolCall // in order of first appearance
-	byIndex   map[int]int // stream index to the call it currently fills
+	calls     map[int][]*ToolCall // index order; reused/missing indices keep arrival order
 	finish    string
 	usage     *Usage
 }
@@ -120,18 +119,20 @@ func (a *accumulator) add(c *chunk, onDelta func(Delta)) error {
 }
 
 func (a *accumulator) addToolCall(f toolCallDelta) {
-	if a.byIndex == nil {
-		a.byIndex = make(map[int]int)
+	if a.calls == nil {
+		a.calls = make(map[int][]*ToolCall)
 	}
-	i, ok := a.byIndex[f.Index]
+	calls := a.calls[f.Index]
+	var call *ToolCall
+	if len(calls) > 0 {
+		call = calls[len(calls)-1]
+	}
 	// A new id under a used index is another call: endpoints that omit the
 	// required index would otherwise merge distinct calls into one.
-	if !ok || (f.ID != "" && a.calls[i].ID != "" && f.ID != a.calls[i].ID) {
-		i = len(a.calls)
-		a.calls = append(a.calls, &ToolCall{Type: "function"})
-		a.byIndex[f.Index] = i
+	if call == nil || (f.ID != "" && call.ID != "" && f.ID != call.ID) {
+		call = &ToolCall{Type: "function"}
+		a.calls[f.Index] = append(calls, call)
 	}
-	call := a.calls[i]
 	if call.ID == "" {
 		call.ID = f.ID
 	}
@@ -149,12 +150,14 @@ func (a *accumulator) completion() *Completion {
 		FinishReason:     a.finish,
 		Usage:            a.usage,
 	}
-	for _, p := range a.calls {
-		call := *p
-		if call.ID == "" {
-			call.ID = "call_" + rand.Text()
+	for _, index := range slices.Sorted(maps.Keys(a.calls)) {
+		for _, p := range a.calls[index] {
+			call := *p
+			if call.ID == "" {
+				call.ID = "call_" + rand.Text()
+			}
+			c.ToolCalls = append(c.ToolCalls, call)
 		}
-		c.ToolCalls = append(c.ToolCalls, call)
 	}
 	return c
 }
