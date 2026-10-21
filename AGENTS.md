@@ -6,6 +6,45 @@ OpenRouter first. Read [README.md](README.md) for what it does and
 [docs/adr](docs/adr) for decisions already made; do not relitigate them
 without writing a new ADR.
 
+## Communication and decisions
+
+- Ask questions through `AskUserQuestion` (or the harness's equivalent
+  structured user-input tool), so the user can answer in the interface.
+  Include alternatives, trade-offs, and a recommendation in the question.
+  Use plain chat questions only if no such tool is available, and explain
+  that limitation.
+- Consult the user before architectural decisions, dependency changes, or
+  other consequential choices. Present alternatives, trade-offs, and a
+  recommendation; challenge weak proposals. Obtain agreement before adopting
+  a decision, marking an ADR accepted, or implementing it. This includes
+  runtime, test, and development dependencies.
+- Before non-trivial implementation, recommend a suitable model and reasoning
+  effort. Recommend changes to the parent model or reasoning effort when
+  justified; respect choices already made for the work. Prioritize accuracy
+  over brevity.
+- Propose parallel work when it is feasible and worthwhile, explaining the
+  independent tasks, expected benefit, and integration risks. Suggest models
+  and reasoning effort for delegated tasks as appropriate. Do not launch
+  subagents or separate threads without user authorization.
+
+## Repository workflow
+
+- Track substantial changes in issues and separate branches. Obtain user
+  approval before opening PRs.
+- Only the parent agent commits. Use Conventional Commits and appropriate
+  `Co-Authored-By` trailers. Commits need no approval; pushes require an
+  explicit user request.
+- Preserve unrelated and uncommitted work. Treat files as shared state and
+  assign non-overlapping edits to concurrent agents.
+- Use CI, maintain documentation, add meaningful tests, and preserve required
+  coverage. Follow the Commands and Tests sections below.
+- Use meaningful, reproducible benchmarks where appropriate, especially for
+  performance-sensitive changes and optimization claims. Choose representative
+  workloads and metrics; do not substitute microbenchmarks for the behavior
+  that matters. Before running benchmarks, agree with the user on workload and
+  resource cost. Report relevant before/after results for performance changes,
+  including measurement conditions and limitations.
+
 ## Commands
 
 ```sh
@@ -15,10 +54,6 @@ just e2e -v
 ```
 
 Run `just check` before handing work back. All of it must pass.
-
-## Git
-
-Commits are allowed without asking. Push only when the user explicitly asks.
 
 ## Layout
 
@@ -87,7 +122,7 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 - Go standard library, plus `modernc.org/sqlite` for storage
   ([ADR 0004](docs/adr/0004-sqlite-storage.md)). The JSON Schema validator is
-  used by tests alone. Ask before adding any other dependency.
+  used by tests alone. Dependency changes require the agreement described above.
 - Prefer stdlib helpers (`cmp.Or`, `slices`, `maps`, `errors.AsType`) over
   hand-rolled ones.
 - Doc comments on every exported identifier and on non-obvious unexported
