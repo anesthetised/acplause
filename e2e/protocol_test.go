@@ -32,7 +32,7 @@ func TestInitialize(t *testing.T) {
 		"capabilities":    map[string]any{"_meta": map[string]any{"x.dev/flag": true}, "futureCapability": map[string]any{}},
 		"_meta":           map[string]any{"traceparent": "00-1-2-01"},
 	}, &res)
-	if res.ProtocolVersion != 2 || res.Info["name"] != "acplause" || res.AuthMethods != nil {
+	if res.ProtocolVersion != 2 || res.Info["name"] != "acplause" || res.Info["version"] != testVersion || res.AuthMethods != nil {
 		t.Fatalf("unexpected initialize result: %+v", res)
 	}
 	assertJSON(t, res.Capabilities, `{"session":{"mcp":{"stdio":{},"http":{}},"prompt":{"embeddedContext":{},"image":{}},"additionalDirectories":{},"delete":{}}}`)

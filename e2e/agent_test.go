@@ -21,6 +21,9 @@ import (
 
 const timeout = 10 * time.Second
 
+const testVersion = "v0.202610.42"
+const testCommit = "0123456789abcdef0123456789abcdef01234567"
+
 var binary string
 var mcpBinary string
 
@@ -30,7 +33,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	binary = filepath.Join(dir, "acplause")
-	args := []string{"build", "-o", binary}
+	args := []string{"build", "-o", binary, "-ldflags", "-X main.buildVersion=" + testVersion + " -X main.buildCommit=" + testCommit}
 	if raceEnabled {
 		args = append(args, "-race")
 	}

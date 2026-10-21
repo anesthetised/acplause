@@ -128,6 +128,9 @@ func TestDoctorOnlineDispatcherAndLocalFailureGate(t *testing.T) {
 				if r.Method != "GET" || r.URL.Path != "/models" || r.Header.Get("Authorization") != "" {
 					t.Error("unexpected diagnostic request")
 				}
+				if r.Header.Get("User-Agent") != "acplause/"+version() {
+					t.Error("diagnostic request is missing the build version")
+				}
 				fmt.Fprint(w, `{"data":[{"id":"secret-model","name":"secret-description","supported_parameters":["tools"]}]}`)
 			}))
 			defer server.Close()
