@@ -1,2 +1,4 @@
 /acplause
 /cover.out
+/dist/
+__pycache__/

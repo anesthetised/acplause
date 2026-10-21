@@ -34,7 +34,7 @@ lint:
     staticcheck ./...
 
 # Everything CI should run; optional arguments are passed to go test.
-check *args: fmt-check lint (test args)
+check *args: fmt-check lint (test args) release-check
     go mod tidy -diff
 
 # Run the agent on stdio; the ACP client selects the model.
@@ -44,3 +44,11 @@ run:
 # Remove build output.
 clean:
     rm -f acplause
+
+# Dispatch the release workflow on main; all builds happen in Actions.
+release:
+    gh workflow run release.yml --ref main
+
+# Exercise release retry/version/checksum invariants without publishing.
+release-check:
+    python3 -m unittest discover -s scripts -p '*_test.py'

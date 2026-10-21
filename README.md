@@ -14,6 +14,13 @@ agent. Your editor talks to it over stdio; it thinks with any
 OpenAI-compatible Chat Completions API, [OpenRouter](https://openrouter.ai)
 first, and works in your workspace through tools.
 
+Inspired by [acp-bridge](https://github.com/BlakeHung/acp-bridge), which serves
+as a behavioral reference for the tool loop, limits and error handling.
+acplause follows the pinned ACP v2 specification for its wire protocol.
+
+acplause is experimental. Calendar versions identify releases; they do not
+promise compatibility. Breaking changes are highlighted in release notes.
+
 - ACP v2 only, validated against the pinned schema (`testdata/schema/v2`).
 - Streaming text and reasoning, tool calls, usage and cost reporting.
 - Live bash terminal output with bounded snapshots for session replay.
@@ -31,6 +38,32 @@ first, and works in your workspace through tools.
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install anesthetised/tap/acplause
+```
+
+The formula builds the tagged source on your machine, installing Go as a
+build dependency. On macOS, local compilation lets us distribute acplause
+without a paid Apple Developer ID certificate or an install hook that removes
+quarantine from downloaded binaries. The trade-off is a slower first install,
+including compilation of the SQLite dependency.
+
+### Release archives
+
+For a ready-to-run binary without installing Go, download the archive for your
+OS (macOS or Linux) and architecture (arm64 or amd64) from
+[GitHub Releases](https://github.com/anesthetised/acplause/releases).
+Extract it and put `acplause` in a directory on your `PATH`. Release archives
+include SHA256 checksums and GitHub artifact attestations. Prebuilt macOS
+binaries are not Developer ID signed or notarized, so macOS may require
+you to explicitly allow them to run.
+
+### Go
+
+If you already have Go installed:
+
 ```sh
 go install github.com/anesthetised/acplause/cmd/acplause@latest
 ```
@@ -45,6 +78,7 @@ acplause sends no `Authorization` header, supporting compatible local providers.
 Check setup from an environment with the same variables as the client:
 
 ```sh
+acplause --version       # version and source commit
 acplause doctor          # local configuration and data-directory checks
 acplause doctor --online # also check the provider's model catalog
 ```

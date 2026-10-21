@@ -21,11 +21,15 @@ func dispatch(args []string, getenv func(string) string, stderr io.Writer, serve
 	if len(args) == 0 {
 		return serve()
 	}
+	if len(args) == 1 && args[0] == "--version" {
+		_, err := fmt.Fprintln(stderr, versionLabel())
+		return err
+	}
 	online := len(args) == 2 && args[1] == "--online"
 	if args[0] == "doctor" && (len(args) == 1 || online) {
 		return doctor(getenv, stderr, os.UserHomeDir, os.CreateTemp, online)
 	}
-	return errors.New("usage: acplause [doctor [--online]]")
+	return errors.New("usage: acplause [--version | doctor [--online]]")
 }
 
 // dataDirectory is shared by serving and diagnostics; only the caller decides
@@ -45,6 +49,7 @@ func dataDirectory(configured string, home func() (string, error)) (string, erro
 // parsing/filesystem error. The temp-file seam allows deterministic I/O failure
 // tests without relying on permissions that privileged users can bypass.
 func doctor(getenv func(string) string, stderr io.Writer, home func() (string, error), createTemp func(string, string) (*os.File, error), online bool) error {
+	fmt.Fprintln(stderr, versionLabel())
 	cfg, err := loadConfig(getenv)
 	failed := false
 	report := func(name, status, reason string) {
@@ -104,7 +109,7 @@ func doctor(getenv func(string) string, stderr io.Writer, home func() (string, e
 		if failed {
 			report("provider catalog", "INFO", "skipped until local checks pass")
 		} else {
-			client := llm.New(llm.Config{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey})
+			client := llm.New(llm.Config{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Header: providerHeaders()})
 			count, reason := checkCatalog(context.Background(), client.Models)
 			if reason != "" {
 				report("provider catalog", "FAIL", reason)

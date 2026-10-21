@@ -1,0 +1,64 @@
+# Based on couchcast's Conventional Commit notes, with public and internal groups.
+[changelog]
+header = ""
+body = """
+{% macro entry(commit) %}\
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{{ commit.message | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/anesthetised/acplause/commit/{{ commit.id }}))
+{% if commit.breaking_description %}
+  {{ commit.breaking_description }}
+{% endif %}\
+{% endmacro entry %}\
+{% set_global has_internal = false %}\
+{% for group, commits in commits | group_by(attribute="group") %}\
+{% if group is starting_with("<!-- 9") %}\
+{% set_global has_internal = true %}\
+{% else %}
+## {{ group | striptags | trim }}
+{% for commit in commits %}\
+{{ self::entry(commit=commit) }}\
+{% endfor %}\
+{% endif %}\
+{% endfor %}\
+{% if has_internal %}
+<details>
+<summary>Internal changes</summary>
+{% for group, commits in commits | group_by(attribute="group") %}\
+{% if group is starting_with("<!-- 9") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}\
+{{ self::entry(commit=commit) }}\
+{% endfor %}\
+{% endif %}\
+{% endfor %}
+</details>
+{% endif %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+commit_preprocessors = [
+  { pattern = '(^|\s)@([A-Za-z0-9][A-Za-z0-9-]*)', replace = '${1}`@${2}`' },
+]
+commit_parsers = [
+  { field = "breaking", pattern = "true", group = "<!-- 00 -->Breaking changes" },
+  { message = '^Merge ', skip = true },
+  { message = '^chore\(release\):', skip = true },
+  { message = '^release:', skip = true },
+  { message = '^feat', group = "<!-- 10 -->Features" },
+  { message = '^fix', group = "<!-- 20 -->Fixes" },
+  { message = '^perf', group = "<!-- 30 -->Performance" },
+  { message = '^docs', group = "<!-- 40 -->Documentation" },
+  { message = '^(build|deps)(\(|:)|^chore\(deps', group = "<!-- 50 -->Dependencies / Build" },
+  { message = '^refactor', group = "<!-- 90 -->Refactoring" },
+  { message = '^test', group = "<!-- 91 -->Tests" },
+  { message = '^ci', group = "<!-- 92 -->CI" },
+  { message = '.*', group = "<!-- 99 -->Other" },
+]
+filter_commits = false
+tag_pattern = '^v0\.[0-9]{6}\.[0-9]+$'
+sort_commits = "oldest"

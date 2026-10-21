@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One publisher for both the release repository and the shared tap.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Allocate or restore the release plan and bundle
+        id: prepare
+        run: python3 scripts/release.py prepare
+
+      - name: Save the version before building
+        if: steps.prepare.outputs.plan-restored != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-state/plan.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: '1.59.0'
+
+      - name: Install Staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+
+      - name: Install git-cliff
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
+        with:
+          version: v2.14.2
+          args: --unreleased --strip all
+        env:
+          OUTPUT: ${{ runner.temp }}/cliff-setup.md
+
+      - name: Add git-cliff to PATH
+        run: echo "$RUNNER_TEMP/git-cliff/bin" >> "$GITHUB_PATH"
+
+      - name: Check
+        run: |
+          just check -coverprofile="$RUNNER_TEMP/coverage.out"
+          coverage=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '/^total:/ {print $3}')
+          awk -v c="${coverage%\%}" 'BEGIN { if (c < 80) { print "Coverage below 80%: " c; exit 1 } }'
+
+      - name: Package with GoReleaser
+        if: steps.prepare.outputs.bundle-restored != 'true'
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: v2.18.3
+          args: release --clean --skip=publish
+
+      - name: Prepare notes and source formula
+        if: steps.prepare.outputs.bundle-restored != 'true'
+        run: python3 scripts/release.py bundle
+
+      - name: Save the exact bytes before publishing
+        if: steps.prepare.outputs.bundle-restored != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-bundle
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+            dist/notes.md
+            dist/acplause.rb
+            dist/plan.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Verify bundle checksums and source commit
+        run: python3 scripts/release.py verify
+
+      - name: Attest release archives and source
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/checksums.txt
+
+      - name: Publish tag and GitHub Release
+        run: python3 scripts/release.py publish
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-state
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-bundle
+          path: dist
+
+      - name: Update the source formula in the shared tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN" || { echo 'HOMEBREW_TAP_TOKEN is missing'; exit 1; }
+          python3 scripts/release.py tap

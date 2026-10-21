@@ -92,6 +92,9 @@ func (m *mockLLM) requestCount() int {
 }
 
 func (m *mockLLM) serve(w http.ResponseWriter, r *http.Request) {
+	if got := r.UserAgent(); got != "acplause/"+testVersion {
+		m.t.Errorf("User-Agent = %q, want %q", got, "acplause/"+testVersion)
+	}
 	if r.Header.Get("Authorization") != "Bearer test-key" {
 		http.Error(w, `{"error":{"code":401,"message":"missing key"}}`, http.StatusUnauthorized)
 		return

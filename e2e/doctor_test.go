@@ -177,3 +177,17 @@ func TestDoctorPreservesStoredSessionLease(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionProcessDoesNotInitializeAgent(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "unused")
+	code, report := runDoctorBinary(t, []string{"--version"}, []string{
+		"ACPLAUSE_BASE_URL=not-a-url", "ACPLAUSE_DATA_DIR=" + dir,
+	})
+	if code != 0 || strings.TrimSpace(report) != "acplause "+testVersion+" (commit "+testCommit+")" {
+		t.Fatalf("code=%d report=%q", code, report)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("version initialized data directory: %v", err)
+	}
+}

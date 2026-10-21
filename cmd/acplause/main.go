@@ -24,11 +24,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
-	"runtime/debug"
 	"syscall"
 
 	"github.com/anesthetised/acplause/internal/acp"
@@ -66,10 +64,7 @@ func serve() error {
 	client := llm.New(llm.Config{
 		BaseURL: cfg.BaseURL,
 		APIKey:  cfg.APIKey,
-		Header: http.Header{
-			"HTTP-Referer":       {"https://github.com/anesthetised/acplause"},
-			"X-OpenRouter-Title": {"acplause"},
-		},
+		Header:  providerHeaders(),
 	})
 	dir, err := dataDirectory(cfg.DataDir, os.UserHomeDir)
 	if err != nil {
@@ -119,11 +114,4 @@ func redactURL(raw string) string {
 // processID tells this process's session leases from other processes'.
 func processID() string {
 	return fmt.Sprintf("%d-%s", os.Getpid(), rand.Text())
-}
-
-func version() string {
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	return "dev"
 }
