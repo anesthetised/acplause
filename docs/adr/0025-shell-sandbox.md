@@ -1,6 +1,6 @@
 # ADR 0025: Bound an opt-in shell sandbox on macOS
 
-- Status: accepted design; prototype validation required; no runtime support
+- Status: accepted
 - Date: 2026-10-22
 - Issue: [#131](https://github.com/anesthetised/acplause/issues/131)
 - Related: [ADR 0003](0003-permissions.md), [ADR 0007](0007-mcp-servers.md),
@@ -38,6 +38,7 @@ between that invocation and resources outside its effective policy.
 | --- | --- |
 | Files outside granted paths | Deny content reads and writes; identify any necessary metadata exceptions separately. |
 | Workspace and additional directories | Grant explicitly as working data; files and secrets inside them are exposed to the command. |
+| Git configuration and hooks in granted roots | Deny writes, so a confined command cannot plant code that later Git commands run outside the sandbox. |
 | Toolchains and SDKs | Explicit read/execute grants; no automatic grant to the whole home directory. |
 | Temporary files and caches | Private invocation scratch plus explicitly granted cache paths; no blanket shared-temp write grant. |
 | Network and host IPC | Deny external and loopback TCP/UDP, Unix sockets and authority-bearing host services unless the fixed runtime policy demonstrates a necessary safe exception. |
@@ -56,21 +57,33 @@ independent authority with its existing per-call permission policy. Secrets
 intentionally supplied in shell environment values, permitted files, command
 arguments or tool output remain exposed. An allowed writable cache can carry
 modified artifacts into a later build; it is not a trusted artifact store.
+The same holds for the writable workspace itself: build files, `.envrc`,
+editor task definitions and `AGENTS.md` (which acplause reads into the system
+prompt every round) can be changed by a confined command and later run or
+read without confinement. Only Git configuration and hooks are protected,
+because clients and users run Git in the workspace routinely and without a
+further prompt; other workspace content stays a documented residual risk.
 Grants cover reachable objects, not independent copies: a pre-existing hardlink
-inside a writable root can modify the same file through its outside alias.
-Do not promise snapshot isolation or protection of aliases to granted data.
+inside a granted root exposes its outside alias to reads, and inside a writable
+root to modification as well. Do not promise snapshot isolation or protection
+of aliases to granted data.
 
 ## Decisions
 
 The user accepted this design on 2026-10-22, including the unsupported-profile
-risk, offline scope and separate prototype task. Acceptance does not establish
-that its security properties have been implemented or tested, or authorize
-production integration before the prototype gate.
+risk, offline scope, separate prototype task and protection of Git
+configuration and hooks. Acceptance does not establish that its security
+properties have been implemented or tested, or authorize production
+integration before the prototype gate.
 
 1. **An experimental, opt-in Seatbelt backend for foreground bash only.**
    Keep sandboxing off by default. Invoke the absolute system launcher with
    an agent-owned policy and separately supplied path parameters; do not
-   interpolate paths or commands into policy source. Launch bash only after
+   interpolate paths or commands into policy source. Session and configured
+   roots vary in number, so the policy may be generated per invocation, but
+   only from indexed parameter names (`ROOT_0`, `ROOT_1`, …) under a fixed
+   upper bound; paths reach the launcher only as `-D` values, and a request
+   beyond the bound fails instead of merging roots. Launch bash only after
    restrictions apply. Resolve its executable from trusted launch configuration,
    outside shell-writable paths. No new Go module, cgo helper, Node runtime,
    daemon or custom signing requirement is proposed. The deprecated system
@@ -87,6 +100,15 @@ production integration before the prototype gate.
    tests that create localhost servers) fail; users
    must provision dependencies outside this shell policy. Local tools and
    project-built executables remain a required positive test, not an assumption.
+
+   Within writable roots, deny writes to Git configuration and hooks:
+   `config`, `config.worktree` and `hooks/` of any `.git` directory, including
+   its `worktrees/` and `modules/` subdirectories. Ordinary local Git work
+   (status, add, commit, branch, checkout) stays possible; changing repository
+   configuration or hooks must happen outside this shell. A path-based rule is
+   insufficient if renaming a `.git` directory or one of its ancestors, or
+   replacing it, lets the command write those files under another name; the
+   prototype must show these routes are closed or report the gap.
 
 3. **One immutable launch policy, with session roots bound per invocation.**
    The configuration contract is `ACPLAUSE_BASH_SANDBOX=off|seatbelt` and optional
@@ -221,15 +243,22 @@ and local code/manual inspection establish candidates, not working protection.
    Exercise TCP/UDP over IPv4/IPv6, loopback, Unix sockets in allowed directories
    and fixture host services. Confirm test endpoints are reachable without the
    sandbox so unrelated failures cannot masquerade as protection. Test inherited
-   handles, loader-affecting environment, hardlink limitations and fork/exec,
-   grandchildren, `setsid` and orphaning explicitly.
+   handles, loader-affecting environment, hardlink limitations (including
+   whether a confined command can create a new hardlink to an ungranted file)
+   and fork/exec, grandchildren, `setsid` and orphaning explicitly. Test denied
+   writes to Git configuration and hooks directly, through worktree and
+   submodule Git directories, and after renaming or replacing `.git` or an
+   ancestor.
 
 2. **Compatibility and lifecycle gate.** Record OS build, architecture, policy
    revision, toolchain and effective paths. Demonstrate local git operations,
    offline Go build/test, SDK access and execution of a just-built fixture.
    Test cached tools with explicit grants and demonstrate denial of ungranted
-   caches. Prove timeout/cancel/close/ownership-loss cleanup and terminal output
-   ordering, including detached descendants. Any security or lifecycle failure
+   caches. Record tools that find their temporary directory other than through
+   `TMPDIR` (for example the per-user Darwin temporary directory) and whether
+   they fail under the private scratch policy. Prove
+   timeout/cancel/close/ownership-loss cleanup and terminal output ordering,
+   including detached descendants. Any security or lifecycle failure
    blocks integration; do not silently broaden the policy. Present findings
    before authorizing a production backend.
 

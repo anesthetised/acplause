@@ -8,7 +8,7 @@ without writing a new ADR.
 
 ## Communication and decisions
 
-- Ask questions through `askUserQuestion` (or the harness's equivalent
+- Ask questions through `AskUserQuestion` (or the harness's equivalent
   structured user-input tool), so the user can answer in the interface.
   Include alternatives, trade-offs, and a recommendation in the question.
   Use plain chat questions only if no such tool is available, and explain
@@ -18,9 +18,10 @@ without writing a new ADR.
   recommendation; challenge weak proposals. Obtain agreement before adopting
   a decision, marking an ADR accepted, or implementing it. This includes
   runtime, test, and development dependencies.
-- Before implementation, recommend a suitable model and reasoning effort.
-  Recommend changes to the parent model or reasoning effort when justified;
-  respect choices already made for the work. Prioritize accuracy over brevity.
+- Before non-trivial implementation, recommend a suitable model and reasoning
+  effort. Recommend changes to the parent model or reasoning effort when
+  justified; respect choices already made for the work. Prioritize accuracy
+  over brevity.
 - Propose parallel work when it is feasible and worthwhile, explaining the
   independent tasks, expected benefit, and integration risks. Suggest models
   and reasoning effort for delegated tasks as appropriate. Do not launch
@@ -28,8 +29,8 @@ without writing a new ADR.
 
 ## Repository workflow
 
-- Follow repository instructions. Track substantial changes in issues and
-  separate branches. Obtain user approval before opening PRs.
+- Track substantial changes in issues and separate branches. Obtain user
+  approval before opening PRs.
 - Only the parent agent commits. Use Conventional Commits and appropriate
   `Co-Authored-By` trailers. Commits need no approval; pushes require an
   explicit user request.
