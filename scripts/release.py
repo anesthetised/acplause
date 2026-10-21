@@ -37,6 +37,16 @@ def api(path, body=None, missing=False):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
+def find_release(repo, tag):
+    # The tag endpoint documents published releases. Listing with write access
+    # also returns drafts, including a partially uploaded release on retry.
+    pages = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/releases'))
+    matches = [r for page in pages for r in page if r['tag_name'] == tag]
+    if len(matches) > 1:
+        raise ValueError(f'Multiple releases for {tag}; manual recovery required')
+    return matches[0] if matches else None
+
+
 def tag_key(tag):
     match = TAG.fullmatch(tag)
     if not match:
@@ -94,7 +104,7 @@ def prepare(state):
         tags = [t for t in run('git', 'tag', '--list').splitlines() if TAG.fullmatch(t)]
         previous = max(tags, key=tag_key, default='')
         if previous:
-            release = api(f'repos/{repo}/releases/tags/{previous}', missing=True)
+            release = find_release(repo, previous)
             if not release or release['draft']:
                 raise ValueError(f'{previous} is unfinished; re-run its workflow first')
             run('git', 'merge-base', '--is-ancestor', previous, sha)
@@ -166,7 +176,7 @@ def verify_bundle(plan, directory):
 def publish(plan, directory):
     assets = verify_bundle(plan, directory)
     repo, tag, sha = os.environ['GITHUB_REPOSITORY'], plan['tag'], plan['sha']
-    release = api(f'repos/{repo}/releases/tags/{tag}', missing=True)
+    release = find_release(repo, tag)
     if not release or release['draft']:
         remote_tags = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/tags'))
         if any(tag_key(t['name']) > tag_key(tag) for page in remote_tags for t in page if TAG.fullmatch(t['name'])):
@@ -182,7 +192,9 @@ def publish(plan, directory):
     if release is None:
         run('gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
             '--title', tag, '--notes-file', str(directory / 'notes.md'))
-        release = api(f'repos/{repo}/releases/tags/{tag}')
+        release = find_release(repo, tag)
+        if release is None:
+            raise RuntimeError('Created draft is not visible yet; re-run this workflow')
     existing = {a['name'] for a in release['assets']}
     # A retry verifies uploaded bytes and only supplies missing assets. Published
     # releases are read-only even if repository immutability is not enabled.
@@ -214,6 +226,7 @@ def should_update_formula(old, new):
 
 def update_tap(plan, directory):
     # Only this command receives the separate, tap-scoped PAT.
+    verify_bundle(plan, directory)
     endpoint = 'repos/anesthetised/homebrew-tap/contents/Formula/acplause.rb'
     current = api(endpoint, missing=True)
     old = base64.b64decode(current['content']).decode() if current else ''
