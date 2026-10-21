@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -25,6 +26,8 @@ type mockLLM struct {
 	t      *testing.T
 	srv    *httptest.Server
 	models string
+	// modelsDown makes the models endpoint fail, as during a provider outage.
+	modelsDown atomic.Bool
 
 	mu       sync.Mutex
 	scripts  []script
@@ -95,6 +98,10 @@ func (m *mockLLM) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/models":
+		if m.modelsDown.Load() {
+			http.Error(w, `{"error":{"code":404,"message":"models unavailable"}}`, http.StatusNotFound)
+			return
+		}
 		fmt.Fprint(w, m.models)
 	case "/chat/completions":
 		var req chatRequest

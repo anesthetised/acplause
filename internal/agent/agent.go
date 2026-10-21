@@ -118,7 +118,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 		lost:       make(map[string]bool),
 		operations: make(map[string]*sessionOperation),
 	}
-	a.catalog = sync.OnceValues(func() (*catalog, error) {
+	a.catalog = cacheCatalog(func() (*catalog, error) {
 		ctx, cancel := context.WithTimeout(ctx, catalogTimeout)
 		defer cancel()
 		models, err := listModels(ctx)

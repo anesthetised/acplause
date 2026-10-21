@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -359,6 +360,27 @@ func TestNewSessionFailures(t *testing.T) {
 		e := c.fails(acp.MethodSessionNew, map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}}, acp.CodeAuthRequired)
 		if !strings.Contains(e.Message, "bad key") {
 			t.Fatalf("catalog error: %+v", e)
+		}
+	})
+	t.Run("catalog recovers", func(t *testing.T) {
+		var down atomic.Bool
+		var calls atomic.Int32
+		down.Store(true)
+		c := startAgent(t, t.TempDir(), make(scriptedModel), func(context.Context) ([]llm.Model, error) {
+			calls.Add(1)
+			if down.Load() {
+				return nil, &llm.Error{Kind: llm.KindServer, Status: 503, Message: "down"}
+			}
+			return testModels, nil
+		})
+		c.initialize()
+		c.fails(acp.MethodSessionNew, map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}}, jsonrpc.CodeInternalError)
+		down.Store(false)
+		c.newSession(t.TempDir())
+		loaded := calls.Load()
+		c.newSession(t.TempDir())
+		if n := calls.Load(); n != loaded {
+			t.Fatalf("a loaded catalog was listed again: %d calls, then %d", loaded, n)
 		}
 	})
 	t.Run("no tool models", func(t *testing.T) {
