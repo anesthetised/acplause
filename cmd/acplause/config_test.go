@@ -15,7 +15,7 @@ func env(kv map[string]string) func(string) string {
 
 func TestLoadConfig(t *testing.T) {
 	cfg, err := loadConfig(env(map[string]string{
-		"OPENROUTER_API_KEY":    "sk-or",
+		"ACPLAUSE_API_KEY":      "sk-or",
 		"ACPLAUSE_MAX_ROUNDS":   "7",
 		"ACPLAUSE_BASH_TIMEOUT": "90s",
 		"ACPLAUSE_LOG_LEVEL":    "debug",
@@ -28,9 +28,9 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
 
-	cfg, _ = loadConfig(env(map[string]string{"ACPLAUSE_API_KEY": "own", "OPENROUTER_API_KEY": "or"}))
-	if cfg.APIKey != "own" {
-		t.Fatalf("ACPLAUSE_API_KEY must win, got %q", cfg.APIKey)
+	cfg, _ = loadConfig(env(map[string]string{"OPENROUTER_API_KEY": "or"}))
+	if cfg.APIKey != "" {
+		t.Fatalf("only ACPLAUSE_API_KEY sets the key, got %q", cfg.APIKey)
 	}
 }
 
@@ -43,6 +43,36 @@ func TestLoadConfigErrors(t *testing.T) {
 	for _, want := range []string{"ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_LOG_LEVEL"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("want an error about %s, got %v", want, err)
+		}
+	}
+}
+
+func TestLoadConfigErrorsOmitValues(t *testing.T) {
+	keys := []string{"ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_MCP_TIMEOUT", "ACPLAUSE_LOG_LEVEL"}
+	settings := map[string]string{}
+	for _, k := range keys {
+		settings[k] = "secret-marker"
+	}
+	_, err := loadConfig(env(settings))
+	for _, k := range keys {
+		if err == nil || !strings.Contains(err.Error(), k) {
+			t.Errorf("want an error about %s, got %v", k, err)
+		}
+	}
+	if err != nil && strings.Contains(err.Error(), "secret-marker") {
+		t.Fatalf("error echoes a value: %v", err)
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://openrouter.ai/api/v1":                              "https://openrouter.ai/api/v1",
+		"https://user:secret-marker@gateway/v1?key=secret-marker#x": "https://gateway/v1",
+		"https://secret-marker@gateway/v1?":                         "https://gateway/v1",
+		"https://secret-marker:%xx@gateway":                         "(invalid)",
+	} {
+		if got := redactURL(raw); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", raw, got, want)
 		}
 	}
 }

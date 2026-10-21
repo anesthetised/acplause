@@ -20,15 +20,15 @@ import (
 )
 
 // TestSmokeVision sends a tool-result screenshot through the real API and
-// expects the model to name its colour. Run with OPENROUTER_API_KEY set:
+// expects the model to name its colour. Run with ACPLAUSE_API_KEY set:
 //
 //	go test -tags smoke -run TestSmokeVision -v ./internal/llm
 //
 // SMOKE_MODEL overrides the cheapest known-vision tool-capable model.
 func TestSmokeVision(t *testing.T) {
-	key := os.Getenv("OPENROUTER_API_KEY")
+	key := os.Getenv("ACPLAUSE_API_KEY")
 	if key == "" {
-		t.Skip("OPENROUTER_API_KEY not set")
+		t.Skip("ACPLAUSE_API_KEY not set")
 	}
 	c := New(Config{APIKey: key})
 

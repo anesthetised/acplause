@@ -48,7 +48,7 @@ func New(cfg Config) *Client {
 		retryDelay: cfg.RetryDelay,
 	}
 	if c.http == nil {
-		c.http = http.DefaultClient
+		c.http = &http.Client{CheckRedirect: noRedirects}
 	}
 	if c.retries == 0 {
 		c.retries = 3
@@ -176,6 +176,11 @@ func (c *Client) send(ctx context.Context, method, path string, body []byte) (*h
 	}
 }
 
+// noRedirects keeps requests, and the key they carry, on the configured API
+// root: Go keeps Authorization on redirects to the same host or a subdomain,
+// even on another port (ADR 0022).
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
@@ -201,6 +206,10 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 			return nil, ctx.Err()
 		}
 		return nil, &Error{Kind: KindUnreachable, Message: err.Error()}
+	}
+	if resp.StatusCode/100 == 3 {
+		resp.Body.Close()
+		return nil, &Error{Kind: KindUnknown, Status: resp.StatusCode, Message: "the API redirected; redirects are not followed, so configure the final API root"}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		defer resp.Body.Close()

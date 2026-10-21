@@ -3,7 +3,7 @@
 //
 // Configuration comes from the environment:
 //
-//	ACPLAUSE_API_KEY        API key; falls back to OPENROUTER_API_KEY
+//	ACPLAUSE_API_KEY        API key; default none
 //	ACPLAUSE_BASE_URL       API root; default https://openrouter.ai/api/v1
 //	ACPLAUSE_READ_CONCURRENCY built-in read workers; default 1, range 1..8
 //	ACPLAUSE_MAX_ROUNDS     model requests per turn; default 200, 0 disables
@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -54,6 +55,9 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	// Commands the agent runs inherit its environment; keep the key out of
+	// what they can print by accident (ADR 0022).
+	os.Unsetenv("ACPLAUSE_API_KEY")
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -91,7 +95,7 @@ func serve() error {
 		Store:           st,
 	}, conn, client, client.Models)
 
-	log.Info("serving", "base_url", cfg.BaseURL, "data_dir", dir)
+	log.Info("serving", "base_url", redactURL(cfg.BaseURL), "data_dir", dir)
 	err = conn.Serve(ctx, ag.Methods())
 	ag.Shutdown()
 	_ = conn.Close()
@@ -99,6 +103,17 @@ func serve() error {
 		return nil
 	}
 	return err
+}
+
+// redactURL drops the parts of a URL that can carry credentials: userinfo,
+// query and fragment.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(invalid)"
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String()
 }
 
 // processID tells this process's session leases from other processes'.

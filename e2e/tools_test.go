@@ -333,6 +333,18 @@ func TestUnlimitedBashTimeout(t *testing.T) {
 	}
 }
 
+func TestBashDoesNotInheritTheAPIKey(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(callTool("bash", `{"command":"printf '%s %s' \"${ACPLAUSE_API_KEY-unset}\" \"$E2E_MARKER\""}`), reply("finished"))
+	a, sid, _ := started(t, llm, withEnv("E2E_MARKER=kept"))
+	a.accepted(a.prompt(sid, "run"))
+	calls := filter(a.untilIdle(sid), "tool_call_update")
+	if got := calls[len(calls)-1]; got.Status != "completed" || got.text() != "unset kept" {
+		t.Fatalf("bash environment: %+v", got)
+	}
+}
+
 func TestMissingWriteContentPreservesFiles(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
