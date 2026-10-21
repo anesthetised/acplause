@@ -462,6 +462,9 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	}
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
 	user := llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt), Images: images}
+	if isCompactCommand(sub.prompt) {
+		user.LocalCommand = "compact"
+	}
 	updated := time.Now()
 	// Until the transaction commits, neither replay nor the model may see
 	// the prompt. Cancellation remains available while SQLite is busy.

@@ -81,8 +81,8 @@ func TestCompactCommandNoOp(t *testing.T) {
 	}{
 		{name: "no older history"},
 		{name: "unknown window", unknown: true, history: []llm.Message{{Role: llm.RoleUser, Content: "earlier"}, {Role: llm.RoleAssistant, Content: "answer"}}},
-		{name: "only a summary", history: []llm.Message{{Role: llm.RoleAssistant, Content: summaryPrefix + "Task summary"}, {Role: llm.RoleUser, Content: "/compact"}, {Role: llm.RoleAssistant, Content: "Conversation context compacted."}}},
-		{name: "only commands", history: []llm.Message{{Role: llm.RoleUser, Content: " /compact"}, {Role: llm.RoleAssistant, Content: "Nothing to compact."}, {Role: llm.RoleUser, Content: "/compact"}}},
+		{name: "only a summary", history: []llm.Message{{Role: llm.RoleAssistant, Content: summaryPrefix + "Task summary"}, {Role: llm.RoleUser, Content: "/compact", LocalCommand: "compact"}, {Role: llm.RoleAssistant, Content: "Conversation context compacted."}}},
+		{name: "only commands", history: []llm.Message{{Role: llm.RoleUser, Content: " /compact", LocalCommand: "compact"}, {Role: llm.RoleAssistant, Content: "Nothing to compact."}, {Role: llm.RoleUser, Content: "/compact", LocalCommand: "compact"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, out := compactionSession(t, fakeModel(func(context.Context, llm.Request, func(llm.Delta)) (*llm.Completion, error) {

@@ -39,6 +39,9 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// LocalCommand records a command recognized from the original prompt
+	// structure. It survives storage but is never sent to the provider.
+	LocalCommand string `json:"local_command,omitempty"`
 	// Images attached to a user message or tool result. Absent in text-only
 	// and older rows.
 	Images []media.Image `json:"images,omitempty"`

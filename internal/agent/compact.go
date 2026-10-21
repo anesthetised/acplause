@@ -69,7 +69,7 @@ func onlyCommands(msgs []llm.Message) bool {
 	for i := 0; i < len(msgs); i++ {
 		switch m := msgs[i]; {
 		case i == 0 && m.Role == llm.RoleAssistant && strings.HasPrefix(m.Content, summaryPrefix):
-		case m.Role == llm.RoleUser && len(m.Images) == 0 && strings.TrimSpace(m.Content) == "/compact":
+		case m.Role == llm.RoleUser && m.LocalCommand == "compact":
 			if i+1 < len(msgs) && msgs[i+1].Role == llm.RoleAssistant {
 				i++ // the command's own reply
 			}
@@ -350,6 +350,7 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 	prefix = slices.Clone(prefix)
 	for i := range prefix {
 		prefix[i].Reasoning, prefix[i].ReasoningDetails = "", nil
+		prefix[i].LocalCommand = ""
 		prefix[i] = describeImages(prefix[i])
 	}
 	var summary string
