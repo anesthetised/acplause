@@ -1,6 +1,7 @@
 # First-class ACP workflows in T3: runtime acceptance
 
-Status: **partially verified in actual T3 on 2026-10-20; acceptance remains open**.
+Status: **partially verified in actual T3 on 2026-10-19; `/compact` failure
+reproduced on 2026-10-21; acceptance remains open**.
 The `/compact` and tool-image display client gates failed; see
 [#70](https://github.com/anesthetised/acplause/issues/70) and
 [#71](https://github.com/anesthetised/acplause/issues/71). Keep
@@ -9,9 +10,51 @@ The `/compact` and tool-image display client gates failed; see
 prove ACP behavior, not T3 rendering. Feature ordering is recorded in
 [the integration plan](../../tasks/t3/integration.md).
 
-## Observed runtime: 2026-10-20
+## `/compact` retest: 2026-10-21
 
-The date is Europe/Moscow; execution began at 00:36 (2026-10-19 21:36 UTC).
+**FAIL: #70 remains reproducible after rebuilding acplause.** Tested at
+00:35–00:37 UTC through the actual T3 ACP provider.
+
+- Agent: `7ae7319b87b57b4b04f3b57ec64c0df3d27665f1`, Go 1.27.2,
+  darwin/arm64, installed binary SHA-256
+  `fb197e95200f6dafe4f5cbadacfaad295594e66ed67069c0e51801f2a50ba323`.
+- Client: T3 Code (Beta) 0.1.0; `app.asar` SHA-256
+  `ed8c4ef3e1c8b8531d05dbf3d12a27f5e4a715105e2eaaac2e910f739a21128d`.
+  This is the same client artifact as the original failing run.
+- Provider: `acpRegistry_openrouter`, `openai/gpt-6.1-sol`, High · Build,
+  ACP stdio. Reused the existing `ACP #38 actual-client smoke` T3 thread.
+  Its old session load failed; T3 created ACP session
+  `5a6134fd-0bf6-4eee-8e4f-be8750292e4f` and supplied a context handoff.
+  This retest does not establish successful ACP resume.
+
+An ordinary baseline prompt returned `COMPACT_BASELINE_OK` (T3 run 22).
+In the native composer, entering `/` offered only `/model`; entering
+`/compact` displayed `No matching command.` Submitting the exact command
+without attachments failed at 00:36:29 UTC (run 23). A separate
+`t3_thread_send` of the exact command failed at 00:36:41 UTC (run 24).
+Both displayed `The provider could not start this turn. Retry the turn; if
+it keeps failing, check the provider setup and server logs.` An ordinary
+follow-up returned `COMPACT_RECOVERY_OK` (run 25).
+
+T3's native request log recorded successful `session/prompt` requests for
+the baseline and recovery, with no request recorded for either command
+attempt. A read-only check of the new ACP session after both failures found
+it idle, with only the baseline user/assistant pair in history and two
+message snapshots in the transcript: no inserted command or compaction.
+Together these observations reproduce the client dispatch blocker. This
+run used native request metadata and stored-session metadata, without the
+original run's transparent wire proxy; it did not independently capture
+`availableCommands` or wire-level state updates.
+
+The existing provider used its normal data directory; only the smoke
+session was inspected, and no provider configuration, binary, or database
+was manually changed. No repository changes were requested from the ACP
+agent. `just check` passed, including race-enabled tests and schema-validating
+e2e tests. Keep #70, #38 and #25 open; #71 was not retested.
+
+## Observed runtime: 2026-10-19
+
+Execution began at 21:36 UTC.
 This was the built acplause binary running as a **child ACP provider inside T3**.
 The parent's Codex tools were used to prepare fixtures, operate the client and
 inspect sanitized evidence, never as substitutes for the child's tools.
