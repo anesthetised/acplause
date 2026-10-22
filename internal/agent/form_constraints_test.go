@@ -116,13 +116,16 @@ func TestFormConstraintAnswers(t *testing.T) {
 		name, fields, answer string
 		valid                bool
 	}{
-		{"unicode min", `,"minLength":2`, `"é"`, true}, {"unicode too short", `,"minLength":2`, `"é"`, false},
+		{"unicode min", `,"minLength":2`, `"e\u0301"`, true}, {"unicode too short", `,"minLength":2`, `"\u00e9"`, false},
 		{"emoji by code point", `,"maxLength":3`, `"😀😀😀"`, true}, {"emoji too long", `,"maxLength":3`, `"😀😀😀😀"`, false},
 		{"empty allowed", ``, `""`, true}, {"empty too short", `,"minLength":1`, `""`, false},
 		{"date", `,"format":"date"`, `"2026-02-28"`, true}, {"bad date", `,"format":"date"`, `"2026-02-30"`, false},
 		{"date-time", `,"format":"date-time"`, `"2026-10-22T19:00:00+03:00"`, true}, {"bad date-time", `,"format":"date-time"`, `"2026-10-22 19:00"`, false},
 		{"email", `,"format":"email"`, `"a@example.com"`, true}, {"display name", `,"format":"email"`, `"A <a@example.com>"`, false},
 		{"not email", `,"format":"email"`, `"example.com"`, false},
+		{"lowercase date-time", `,"format":"date-time"`, `"2026-10-22t19:00:00z"`, true}, {"leap second", `,"format":"date-time"`, `"2016-12-31T23:59:60Z"`, true},
+		{"leap second with offset", `,"format":"date-time"`, `"2016-12-31T23:59:60+03:00"`, true}, {"bad month", `,"format":"date-time"`, `"2026-13-01T00:00:00Z"`, false},
+		{"quoted email", `,"format":"email"`, `"\"john doe\"@example.com"`, true}, {"email comment", `,"format":"email"`, `"a@example.com (c)"`, false},
 		{"uri", `,"format":"uri"`, `"https://example.com/x?y=1"`, true}, {"no scheme", `,"format":"uri"`, `"example.com/x"`, false},
 		{"space in uri", `,"format":"uri"`, `"https://example.com/a b"`, false},
 		{"unknown format is annotation", `,"format":"hostname"`, `"not checked!"`, true},

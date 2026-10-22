@@ -96,6 +96,11 @@ func TestRememberedShellReject(t *testing.T) {
 	if updates := runBash(t, c, model, sid, "touch ran"); !anyStatus(updates, acp.ToolFailed) || c.permissionCount() != 1 {
 		t.Fatalf("remembered reject: requests=%d %+v", c.permissionCount(), updates)
 	}
+	if updates := runBash(t, c, model, sid, "touch ran"); !slices.ContainsFunc(updates, func(u notification) bool {
+		return strings.HasSuffix(u.Update.Title, "(rejected earlier this session)")
+	}) {
+		t.Fatalf("remembered reject not marked: %+v", updates)
+	}
 	if _, err := os.Stat(filepath.Join(cwd, "ran")); err == nil {
 		t.Fatal("command ran after reject_always")
 	}

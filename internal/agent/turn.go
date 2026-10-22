@@ -284,6 +284,8 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 			s.logRemembered(call.Command, allow)
 			if allow {
 				update.Title += " (allowed earlier this session)"
+			} else {
+				update.Title += " (rejected earlier this session)"
 			}
 			entry = s.reportTool(entry, *update)
 			if allow {

@@ -83,11 +83,12 @@ Numeric and boolean fields have automated protocol coverage; their T3
 rendering has not been verified.
 
 String questions support text, single-choice strings, or multiple choices when
-`multiSelect: true` is set with nonempty options. Other field types cannot use
+`multiSelect: true` is set with nonempty `options` or `choices`. Other field types cannot use
 choices or multiselect. Multiple-choice answers are arrays of
 distinct offered strings; an empty array explicitly selects none. Missing, null,
-duplicate and unoffered selections fail validation. Only a complete accepted answer
-with the requested keys and valid values reaches the model as answers; decline,
+duplicate and unoffered selections fail validation. Only an accepted answer that
+includes every required field, with only requested keys and valid values,
+reaches the model as answers; decline,
 cancel, malformed responses and request failures become failed tool results.
 While waiting, the tool stays pending and the session reports `requires_action`.
 The tool instructs the model never to request secrets or credentials, including
