@@ -29,11 +29,13 @@ without writing a new ADR.
 
 ## Repository workflow
 
-- Track substantial changes in issues and separate branches. Obtain user
-  approval before opening PRs.
-- Only the parent agent commits. Use Conventional Commits and appropriate
-  `Co-Authored-By` trailers. Commits need no approval; pushes require an
-  explicit user request.
+- Track substantial changes in issues and separate branches.
+- Only the parent agent commits, pushes, opens PRs and watches CI. Use
+  Conventional Commits and appropriate `Co-Authored-By` trailers. Commits,
+  pushes of work branches and PRs need no separate approval; PRs follow the
+  repository's PR conventions and link their issues. After opening a PR, watch
+  its CI and fix failures caused by the change. Merging, force-pushing, pushing
+  to `main` and deleting branches still need an explicit user request.
 - Preserve unrelated and uncommitted work. Treat files as shared state and
   assign non-overlapping edits to concurrent agents.
 - Use CI, maintain documentation, add meaningful tests, and preserve required
