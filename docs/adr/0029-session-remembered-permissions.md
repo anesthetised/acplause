@@ -1,6 +1,6 @@
 # ADR 0029: Remember shell permission decisions for the life of a session
 
-- Status: proposed
+- Status: accepted by the maintainer on 2026-10-22; implementation pending (#142)
 - Date: 2026-10-22
 - Issues: [#141](https://github.com/anesthetised/acplause/issues/141), implementation [#142](https://github.com/anesthetised/acplause/issues/142)
 - Scope change: Narrows ADR 0003 decision 2 and the "never introduce auto-allow state" sentence of ADR 0013
