@@ -71,6 +71,7 @@ type notification struct {
 		State      string          `json:"state"`
 		StopReason string          `json:"stopReason"`
 		Status     string          `json:"status"`
+		Title      string          `json:"title"`
 		Error      *jsonrpc.Error  `json:"error"`
 		Raw        json.RawMessage `json:"-"`
 	} `json:"update"`
