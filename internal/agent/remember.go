@@ -35,18 +35,24 @@ func (s *Session) remembered(command string) (allow, ok bool) {
 	return
 }
 
-// canRemember reports whether another decision fits; the "always" options are
-// withheld once the session holds maxRemembered of them.
-func (s *Session) canRemember() bool {
+// canRemember reports whether another decision fits, and the roots generation
+// the request is made under; the "always" options are withheld once the
+// session holds maxRemembered of them.
+func (s *Session) canRemember() (ok bool, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.shellDecisions) < maxRemembered
+	return len(s.shellDecisions) < maxRemembered, s.rootsGen
 }
 
-func (s *Session) remember(command string, allow bool) {
+// remember stores a decision answered under roots generation gen; one answered
+// before a root change is dropped, as ADR 0029 clears decisions with the roots.
+func (s *Session) remember(command string, allow bool, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := s.rememberKey(command)
+	if gen != s.rootsGen {
+		return
+	}
 	if _, replacing := s.shellDecisions[key]; !replacing && len(s.shellDecisions) >= maxRemembered {
 		return
 	}
