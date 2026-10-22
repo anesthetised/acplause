@@ -27,5 +27,7 @@ Completions API. Start with [installation and client setup](../README.md#install
   behavior and outstanding client compatibility gates, including `/compact`
   discovery/dispatch and tool-image display.
 - [MCP in T3](testing/mcp-t3-smoke.md): real-client MCP smoke evidence.
+- [External nono wrapper](testing/nono-smoke.md): actual T3 compatibility smoke,
+  tested launcher scope and discovery/reconnection caveats.
 - [Parallel reads benchmark](testing/parallel-reads-benchmark.md): local results
   for the opt-in read concurrency setting.

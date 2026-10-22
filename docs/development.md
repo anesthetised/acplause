@@ -23,4 +23,8 @@ schema. Decisions are recorded in [architecture decisions](adr).
 
 Notes for coding agents are in [AGENTS.md](../AGENTS.md).
 
+The opt-in macOS [Seatbelt prototype](testing/seatbelt-prototype.md) runs with
+`just seatbelt-prototype`. Its failed gates block runtime integration; the
+ordinary CI suite does not run these host-dependent experiments.
+
 See [releases](releases.md) for publishing, recovery and local packaging.

@@ -47,8 +47,8 @@ func (tb *Toolbox) bash(args bashArgs) (*Call, error) {
 
 var errTimeout = errors.New("command timed out")
 
-// runShell runs command in its own process group, so that cancellation and
-// timeouts kill everything it started.
+// runShell uses a separate process group on Unix so cancellation and timeouts
+// also signal descendants that remain in that group. Detached groups can survive.
 func runShell(ctx context.Context, dir, command string, opts Options, observer *ShellObserver) (string, error) {
 	runCtx := ctx
 	if *opts.BashTimeout > 0 {
