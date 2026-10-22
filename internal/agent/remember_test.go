@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -255,5 +259,34 @@ func TestRememberedAnswerAfterRootsChangeIsDropped(t *testing.T) {
 	runBash(t, c, model, sid, "true")
 	if c.permissionCount() != 2 {
 		t.Fatalf("decision made under the old roots was kept: %d requests", c.permissionCount())
+	}
+}
+
+func TestRememberedLogKeyIsKeyed(t *testing.T) {
+	s, _ := testSession(t, fakeModel(nil))
+	var buf bytes.Buffer
+	s.deps.log = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	const command = "git push --force"
+	s.logRemembered(command, true)
+	s.logRemembered(command, true)
+	s.logRemembered("other", true)
+
+	var keys []string
+	for line := range strings.Lines(buf.String()) {
+		var entry struct{ Key string }
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, entry.Key)
+	}
+	if len(keys) != 3 || keys[0] != keys[1] || keys[0] == keys[2] {
+		t.Fatalf("keys should correlate one command and tell commands apart: %v", keys)
+	}
+	plain := sha256.Sum256([]byte(s.rememberKey(command)))
+	if keys[0] == hex.EncodeToString(plain[:6]) {
+		t.Fatal("key is an unkeyed hash a dictionary could reproduce")
+	}
+	if strings.Contains(buf.String(), command) {
+		t.Fatal("command text logged")
 	}
 }

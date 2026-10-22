@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 
@@ -62,8 +64,18 @@ func (s *Session) remember(command string, allow bool, gen uint64) {
 	s.shellDecisions[key] = allow
 }
 
+// logKey keys the hashes in log lines. It exists only in this process, so the
+// hash correlates repeated uses of one command but a dictionary of common
+// commands cannot be hashed offline to recover the text from a log.
+var logKey = func() []byte {
+	b := make([]byte, 32)
+	rand.Read(b) // never returns an error since Go 1.24
+	return b
+}()
+
 // logRemembered records that memory decided, never the command text.
 func (s *Session) logRemembered(command string, allow bool) {
-	sum := sha256.Sum256([]byte(s.rememberKey(command)))
-	s.deps.log.Debug("remembered shell decision used", "session", s.id, "key", hex.EncodeToString(sum[:6]), "allow", allow)
+	mac := hmac.New(sha256.New, logKey)
+	mac.Write([]byte(s.rememberKey(command)))
+	s.deps.log.Debug("remembered shell decision used", "session", s.id, "key", hex.EncodeToString(mac.Sum(nil)[:6]), "allow", allow)
 }
