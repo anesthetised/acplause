@@ -86,6 +86,15 @@ cancelled or unrecognised answer, is a rejection, which the model is told
 about. Automatic approval is the client's setting. See
 [ADR 0003](adr/0003-permissions.md).
 
+`bash` also offers "allow always" and "reject always". The session remembers
+that choice for the exact command string in the same working directory and
+applies it without asking again, until the session ends, the process exits or
+the additional directories change. Nothing is saved to disk, Plan mode still
+blocks the tool first, and file tools and MCP tools always ask. At most 256
+choices are kept per session; beyond that only the once options are offered.
+There is no way to revoke a choice other than ending the session. See
+[ADR 0029](adr/0029-session-remembered-permissions.md).
+
 ## Bash terminals
 
 Permitted `bash` commands stream combined stdout/stderr into an agent-owned,

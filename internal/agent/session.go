@@ -76,6 +76,9 @@ type Session struct {
 	claimed       bool            // a prompt left the queue and its turn has not ended
 	stopTurn      context.CancelFunc
 	closed        bool
+	// shellDecisions holds ADR 0029's remembered bash choices, guarded by mu;
+	// never persisted, cleared when the roots change.
+	shellDecisions map[string]bool
 
 	// Persistence (persist.go). flushMu serialises saves and is taken
 	// before mu.
@@ -228,6 +231,7 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 	if changed {
 		old = s.toolbox
 		s.toolbox, s.dirs = toolbox, dirs
+		clear(s.shellDecisions)
 		s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions, s.mode)
 		if old == s.activeToolbox {
 			old = nil
