@@ -324,11 +324,25 @@ func validFormat(format, s string) bool {
 		_, err := time.Parse(time.DateOnly, s)
 		return err == nil
 	case "date-time":
-		_, err := time.Parse(time.RFC3339, s)
-		return err == nil
+		// RFC 3339 allows lowercase t/z and a leap second, which time.Parse
+		// accepts in neither form.
+		s = strings.ToUpper(s)
+		if _, err := time.Parse(time.RFC3339, s); err == nil {
+			return true
+		}
+		if _, rest, ok := strings.Cut(s, "T"); ok {
+			if i := strings.IndexAny(rest, "Z+-"); i >= 3 && rest[i-3:i] == ":60" {
+				// Go cannot represent :60; the rest of the layout is checked as :59.
+				_, err := time.Parse(time.RFC3339, strings.Replace(s, ":60"+rest[i:], ":59"+rest[i:], 1))
+				return err == nil
+			}
+		}
+		return false
 	case "email":
+		// ParseAddress unquotes a quoted local part, so the input cannot be
+		// compared with the result; a bare addr-spec has no name or comment.
 		a, err := mail.ParseAddress(s)
-		return err == nil && a.Name == "" && a.Address == s
+		return err == nil && a.Name == "" && !strings.ContainsAny(s, "<(")
 	case "uri":
 		u, err := url.Parse(s)
 		return err == nil && u.Scheme != "" && !strings.ContainsFunc(s, unicode.IsSpace)
