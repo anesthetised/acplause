@@ -69,8 +69,11 @@ requests. Audio and other image formats are not supported.
 ## Structured questions
 
 Clients advertising `capabilities.elicitation.form: {}` enable the agent-owned
-`ask_user` tool. It sends `elicitation/create` with one to three required fields.
-Each question may set `type` to `string` (the default), `integer`, `number` or
+`ask_user` tool. It sends `elicitation/create` with one to three fields, required
+unless a question sets `required: false`. An optional question may be left
+unanswered; unanswered fields are absent from the result (an accept without any
+content means nothing was answered), and a default is never turned into an
+answer. Each question may set `type` to `string` (the default), `integer`, `number` or
 `boolean`. Integers require an integer JSON token in the signed 64-bit range;
 decimal/exponent tokens and quoted numbers are not converted into integers.
 Numbers accept finite floating-point values, including fractions. Numeric
@@ -91,6 +94,23 @@ The tool instructs the model never to request secrets or credentials, including
 passwords and API keys. When access needs configuring, the user should do so
 outside the conversation and report only whether setup is complete.
 Answers request information; file writes and commands still require permission.
+
+Questions can also set constraints, which the agent checks again on the answer:
+
+- `title` and `description` on the form, and `default` on a question. Defaults
+  are only a pre-fill for the client; they must satisfy the question's own
+  constraints, and `0`, `false`, `""` and `[]` are valid defaults.
+- Strings: `minLength`/`maxLength` (counted in Unicode code points) and `format`.
+  `date` (`YYYY-MM-DD`), `date-time` (RFC 3339), `email` (a bare address) and
+  `uri` (with a scheme) are validated; other formats are annotations. `pattern` is
+  not supported and fails the call ([#159](https://github.com/anesthetised/acplause/issues/159)).
+- Integers and numbers: inclusive `minimum`/`maximum`.
+- Choices: `choices` is a list of `{value, title, description}` used instead of
+  `options`, for single choice or `multiSelect`. Answers use the `value`, never the
+  title. Multiselect also accepts `minItems`/`maxItems`.
+
+Constraints that do not fit the question's type, inconsistent bounds, duplicate
+choices and invalid defaults fail the call before any form is sent.
 
 Cancelling, closing or deleting the session stops waiting and sends best-effort
 `$/cancel_request`. Late replies cannot restart work. Same-connection resume

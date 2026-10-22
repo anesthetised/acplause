@@ -4,6 +4,7 @@
 - Date: 2026-10-22
 - Issue: [#137](https://github.com/anesthetised/acplause/issues/137)
 - Scope change: Extends the field types in ADRs 0011 and 0017
+- Extended by: [ADR 0028](0028-form-constraints.md) (constraints, defaults, optional fields, titled choices)
 - Source: ACP `2.0.0-alpha.9` at `3be9cfc` (`testdata/schema/v2/VERSION`)
 
 ## Context

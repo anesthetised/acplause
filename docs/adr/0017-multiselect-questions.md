@@ -24,8 +24,10 @@ separate capability beyond form support.
    validation of actions, exact keys, string fields and permissions remains.
 4. Keep existing cancellation, connection-local forms and recovery behavior.
    Numeric/boolean form fields were outside this slice and are subsequently
-   added by [ADR 0027](0027-typed-user-questions.md). Defaults and URL mode
-   remain outside these decisions.
+   added by [ADR 0027](0027-typed-user-questions.md); defaults, optional
+   fields (which relax the exact-key rule to the required set) and titled choices
+   by [ADR 0028](0028-form-constraints.md). URL mode remains outside these
+   decisions.
 
 ## Consequences
 

@@ -15,7 +15,7 @@ For client-supplied external tools, see [MCP servers](mcp.md).
 | `edit`        | `edit`    | replace one exact occurrence in a UTF-8 file up to 5 MiB |
 | `edit_batch`  | `edit`    | 1–50 ordered replacements in one file, one approved diff |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
-| `ask_user`    | `other`   | one to three text/choice, numeric or boolean questions, when supported |
+| `ask_user`    | `other`   | one to three constrained text/choice, numeric or boolean questions, when supported |
 | `update_plan` | `other`   | replace the current turn's execution plan          |
 
 ## Searching and directory traversal
