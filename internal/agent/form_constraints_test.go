@@ -116,7 +116,7 @@ func TestFormConstraintAnswers(t *testing.T) {
 		name, fields, answer string
 		valid                bool
 	}{
-		{"unicode min", `,"minLength":2`, `"é"`, true}, {"unicode too short", `,"minLength":2`, `"é"`, false},
+		{"unicode min", `,"minLength":2`, `"e\u0301"`, true}, {"unicode too short", `,"minLength":2`, `"\u00e9"`, false},
 		{"emoji by code point", `,"maxLength":3`, `"😀😀😀"`, true}, {"emoji too long", `,"maxLength":3`, `"😀😀😀😀"`, false},
 		{"empty allowed", ``, `""`, true}, {"empty too short", `,"minLength":1`, `""`, false},
 		{"date", `,"format":"date"`, `"2026-02-28"`, true}, {"bad date", `,"format":"date"`, `"2026-02-30"`, false},
