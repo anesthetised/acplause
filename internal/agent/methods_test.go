@@ -90,6 +90,8 @@ type acpClient struct {
 	pending map[int]chan rpcResponse
 	// answer chooses the permission outcome; nil allows.
 	answer func(ctx context.Context) (outcome, option string)
+	// permissions holds the params of every permission request, in order.
+	permissions []json.RawMessage
 }
 
 // startAgent serves an Agent over pipes with a store in dir.
@@ -157,6 +159,9 @@ func (c *acpClient) read(r io.Reader) {
 		case msg.Method == jsonrpc.CancelRequestMethod:
 			c.cancellations <- msg.Params
 		case msg.Method == acp.MethodSessionRequestPermission:
+			c.mu.Lock()
+			c.permissions = append(c.permissions, msg.Params)
+			c.mu.Unlock()
 			go c.permit(*msg.ID)
 		case msg.ID != nil:
 			c.mu.Lock()

@@ -246,8 +246,8 @@ func asksPermission(kind acp.ToolKind) bool {
 	return kind == acp.ToolEdit || kind == acp.ToolExecute
 }
 
-// Permission option ids. Only "once" options are offered: remembering
-// choices is the client's auto-approval (ADR 0003).
+// Permission option ids. Only bash offers "always" options (ADR 0029); other
+// tools keep ADR 0003's once-only choices.
 const (
 	optionAllow  = "allow"
 	optionReject = "reject"
@@ -258,7 +258,10 @@ var permissionOptions = []acp.PermissionOption{
 	{OptionID: optionReject, Name: "Reject", Kind: acp.PermissionRejectOnce},
 }
 
-var errRejected = errors.New("the user rejected this tool call")
+var (
+	errRejected           = errors.New("the user rejected this tool call")
+	errRejectedRemembered = errors.New("the user rejected this exact command earlier in this session with \"always reject\"")
+)
 
 // requestPermission reports the call as pending, with the diff it would
 // apply, and asks the user to allow it. A nil error is approval; any other
@@ -276,13 +279,30 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	if diff != nil {
 		update.Content = []acp.ToolCallContent{*diff}
 	}
+	if call.Command != "" {
+		if allow, ok := s.remembered(call.Command); ok {
+			s.logRemembered(call.Command, allow)
+			if allow {
+				update.Title += " (allowed earlier this session)"
+			}
+			entry = s.reportTool(entry, *update)
+			if allow {
+				return entry, nil
+			}
+			return entry, errRejectedRemembered
+		}
+	}
 	entry = s.reportTool(entry, *update)
 
 	subject := &acp.PermissionSubject{Type: acp.SubjectToolCall, ToolCall: update}
 	if call.Command != "" {
 		subject = &acp.PermissionSubject{Type: acp.SubjectCommand, Command: call.Command, Cwd: s.cwd, ToolCallID: update.ToolCallID}
 	}
-	req := acp.RequestPermissionRequest{SessionID: s.id, Title: call.Title + "?", Subject: subject, Options: permissionOptions}
+	options, always := permissionOptions, call.Command != "" && s.canRemember()
+	if always {
+		options = shellPermissionOptions
+	}
+	req := acp.RequestPermissionRequest{SessionID: s.id, Title: call.Title + "?", Subject: subject, Options: options}
 
 	// Tools run one at a time, so waiting blocks all foreground work.
 	s.setState(acp.StateUpdate{State: acp.StateRequiresAction})
@@ -303,6 +323,12 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionAllow:
 		return entry, nil
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionReject:
+		return entry, errRejected
+	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionAllowAlways && always:
+		s.remember(call.Command, true)
+		return entry, nil
+	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionRejectAlways && always:
+		s.remember(call.Command, false)
 		return entry, errRejected
 	}
 	return entry, fmt.Errorf("permission was not granted (outcome %q, option %q)", resp.Outcome.Outcome, resp.Outcome.OptionID)

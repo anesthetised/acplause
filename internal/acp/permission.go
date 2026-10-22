@@ -26,8 +26,10 @@ type PermissionSubject struct {
 
 // Permission option kinds acplause offers.
 const (
-	PermissionAllowOnce  = "allow_once"
-	PermissionRejectOnce = "reject_once"
+	PermissionAllowOnce    = "allow_once"
+	PermissionAllowAlways  = "allow_always"
+	PermissionRejectOnce   = "reject_once"
+	PermissionRejectAlways = "reject_always"
 )
 
 // PermissionOption is one answer the user may choose.
