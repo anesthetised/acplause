@@ -5,7 +5,7 @@ Contract: [ADR 0025](../adr/0025-shell-sandbox.md).
 Source baseline: `6f22940`; branch: `test/133-seatbelt-prototype`.
 Fixture commit: `634b9f9`.
 
-**Recommendation: no-go for production integration.** The real bash toolbox
+**Outcome: no-go for production integration.** The real bash toolbox
 returns and finalizes its output while a confined descendant that used
 `setsid`, double fork and exec continues running. This reproduces on normal
 exit, timeout and cancellation. ADR 0025 decision 7 makes that a blocking
@@ -191,18 +191,16 @@ production adapter is justified by these results.
 - The tested localhost services are intentionally inaccessible. This policy
   cannot run the project's network-dependent test suite as-is.
 
-## Unmet gates and next decision
+## Unmet gates and maintainer decision
 
 The lifecycle failure alone blocks production integration. Do not add the
 configuration variables, doctor activation or a launch adapter under the
 assumption that a stricter filesystem profile repairs descendant ownership.
-The next step is maintainer review of this no-go result. Any different cleanup
-mechanism, helper, backend, environment contract or relaxed requirement needs
-an explicit design decision; none is adopted here.
-
-[Proposed ADR 0026](../adr/0026-shell-lifecycle-after-seatbelt.md) reviews
-the available lifecycle mechanisms and the choices requiring maintainer
-agreement. It does not accept a replacement or relax this gate.
+On 2026-10-22 the maintainer accepted deferring native sandbox integration while
+preserving the existing requirements and this no-go result, recorded in
+[ADR 0026](../adr/0026-shell-lifecycle-after-seatbelt.md). Any different cleanup
+mechanism, helper, backend, environment contract or relaxed requirement still
+needs a separate design decision. No replacement was selected.
 
 The following requirements are also **unverified**: authority-bearing Mach/
 host-IPC fixture services; debugger access with a working positive control;

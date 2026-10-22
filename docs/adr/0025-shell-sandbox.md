@@ -287,6 +287,9 @@ The [2026-10-22 prototype record](../testing/seatbelt-prototype.md) recommends
 **no production integration**: detached descendants survive foreground cleanup,
 local Xcode tool workflows fail, and required security checks remain unverified.
 The accepted contract and its production gate remain unchanged.
+The maintainer accepted deferring native integration on 2026-10-22 in
+[ADR 0026](0026-shell-lifecycle-after-seatbelt.md), preserving these requirements
+and the no-go result.
 
 ## Consequences
 

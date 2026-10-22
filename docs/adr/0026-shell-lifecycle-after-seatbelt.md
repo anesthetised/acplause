@@ -1,6 +1,6 @@
-# ADR 0026: Reassess native shell confinement after the Seatbelt no-go
+# ADR 0026: Defer native shell confinement after the Seatbelt no-go
 
-- Status: proposed; awaiting maintainer agreement
+- Status: accepted
 - Date: 2026-10-22
 - Issue: [#133](https://github.com/anesthetised/acplause/issues/133)
 - Related: [ADR 0014](0014-stream-agent-terminals.md),
@@ -27,22 +27,23 @@ supports local source builds without a paid Apple signing certificate. The
 mechanisms reviewed below do not establish a solution satisfying all of these
 constraints. This is a bounded review, not a proof that no macOS solution exists.
 
-## Proposed decision
+## Decision
 
-**Recommend deferring native sandbox integration while preserving the lifecycle
-requirement and current distribution contract (option A).** Retain the failing
-probes and no-go report. Describe the existing process-group limit accurately
-in user documentation and source comments.
+The maintainer accepted option A on 2026-10-22: **defer native sandbox integration
+while preserving the lifecycle requirement and current distribution contract.**
+Retain the failing probes and no-go report. Describe the existing process-group
+limit accurately in user documentation and source comments.
 
 Before another implementation attempt, obtain agreement on a mechanism with
 an explicit owner for all execution and the changes needed to distribute it.
 Do not add a PID scanner, background-job manager or fallback to broader rights
 to make the current gate appear to pass. Fixing the Xcode compatibility cases
-alone would not change this recommendation.
+alone would not change this decision.
 
-This proposal is not accepted. ADR 0025 remains in force, including its blocked
-integration gate. No helper, dependency, platform change or weaker lifecycle
-guarantee is authorized by this document.
+ADR 0025's security and lifecycle requirements remain in force, including its
+blocked integration gate. This decision records the deferral after that gate
+failed; it does not select a helper, dependency, different platform or weaker
+lifecycle guarantee.
 
 ## Mechanisms reviewed
 
@@ -86,15 +87,15 @@ install or run launchd jobs, an Endpoint Security helper, a container or a VM.
 
 | Option | Benefit | Cost and unresolved requirement |
 | --- | --- | --- |
-| **A. Defer native integration (recommended)** | Preserves the accepted lifecycle and source-distribution contracts; retains reproducible evidence | No native shell isolation is delivered; current bash remains permission-gated |
+| **A. Defer native integration (selected)** | Preserves the accepted lifecycle and source-distribution contracts; retains reproducible evidence | No native shell isolation is delivered; current bash remains permission-gated |
 | B. Investigate a signed native supervisor using Endpoint Security | Preserves native macOS tools and offers descendant-scoped events | Requires Apple entitlement and distribution changes; reliable teardown, event loss and supervisor death are still unproved |
 | C. Design an external Linux container/VM backend | Offers a kernel-owned process namespace and a separate execution environment | Changes the macOS-native priority, toolchain and runtime/dependency requirements; needs a separate design and host integration |
 | D. Accept confinement with incomplete descendant cleanup | Could retain a small native adapter | Explicitly weakens ADR 0025; surviving work can keep changing granted files after completion, and scratch lifetime becomes unresolved; other gates still fail |
 | E. Adopt another Seatbelt wrapper or App Sandbox helper | May reuse policy work or supported resource-access mechanisms | A replacement must independently prove descendant ownership; changing the wrapper or resource policy alone is not that evidence |
 
-Options B and C authorize, at most, a separately scoped feasibility/design task
-after maintainer agreement. Neither is a validated replacement. Option D is
-not recommended: surviving execution would conflict with the foreground tool
+Options B and C were not selected. Each would require separate agreement on a
+feasibility/design task; neither is a validated replacement. Option D was
+rejected: surviving execution would conflict with the foreground tool
 contract even while it remained confined. Option E needs evidence of a cleanup
 mechanism before dependency selection.
 
