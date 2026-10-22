@@ -25,8 +25,8 @@ promise compatibility. Breaking changes are highlighted in release notes.
 - Streaming text and reasoning, tool calls, usage and cost reporting.
 - Live bash terminal output with bounded snapshots for session replay.
 - Asks permission before changing files or running commands.
-- Prompt queue, cancellation that aborts the HTTP stream and kills
-  everything a command started, session list/resume/close/delete.
+- Prompt queue, cancellation of model requests and Unix shell process groups,
+  session list/resume/close/delete.
 - Sessions survive restarts and can move between editor windows.
 - Model and reasoning effort selection from OpenRouter's model list.
 - PNG/JPEG prompt attachments and MCP tool images for models known to accept images.

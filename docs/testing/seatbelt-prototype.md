@@ -200,6 +200,10 @@ The next step is maintainer review of this no-go result. Any different cleanup
 mechanism, helper, backend, environment contract or relaxed requirement needs
 an explicit design decision; none is adopted here.
 
+[Proposed ADR 0026](../adr/0026-shell-lifecycle-after-seatbelt.md) reviews
+the available lifecycle mechanisms and the choices requiring maintainer
+agreement. It does not accept a replacement or relax this gate.
+
 The following requirements are also **unverified**: authority-bearing Mach/
 host-IPC fixture services; debugger access with a working positive control;
 dummy-parent inspection; parent-death cleanup; session-close/ownership-loss
