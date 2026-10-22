@@ -283,6 +283,11 @@ separately from production integration. Keep #131 open
 until this accepted ADR lands in the repository; acceptance never implies that
 any platform row has passed runtime verification.
 
+The [2026-10-22 prototype record](../testing/seatbelt-prototype.md) recommends
+**no production integration**: detached descendants survive foreground cleanup,
+local Xcode tool workflows fail, and required security checks remain unverified.
+The accepted contract and its production gate remain unchanged.
+
 ## Consequences
 
 The accepted experimental direction gives acplause a bounded next step
