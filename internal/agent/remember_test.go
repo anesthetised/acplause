@@ -154,16 +154,16 @@ func TestRememberedDecisionBoundAndRootsReset(t *testing.T) {
 		return &llm.Completion{}, nil
 	}))
 	for i := range maxRemembered {
-		s.remember(strings.Repeat("x", i+1), true)
+		s.remember(strings.Repeat("x", i+1), true, 0)
 	}
-	if s.canRemember() {
+	if ok, _ := s.canRemember(); ok {
 		t.Fatal("always options offered at the bound")
 	}
-	s.remember("one more", true)
+	s.remember("one more", true, 0)
 	if _, ok := s.remembered("one more"); ok {
 		t.Fatal("decision stored beyond the bound")
 	}
-	s.remember("x", false) // replacing at the bound is allowed
+	s.remember("x", false, 0) // replacing at the bound is allowed
 	if allow, ok := s.remembered("x"); !ok || allow {
 		t.Fatal("replacement lost")
 	}
@@ -221,6 +221,44 @@ func TestRememberedShellDecisionDoesNotBypassPlanMode(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cwd, "ran")); err == nil {
 		t.Fatal("remembered allow bypassed Plan mode")
+	}
+}
+
+// An "always" answer given after a roots change must not outlive the change
+// it raced with (ADR 0029 section 8).
+func TestRememberedAnswerAfterRootsChangeIsDropped(t *testing.T) {
+	model := make(scriptedModel, 8)
+	c := startAgent(t, t.TempDir(), model, nil)
+	c.initialize()
+	cwd, dirA, dirB := t.TempDir(), t.TempDir(), t.TempDir()
+	var created acp.NewSessionResponse
+	c.ok(acp.MethodSessionNew, map[string]any{"cwd": cwd, "additionalDirectories": []string{dirA}}, &created)
+	sid := created.SessionID
+	c.selectModel(sid, "m")
+
+	asked, release := make(chan struct{}), make(chan struct{})
+	c.mu.Lock()
+	c.answer = func(context.Context) (string, string) {
+		close(asked)
+		<-release
+		return acp.OutcomeSelected, optionAllowAlways
+	}
+	c.mu.Unlock()
+	args, _ := json.Marshal(map[string]string{"command": "true"})
+	model.callTool("b", "bash", string(args))
+	model.reply("ok", llm.FinishStop, nil)
+	c.await(c.prompt(sid, "run"))
+	<-asked
+	c.ok(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd, "additionalDirectories": []string{dirB}}, nil)
+	close(release)
+	c.untilIdle(sid)
+
+	c.mu.Lock()
+	c.answer = func(context.Context) (string, string) { return acp.OutcomeSelected, optionAllow }
+	c.mu.Unlock()
+	runBash(t, c, model, sid, "true")
+	if c.permissionCount() != 2 {
+		t.Fatalf("decision made under the old roots was kept: %d requests", c.permissionCount())
 	}
 }
 

@@ -79,6 +79,9 @@ type Session struct {
 	// shellDecisions holds ADR 0029's remembered bash choices, guarded by mu;
 	// never persisted, cleared when the roots change.
 	shellDecisions map[string]bool
+	// rootsGen counts root changes, so an "always" answer to a request sent
+	// under older roots is not recorded under the new ones.
+	rootsGen uint64
 
 	// Persistence (persist.go). flushMu serialises saves and is taken
 	// before mu.
@@ -232,6 +235,7 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 		old = s.toolbox
 		s.toolbox, s.dirs = toolbox, dirs
 		clear(s.shellDecisions)
+		s.rootsGen++
 		s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions, s.mode)
 		if old == s.activeToolbox {
 			old = nil

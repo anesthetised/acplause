@@ -300,7 +300,11 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	if call.Command != "" {
 		subject = &acp.PermissionSubject{Type: acp.SubjectCommand, Command: call.Command, Cwd: s.cwd, ToolCallID: update.ToolCallID}
 	}
-	options, always := permissionOptions, call.Command != "" && s.canRemember()
+	options := permissionOptions
+	always, gen := false, uint64(0)
+	if call.Command != "" {
+		always, gen = s.canRemember()
+	}
 	if always {
 		options = shellPermissionOptions
 	}
@@ -327,10 +331,10 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionReject:
 		return entry, errRejected
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionAllowAlways && always:
-		s.remember(call.Command, true)
+		s.remember(call.Command, true, gen)
 		return entry, nil
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionRejectAlways && always:
-		s.remember(call.Command, false)
+		s.remember(call.Command, false, gen)
 		return entry, errRejected
 	}
 	return entry, fmt.Errorf("permission was not granted (outcome %q, option %q)", resp.Outcome.Outcome, resp.Outcome.OptionID)
