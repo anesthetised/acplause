@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,17 @@ func TestRememberedShellPermissions(t *testing.T) {
 			}
 			if status(first) != want || status(second) != want {
 				t.Fatalf("statuses %q then %q, want %q", status(first), status(second), want)
+			}
+			// Only the remembered run says where the decision came from.
+			suffix := " (allowed earlier this session)"
+			if choice == "reject_always" {
+				suffix = " (rejected earlier this session)"
+			}
+			titled := func(us []update) bool {
+				return slices.ContainsFunc(filter(us, "tool_call_update"), func(u update) bool { return strings.HasSuffix(u.Title, suffix) })
+			}
+			if titled(first) || !titled(second) {
+				t.Fatalf("remembered title suffix %q: first run %v, second run %v", suffix, titled(first), titled(second))
 			}
 		})
 	}
