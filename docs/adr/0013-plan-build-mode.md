@@ -3,7 +3,7 @@
 - Status: accepted; implemented with schema-validated tests; real-T3 validation pending (#38)
 - Date: 2026-10-19
 - Issues: [#33](https://github.com/anesthetised/acplause/issues/33), [#34](https://github.com/anesthetised/acplause/issues/34)
-- Scope change: Extends session config; retains ADR 0003 client-owned approval policy
+- Scope change: Extends session config; retains ADR 0003 client-owned approval policy (the auto-allow ban in decision 6 is narrowed for `bash` by [ADR 0029](0029-session-remembered-permissions.md))
 - Baseline: acplause `d9c99f1`; ACP `2.0.0-alpha.9` at `3be9cfc8ea2dfe5a28973b461fd956b4045f24d3`
 
 ## Context
