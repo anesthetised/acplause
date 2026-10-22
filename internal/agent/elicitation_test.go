@@ -214,7 +214,7 @@ func TestElicitationStopsWithSession(t *testing.T) {
 	for _, stop := range []string{"cancel", "close", "delete", "lease loss", "answer race"} {
 		t.Run(stop, func(t *testing.T) {
 			model := make(scriptedModel, 2)
-			model.callTool("question", "ask_user", questionArgs)
+			model.callTool("question", "ask_user", typedQuestionArgs)
 			// If a simultaneous answer wins, it still cannot start another model round
 			// after cancellation is observed by the worker.
 			c := startAgent(t, t.TempDir(), model, nil)
@@ -234,7 +234,7 @@ func TestElicitationStopsWithSession(t *testing.T) {
 			case "answer race":
 				// Cancel first, then answer while the outbound waiter is being removed.
 				c.notify(acp.MethodSessionCancel, map[string]any{"sessionId": sid})
-				c.write(map[string]any{"jsonrpc": "2.0", "id": q.ID, "result": map[string]any{"action": "accept", "content": map[string]string{"choice": "a", "detail": "b", "last": "c"}}})
+				c.write(map[string]any{"jsonrpc": "2.0", "id": q.ID, "result": map[string]any{"action": "accept", "content": json.RawMessage(typedQuestionAnswers)}})
 			default:
 				c.notify(acp.MethodSessionCancel, map[string]any{"sessionId": sid})
 			}
@@ -259,7 +259,7 @@ func TestElicitationStopsWithSession(t *testing.T) {
 				}
 			}
 			// Late responses are ignored; initialize is a read-loop barrier.
-			c.write(map[string]any{"jsonrpc": "2.0", "id": q.ID, "result": map[string]any{"action": "accept", "content": map[string]string{"choice": "a", "detail": "late", "last": "c"}}})
+			c.write(map[string]any{"jsonrpc": "2.0", "id": q.ID, "result": map[string]any{"action": "accept", "content": json.RawMessage(typedQuestionAnswers)}})
 			c.formInitialize()
 		})
 	}

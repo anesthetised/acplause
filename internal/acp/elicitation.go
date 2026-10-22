@@ -22,7 +22,7 @@ type ElicitationSchema struct {
 	Required   []string                       `json:"required"`
 }
 
-// ElicitationProperty is text, a single choice, or an array of choices.
+// ElicitationProperty is a scalar answer or an array of string choices.
 type ElicitationProperty struct {
 	Type        string                `json:"type"`
 	Title       string                `json:"title"`

@@ -14,7 +14,7 @@ import (
 	"github.com/anesthetised/acplause/internal/llm"
 )
 
-var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questions when you need input to continue. Use options for a single choice, or omit options for text. Set multiSelect:true with options to allow multiple choices, including an empty selection. This requests information, never permission to perform an action. Never request secrets or credentials, including passwords, API keys, tokens, private keys, recovery codes or payment credentials. If credentials are needed, ask the user to configure them outside this conversation and report only whether setup is complete. Do not ask them to paste secrets into chat.", json.RawMessage(`{
+var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questions when you need input to continue. Set type to string (default), integer (signed 64-bit), number (finite floating-point), or boolean. For string questions, use options for a single choice, or omit options for text. Set multiSelect:true with string options to allow multiple choices, including an empty selection. Other types cannot use choices or multiselect. This requests information, never permission to perform an action. Never request secrets or credentials, including passwords, API keys, tokens, private keys, recovery codes or payment credentials. If credentials are needed, ask the user to configure them outside this conversation and report only whether setup is complete. Do not ask them to paste secrets into chat.", json.RawMessage(`{
  "type":"object","properties":{
   "message":{"type":"string","minLength":1,"maxLength":2000},
   "questions":{"type":"array","minItems":1,"maxItems":3,"items":{
@@ -22,6 +22,7 @@ var askUserTool = llm.FunctionTool("ask_user", "Ask the user one to three questi
     "id":{"type":"string","minLength":1,"maxLength":64},
     "title":{"type":"string","minLength":1,"maxLength":120},
     "question":{"type":"string","minLength":1,"maxLength":2000},
+    "type":{"type":"string","enum":["string","integer","number","boolean"],"description":"Answer type; omission means string."},
     "options":{"type":"array","maxItems":10,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":200}},
     "multiSelect":{"type":"boolean","description":"Allow zero or more offered options; requires nonempty options."}
    },"required":["id","title","question"]
@@ -33,17 +34,18 @@ func (s *Session) supportsForms() bool {
 	return s.deps.forms != nil && s.deps.forms.Load()
 }
 
-// parseQuestions accepts only the bounded question surface from ADRs 0011/0017.
+// parseQuestions accepts only the bounded question surface from ADRs 0011/0017/0027.
 // Unknown fields remain compatible; the model cannot supply arbitrary schemas.
 func parseQuestions(args string) (acp.ElicitationRequest, error) {
 	var input struct {
 		Message   string `json:"message"`
 		Questions []struct {
-			ID          string   `json:"id"`
-			Title       string   `json:"title"`
-			Question    string   `json:"question"`
-			Options     []string `json:"options"`
-			MultiSelect bool     `json:"multiSelect"`
+			ID          string          `json:"id"`
+			Title       string          `json:"title"`
+			Question    string          `json:"question"`
+			Options     []string        `json:"options"`
+			MultiSelect bool            `json:"multiSelect"`
+			Type        json.RawMessage `json:"type"`
 		} `json:"questions"`
 	}
 	req := acp.ElicitationRequest{Mode: "form", RequestedSchema: acp.ElicitationSchema{Type: "object", Properties: map[string]acp.ElicitationProperty{}}}
@@ -69,7 +71,24 @@ func parseQuestions(args string) (acp.ElicitationRequest, error) {
 			}
 			seen[option] = true
 		}
-		property := acp.ElicitationProperty{Type: "string", Title: q.Title, Description: q.Question, Enum: q.Options}
+		kind := "string"
+		if q.Type != nil {
+			// An explicit null must not acquire the omitted field's default.
+			kind = ""
+			if err := json.Unmarshal(q.Type, &kind); err != nil {
+				return req, fmt.Errorf("question %q type must be a string", q.ID)
+			}
+		}
+		switch kind {
+		case "string":
+		case "integer", "number", "boolean":
+			if len(q.Options) != 0 || q.MultiSelect {
+				return req, fmt.Errorf("question %q choices require type string", q.ID)
+			}
+		default:
+			return req, fmt.Errorf("question %q has an unsupported type", q.ID)
+		}
+		property := acp.ElicitationProperty{Type: kind, Title: q.Title, Description: q.Question, Enum: q.Options}
 		if q.MultiSelect {
 			if len(q.Options) == 0 {
 				return req, fmt.Errorf("multiselect question %q requires options", q.ID)
@@ -96,7 +115,27 @@ func questionResult(req acp.ElicitationRequest, resp acp.ElicitationResponse) to
 	answers := map[string]any{}
 	for id, property := range req.RequestedSchema.Properties {
 		value, ok := raw[id]
-		if property.Type == "array" {
+		switch property.Type {
+		case "integer":
+			var answer *int64
+			if !ok || json.Unmarshal(value, &answer) != nil || answer == nil {
+				return fail(fmt.Sprintf("answer %q must be a signed 64-bit integer", id))
+			}
+			// Keep the validated token, including int64 boundary values, exact.
+			answers[id] = value
+		case "number":
+			var answer *float64
+			if !ok || json.Unmarshal(value, &answer) != nil || answer == nil {
+				return fail(fmt.Sprintf("answer %q must be a finite number", id))
+			}
+			answers[id] = value
+		case "boolean":
+			var answer *bool
+			if !ok || json.Unmarshal(value, &answer) != nil || answer == nil {
+				return fail(fmt.Sprintf("answer %q must be a boolean", id))
+			}
+			answers[id] = *answer
+		case "array":
 			var selected []string
 			if !ok || json.Unmarshal(value, &selected) != nil || selected == nil || len(selected) > property.MaxItems {
 				return fail(fmt.Sprintf("answer %q must be an array of offered options", id))
@@ -107,16 +146,18 @@ func questionResult(req acp.ElicitationRequest, resp acp.ElicitationResponse) to
 				}
 			}
 			answers[id] = selected
-			continue
+		case "string":
+			var answer *string // JSON null must not become an empty string
+			if !ok || json.Unmarshal(value, &answer) != nil || answer == nil {
+				return fail(fmt.Sprintf("answer %q must be a string", id))
+			}
+			if len(property.Enum) > 0 && !slices.Contains(property.Enum, *answer) {
+				return fail(fmt.Sprintf("answer %q is not an offered option", id))
+			}
+			answers[id] = *answer
+		default:
+			return fail(fmt.Sprintf("answer %q has an unsupported field type", id))
 		}
-		var answer *string // JSON null must not become an empty string
-		if !ok || json.Unmarshal(value, &answer) != nil || answer == nil {
-			return fail(fmt.Sprintf("answer %q must be a string", id))
-		}
-		if len(property.Enum) > 0 && !slices.Contains(property.Enum, *answer) {
-			return fail(fmt.Sprintf("answer %q is not an offered option", id))
-		}
-		answers[id] = *answer
 	}
 	encoded, _ := jsonrpc.Marshal(answers)
 	return toolOutput{Output: string(encoded), RawOutput: encoded}

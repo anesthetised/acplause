@@ -206,7 +206,7 @@ func TestElicitationCancellationAndLateAnswer(t *testing.T) {
 		t.Run(stop, func(t *testing.T) {
 			t.Parallel()
 			llm := newMockLLM(t)
-			llm.enqueue(callTool("ask_user", formArgs))
+			llm.enqueue(callTool("ask_user", typedQuestionArgs))
 			a, sid, _ := startedForms(t, llm)
 			a.accepted(a.prompt(sid, "ask"))
 			q := a.elicitationRequest()
@@ -233,7 +233,7 @@ func TestElicitationCancellationAndLateAnswer(t *testing.T) {
 					t.Fatal("cancelled work resumed")
 				}
 			}
-			a.answer(q, formAnswer("accept"))
+			a.answer(q, map[string]any{"action": "accept", "content": json.RawMessage(typedQuestionAnswers)})
 			a.initializeForms()
 			a.expectQuiet(func(m *message) bool {
 				return m.Method == "elicitation/create" || (m.Method == "session/update" && decodeUpdate(t, m).State == "running")
@@ -319,10 +319,10 @@ func (a *agent) expectNoElicitation() {
 func TestElicitationAnswerDoesNotGrantPermission(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("ask_user", formArgs), callTool("write_file", `{"path":"answer.txt","content":"written"}`), reply("Done."))
+	llm.enqueue(callTool("ask_user", typedQuestionArgs), callTool("write_file", `{"path":"answer.txt","content":"written"}`), reply("Done."))
 	a, sid, cwd := startedForms(t, llm, askingUser)
 	a.accepted(a.prompt(sid, "ask then write"))
-	a.answer(a.elicitationRequest(), formAnswer("accept"))
+	a.answer(a.elicitationRequest(), map[string]any{"action": "accept", "content": json.RawMessage(strings.Replace(typedQuestionAnswers, "false", "true", 1))})
 	permission := a.permissionRequest()
 	if _, err := os.Stat(filepath.Join(cwd, "answer.txt")); !os.IsNotExist(err) {
 		t.Fatalf("write ran without permission: %v", err)
