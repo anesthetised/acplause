@@ -23,7 +23,9 @@ separate capability beyond form support.
    selection order and array types in the tool result and history. Existing
    validation of actions, exact keys, string fields and permissions remains.
 4. Keep existing cancellation, connection-local forms and recovery behavior.
-   Numeric/boolean form fields, defaults and URL mode remain out of scope.
+   Numeric/boolean form fields were outside this slice and are subsequently
+   added by [ADR 0027](0027-typed-user-questions.md). Defaults and URL mode
+   remain outside these decisions.
 
 ## Consequences
 

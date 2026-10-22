@@ -28,6 +28,11 @@ T3 renders elicitation/create as interactive question cards. Before this change,
 
 ## Consequences
 
+The field-type subset is extended by [ADR 0027](0027-typed-user-questions.md)
+with optional explicit integer, number and boolean questions; its strict typed
+answers retain this ADR's permission and lifecycle boundaries. Multiselect
+remains governed by [ADR 0017](0017-multiselect-questions.md).
+
 A deliberately small string/enum surface matches T3's current rendering without building a general forms framework. The user can answer normal questions in-place, while permission and auth contracts remain distinct.
 
 ## Sources and execution

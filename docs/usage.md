@@ -69,9 +69,19 @@ requests. Audio and other image formats are not supported.
 ## Structured questions
 
 Clients advertising `capabilities.elicitation.form: {}` enable the agent-owned
-`ask_user` tool. It sends `elicitation/create` with one to three required fields:
-text, single-choice strings, or multiple choices when a question sets
-`multiSelect: true` with nonempty options. Multiple-choice answers are arrays of
+`ask_user` tool. It sends `elicitation/create` with one to three required fields.
+Each question may set `type` to `string` (the default), `integer`, `number` or
+`boolean`. Integers require an integer JSON token in the signed 64-bit range;
+decimal/exponent tokens and quoted numbers are not converted into integers.
+Numbers accept finite floating-point values, including fractions. Numeric
+tokens reach the model unchanged, including large integers. Boolean `false`
+and numeric zero are valid answers; missing and null values are not.
+Numeric and boolean fields have automated protocol coverage; their T3
+rendering has not been verified.
+
+String questions support text, single-choice strings, or multiple choices when
+`multiSelect: true` is set with nonempty options. Other field types cannot use
+choices or multiselect. Multiple-choice answers are arrays of
 distinct offered strings; an empty array explicitly selects none. Missing, null,
 duplicate and unoffered selections fail validation. Only a complete accepted answer
 with the requested keys and valid values reaches the model as answers; decline,
@@ -91,7 +101,8 @@ ask in text. Malformed optional capability values are treated as unsupported,
 so they do not prevent initialization. This does not enable MCP server
 elicitation. See
 [ADR 0011](adr/0011-structured-user-questions.md),
-[ADR 0017](adr/0017-multiselect-questions.md) and the
+[ADR 0017](adr/0017-multiselect-questions.md),
+[ADR 0027](adr/0027-typed-user-questions.md) and the
 [T3 form smoke procedure](testing/t3-first-class-smoke.md). Native T3 form
 answers and turn cancellation were verified; the procedure distinguishes those
 observations from extended lifecycle cases covered only by automated tests.
