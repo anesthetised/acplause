@@ -1,0 +1,57 @@
+; ADR 0025 prototype revision 2. Not a supported or production policy.
+; SBPL is unsupported by Apple. Rules follow the installed macOS profiles and
+; https://chromium.googlesource.com/chromium/src/+/main/sandbox/mac/README.md
+; Paths are supplied only as -D parameters, never inserted into policy source.
+(version 1)
+(deny default)
+; These operations can be allowed implicitly: deny them explicitly before self.
+; https://raw.githubusercontent.com/chromium/chromium/main/sandbox/policy/mac/renderer.sb
+(deny process-info* iokit-get-properties nvram*)
+(allow process-info* (target self))
+(allow process-fork process-exec)
+(allow signal (target same-sandbox))
+; Never permit KERN_PROCARGS2: it can disclose an unrelated process's environment.
+(allow sysctl-read
+    (sysctl-name "hw.ncpu")
+    (sysctl-name "hw.logicalcpu")
+    (sysctl-name "hw.memsize")
+    (sysctl-name "hw.pagesize")
+    (sysctl-name "hw.pagesize_compat")
+    (sysctl-name "kern.ostype")
+    (sysctl-name "kern.osrelease")
+    (sysctl-name "kern.osversion")
+    (sysctl-name "kern.argmax"))
+; Explicit prototype exception: stat metadata is visible outside granted roots.
+; This permits no file contents or metadata changes. Tested separately.
+(allow file-read-metadata)
+; macOS 27 dyld opens the root directory while finding its shared cache.
+(allow file-read-data (literal "/"))
+(allow file-read* file-map-executable
+    (subpath "/bin")
+    (subpath "/sbin")
+    (subpath "/usr/bin")
+    (subpath "/usr/sbin")
+    (subpath "/usr/lib")
+    (subpath "/System/Library")
+    (subpath (param "READ_0"))
+    (subpath (param "READ_1"))
+    (subpath (param "READ_2"))
+    (subpath (param "READ_3")))
+(allow file-read* file-write* file-map-executable
+    (subpath (param "ROOT_0"))
+    (subpath (param "ROOT_1"))
+    (subpath (param "ROOT_2"))
+    (subpath (param "ROOT_3")))
+(allow file-read* file-write-data (literal "/dev/null"))
+(allow file-read* (literal "/dev/urandom") (literal "/dev/random"))
+; Protect ordinary, worktree and submodule Git config/hooks, including nesting.
+; Ancestor rename/replacement is a required adversarial test, not assumed safe.
+(deny file-write*
+    (regex #"/[.]git/(.*/)?(config([.]worktree)?|hooks(/.*)?)$"))
+; Protect directory identities underneath Git administration roots as well.
+; This intentionally prevents removing their directories, including git worktree
+; removal/gc; ordinary index/ref files still need to be writable/unlinkable.
+(deny file-write-unlink
+    (require-all (vnode-type DIRECTORY)
+        (regex #"/[.]git(/(worktrees|modules)(/.*)?)?$")))
+; No network, Unix socket or Mach service grants. No sandbox extension grants.

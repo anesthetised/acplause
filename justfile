@@ -20,6 +20,10 @@ test *args:
 e2e *args:
     go test -race -count=1 {{ args }} ./e2e/
 
+# Run the macOS-only ADR 0025 probes; unmet sandbox gates deliberately fail.
+seatbelt-prototype *args:
+    go test -race -count=1 -tags seatbelt_prototype -v {{ args }} ./experiments/seatbelt/
+
 # Format the code.
 fmt:
     gofmt -w .
