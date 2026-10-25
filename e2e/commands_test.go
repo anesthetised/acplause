@@ -281,7 +281,7 @@ func TestCompactCommandSummaryFailureWithFiniteBudget(t *testing.T) {
 					s.text(" ")
 					s.finish("stop")
 				case "tool":
-					s.toolCall(0, "forbidden", "bash", `{"command":"touch should-not-exist"}`)
+					s.toolCall(0, "forbidden", testShellName(), testShellArgs(`touch should-not-exist`, `[IO.File]::WriteAllText('should-not-exist', '')`))
 					s.finish("tool_calls")
 				case "length":
 					s.text("unfinished")

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +33,11 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	binary = filepath.Join(dir, "acplause")
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	binary = filepath.Join(dir, "acplause"+suffix)
 	args := []string{"build", "-o", binary, "-ldflags", "-X main.buildVersion=" + testVersion + " -X main.buildCommit=" + testCommit}
 	if raceEnabled {
 		args = append(args, "-race")
@@ -43,7 +48,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "building acplause:", err)
 		os.Exit(1)
 	}
-	mcpBinary = filepath.Join(dir, "mcp-fixture")
+	mcpBinary = filepath.Join(dir, "mcp-fixture"+suffix)
 	build = exec.Command("go", "build", "-o", mcpBinary, "./testdata/mcp")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
@@ -612,4 +617,19 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(p)
+}
+
+// testShellCommand keeps the same behavior under the platform's native shell.
+func testShellCommand(unix, windows string) string {
+	if runtime.GOOS == "windows" {
+		return windows
+	}
+	return unix
+}
+
+func testShellName() string { return testShellCommand("bash", "powershell") }
+
+func testShellArgs(unix, windows string) string {
+	args, _ := json.Marshal(map[string]string{"command": testShellCommand(unix, windows)})
+	return string(args)
 }

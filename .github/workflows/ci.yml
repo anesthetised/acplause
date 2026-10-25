@@ -84,3 +84,56 @@ jobs:
           git add coverage.json
           git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -q -m "coverage $pct%"
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" badges
+
+  windows:
+    name: Windows amd64 tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: '1'
+      CC: gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Verify the race detector compiler runtime
+        shell: pwsh
+        run: |
+          $library = gcc --print-file-name=libsynchronization.a
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $library -PathType Leaf)) {
+            throw 'The Windows race detector requires MinGW-w64 runtime 8 or later'
+          }
+          gcc --version
+
+      - name: Vet
+        run: go vet ./...
+
+      # Bound concurrent PowerShell processes on the shared runner. The e2e
+      # harness also builds and executes the agent with the race detector.
+      - name: Unit and protocol e2e tests
+        run: go test -race -count=1 -parallel=4 ./...
+
+      - name: Build native release binary
+        run: go build -o "${{ runner.temp }}/acplause.exe" ./cmd/acplause
+        env:
+          CGO_ENABLED: '0'
+
+      # This verifies arm64 production and test compilation; it does not claim
+      # to execute arm64 binaries on the amd64 runner. 'go test -c' never runs
+      # TestMain, so its fixture builds remain native in the test step above.
+      - name: Cross-build Windows arm64 binary and tests
+        shell: pwsh
+        env:
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        run: |
+          go build -o "${{ runner.temp }}/acplause-arm64.exe" ./cmd/acplause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -c -o "${{ runner.temp }}/arm64-tests/" ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

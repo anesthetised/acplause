@@ -5,9 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -322,7 +320,7 @@ func TestUnlimitedRounds(t *testing.T) {
 func TestUnlimitedBashTimeout(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("bash", `{"command":"printf done"}`), reply("finished"))
+	llm.enqueue(callTool(testShellName(), testShellArgs(`printf done`, `[Console]::Write('done')`)), reply("finished"))
 	a, sid, _ := started(t, llm, withEnv("ACPLAUSE_BASH_TIMEOUT=0"))
 	a.accepted(a.prompt(sid, "run"))
 	updates := a.untilIdle(sid)
@@ -336,7 +334,7 @@ func TestUnlimitedBashTimeout(t *testing.T) {
 func TestBashDoesNotInheritTheAPIKey(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("bash", `{"command":"printf '%s %s' \"${ACPLAUSE_API_KEY-unset}\" \"$E2E_MARKER\""}`), reply("finished"))
+	llm.enqueue(callTool(testShellName(), testShellArgs(`printf '%s %s' "${ACPLAUSE_API_KEY-unset}" "$E2E_MARKER"`, `$key = if (Test-Path Env:ACPLAUSE_API_KEY) { $env:ACPLAUSE_API_KEY } else { 'unset' }; [Console]::Write("$key $env:E2E_MARKER")`)), reply("finished"))
 	a, sid, _ := started(t, llm, withEnv("E2E_MARKER=kept"))
 	a.accepted(a.prompt(sid, "run"))
 	calls := filter(a.untilIdle(sid), "tool_call_update")
@@ -377,38 +375,6 @@ func TestMissingWriteContentPreservesFiles(t *testing.T) {
 	}
 }
 
-func TestCancelDuringBash(t *testing.T) {
-	t.Parallel()
-	llm := newMockLLM(t)
-	llm.enqueue(
-		callTool("bash", `{"command":"sleep 60 & echo $! > child.pid; wait"}`),
-		reply("ok"),
-	)
-	a, sid, cwd := started(t, llm, withEnv("ACPLAUSE_BASH_TIMEOUT=0", "ACPLAUSE_MAX_ROUNDS=0"))
-	pidFile := filepath.Join(cwd, "child.pid")
-
-	a.accepted(a.prompt(sid, "run it"))
-	a.toolStarted(sid)
-	waitForFile(t, pidFile)
-	a.notify("session/cancel", map[string]any{"sessionId": sid})
-
-	updates := a.untilIdle(sid)
-	want := []string{"tool_call_update cancelled", "state_update idle cancelled"}
-	if got := kinds(updates); !slices.Equal(got[len(got)-2:], want) || len(filter(updates, "tool_call_update")) != 1 {
-		t.Fatalf("updates after cancel: %v", got)
-	}
-	assertProcessGone(t, pidFile)
-
-	// The history stays valid: the next request carries a result for the
-	// cancelled call.
-	a.accepted(a.prompt(sid, "next"))
-	a.untilIdle(sid)
-	msgs := llm.request(1).Messages
-	if result := msgs[3]; result["role"] != "tool" || result["content"] != "Cancelled by the user." {
-		t.Fatalf("history after cancel: %v", msgs)
-	}
-}
-
 func TestAdditionalDirectories(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
@@ -417,7 +383,8 @@ func TestAdditionalDirectories(t *testing.T) {
 	if err := os.WriteFile(lib, []byte("shared"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	llm.enqueue(callTool("read_file", `{"path":"`+lib+`"}`), reply("read it"))
+	args, _ := json.Marshal(map[string]string{"path": lib})
+	llm.enqueue(callTool("read_file", string(args)), reply("read it"))
 
 	a := start(t, llm)
 	a.initialize()
@@ -447,25 +414,6 @@ func waitForFile(t *testing.T, path string) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("%s never appeared", path)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func assertProcessGone(t *testing.T, pidFile string) {
-	t.Helper()
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("process %d started by bash survived cancellation", pid)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

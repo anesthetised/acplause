@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -34,6 +35,13 @@ func TestEditBatchRetainsOneSequentialPreview(t *testing.T) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && before.Mode().Perm() != 0o600 {
+		t.Fatalf("chmod fixture: %v", before.Mode().Perm())
+	}
 	c, err := w.prepare("edit_batch", batchArgs("a.txt", "one", "ONE", "ONE", "first", "two\n", "", "caf\u00e9", "th\u00e9"))
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +62,7 @@ func TestEditBatchRetainsOneSequentialPreview(t *testing.T) {
 		t.Fatalf("approved and actual diff differ: %+v", result)
 	}
 	readBatchFile(t, path, "first\nth\u00e9\n")
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != before.Mode().Perm() {
 		t.Fatalf("batch changed file permissions: %v", err)
 	}
 	if got := c.Run(context.Background()); !got.Failed || !strings.Contains(got.Output, "preview") {
@@ -182,7 +190,7 @@ func TestEditBatchPreviewAndStaleContentFailClosed(t *testing.T) {
 					if err := os.WriteFile(outside, []byte("one two"), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.Symlink(outside, path); err != nil {
+					if err := testSymlink(t, outside, path); err != nil {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() { readBatchFile(t, outside, "one two") })
@@ -259,7 +267,7 @@ func TestEditBatchInitialTargetsAndSandbox(t *testing.T) {
 	}
 	outside := filepath.Join(t.TempDir(), "outside")
 	w.write(outside, "one")
-	if err := os.Symlink(outside, filepath.Join(w.cwd, "escape")); err != nil {
+	if err := testSymlink(t, outside, filepath.Join(w.cwd, "escape")); err != nil {
 		t.Fatal(err)
 	}
 	for _, target := range []string{"missing", "directory", "escape"} {
@@ -276,7 +284,7 @@ func TestEditBatchInitialTargetsAndSandbox(t *testing.T) {
 	}
 	readBatchFile(t, outside, "one")
 	local := w.write("local", "one")
-	if err := os.Symlink("local", filepath.Join(w.cwd, "alias")); err != nil {
+	if err := testSymlink(t, "local", filepath.Join(w.cwd, "alias")); err != nil {
 		t.Fatal(err)
 	}
 	extra := w.write(filepath.Join(w.extra, "a"), "one")

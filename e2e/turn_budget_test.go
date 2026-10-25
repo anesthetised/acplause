@@ -14,7 +14,7 @@ func turnBudgetResponse(text, usage string, calls bool) script {
 		reason := "stop"
 		if calls {
 			s.toolCall(0, "budget-write", "write_file", `{"path":"changed","content":"bad"}`)
-			s.toolCall(1, "budget-bash", "bash", `{"command":"touch changed"}`)
+			s.toolCall(1, "budget-bash", testShellName(), testShellArgs(`touch changed`, `[IO.File]::WriteAllText('changed', '')`))
 			reason = "tool_calls"
 		}
 		accounting := ""

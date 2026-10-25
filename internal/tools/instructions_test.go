@@ -87,15 +87,14 @@ func TestResolveInstructionsMissingAndEmptyFiles(t *testing.T) {
 func TestResolveInstructionsAbsoluteSourceLabels(t *testing.T) {
 	w := newWorkspace(t, Options{})
 	source := w.write("AGENTS.md", "Root.")
-	cwd, err := os.Getwd()
+	source, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	relative, err := filepath.Rel(cwd, w.cwd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tb, err := New(relative, nil, Options{})
+	// The checkout and temporary directory can be on different Windows drives.
+	// Chdir also makes the relative-root fixture independent of that layout.
+	t.Chdir(filepath.Dir(source))
+	tb, err := New(".", nil, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,12 +170,12 @@ func TestResolveInstructionsRejectsInvalidSources(t *testing.T) {
 			case "directory":
 				err = os.Mkdir(bad, 0o700)
 			case "dangling symlink":
-				err = os.Symlink("missing", bad)
+				err = testSymlink(t, "missing", bad)
 			case "symlink loop":
-				err = os.Symlink("AGENTS.md", bad)
+				err = testSymlink(t, "AGENTS.md", bad)
 			case "outside-root symlink":
 				outside := w.write(filepath.Join(w.extra, "AGENTS.md"), "Unrelated root.")
-				err = os.Symlink(outside, bad)
+				err = testSymlink(t, outside, bad)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -192,7 +191,7 @@ func TestResolveInstructionsRejectsInvalidDirectories(t *testing.T) {
 	w := newWorkspace(t, Options{})
 	w.write("plain.txt", "not a directory")
 	w.write("child/keep", "not instructions")
-	if err := os.Symlink(filepath.Join(w.cwd, "child"), filepath.Join(w.cwd, "absolute-link")); err != nil {
+	if err := testSymlink(t, filepath.Join(w.cwd, "child"), filepath.Join(w.cwd, "absolute-link")); err != nil {
 		t.Fatal(err)
 	}
 	for _, target := range []string{"", "../shared", "plain.txt", "absolute-link"} {
@@ -203,7 +202,7 @@ func TestResolveInstructionsRejectsInvalidDirectories(t *testing.T) {
 	if _, err := w.tb.ResolveInstructions(context.Background(), "missing"); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing directory error: %v", err)
 	}
-	if err := os.Symlink(w.extra, filepath.Join(w.cwd, "escape")); err != nil {
+	if err := testSymlink(t, w.extra, filepath.Join(w.cwd, "escape")); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := w.tb.ResolveInstructions(context.Background(), "escape"); err == nil || len(got) != 0 {
@@ -216,7 +215,7 @@ func TestResolveInstructionsLexicalSymlinkChain(t *testing.T) {
 	root := w.write("AGENTS.md", "Root.")
 	w.write("src/AGENTS.md", "Physical ancestor, outside the requested lexical chain.")
 	w.write("src/deep/AGENTS.md", "Leaf.")
-	if err := os.Symlink(filepath.Join("src", "deep"), filepath.Join(w.cwd, "alias")); err != nil {
+	if err := testSymlink(t, filepath.Join("src", "deep"), filepath.Join(w.cwd, "alias")); err != nil {
 		t.Fatal(err)
 	}
 	want := []Instruction{{Path: root, Text: "Root."}, {Path: filepath.Join(w.cwd, "alias/AGENTS.md"), Text: "Leaf."}}

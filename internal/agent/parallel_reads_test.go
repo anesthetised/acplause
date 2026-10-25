@@ -28,7 +28,7 @@ func readCalls(n int) []llm.ToolCall {
 
 func TestParallelReadEligibilityIsExactAndBuiltin(t *testing.T) {
 	round := modelRound{bindings: map[string]mcp.Tool{"read_file": {ReadOnly: true}, "mcp_read": {ReadOnly: true}}}
-	for _, name := range []string{"list_dir", "search_code", "get_instructions", "read_file", "mcp_read", "bash", "write_file", "edit", "edit_batch", "ask_user", "update_plan", "unknown"} {
+	for _, name := range []string{"list_dir", "search_code", "get_instructions", "read_file", "mcp_read", testShellName(), "write_file", "edit", "edit_batch", "ask_user", "update_plan", "unknown"} {
 		want := name == "list_dir" || name == "search_code" || name == "get_instructions"
 		if got := parallelRead(llm.ToolCall{Function: llm.FunctionCall{Name: name}}, round); got != want {
 			t.Errorf("%s eligible=%v want=%v", name, got, want)

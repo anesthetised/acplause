@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -303,4 +304,19 @@ func TestNoPermissionRequestAfterCancellation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testShellCommand keeps the same behavior under the platform's native shell.
+func testShellCommand(unix, windows string) string {
+	if runtime.GOOS == "windows" {
+		return windows
+	}
+	return unix
+}
+
+func testShellName() string { return testShellCommand("bash", "powershell") }
+
+func testShellArgs(unix, windows string) string {
+	args, _ := json.Marshal(map[string]string{"command": testShellCommand(unix, windows)})
+	return string(args)
 }

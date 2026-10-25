@@ -53,7 +53,7 @@ func TestModePlanBuildPolicyAndRestart(t *testing.T) {
 	llm.enqueue(func(s *stream) {
 		// Even the stale external read_file claims readOnlyHint in this fixture.
 		for i, call := range []struct{ name, args string }{
-			{"bash", `{"command":"cat AGENTS.md; touch changed"}`},
+			{testShellName(), testShellArgs(`cat AGENTS.md; touch changed`, `[Console]::Write([IO.File]::ReadAllText('AGENTS.md')); [IO.File]::WriteAllText('changed', '')`)},
 			{"write_file", `{"path":"changed","content":"bad"}`},
 			{"edit", `{"path":"AGENTS.md","old_text":"Keep","new_text":"Lose"}`},
 			{external, `{}`},
@@ -193,14 +193,14 @@ func TestModeRefusesPendingPermissionAndQueuedPrompt(t *testing.T) {
 func TestModePlanQuestionsNeverAuthorizeExecution(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("ask_user", formArgs), callTool("bash", `{"command":"touch forbidden"}`), reply("Proposed."))
+	llm.enqueue(callTool("ask_user", formArgs), callTool(testShellName(), testShellArgs(`touch forbidden`, `[IO.File]::WriteAllText('forbidden', '')`)), reply("Proposed."))
 	a, sid, cwd := startedForms(t, llm, askingUser)
 	setMode(t, a, sid, "plan")
 	a.accepted(a.prompt(sid, "ask before planning"))
 	a.answer(a.elicitationRequest(), formAnswer("accept"))
 	updates := a.untilIdle(sid)
 	calls := filter(updates, "tool_call_update")
-	if len(calls) != 3 || calls[1].Status != "completed" || calls[2].Name != "bash" || calls[2].Status != "failed" {
+	if len(calls) != 3 || calls[1].Status != "completed" || calls[2].Name != testShellName() || calls[2].Status != "failed" {
 		t.Fatalf("Plan form flow: %v", kinds(updates))
 	}
 	if !slices.ContainsFunc(llm.request(0).Tools, func(tool map[string]any) bool { return tool["function"].(map[string]any)["name"] == "ask_user" }) {

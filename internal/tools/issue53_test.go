@@ -66,7 +66,7 @@ func TestIssue53SearchRejectsReplacedEscapingSymlink(t *testing.T) {
 	if err := os.Remove(p); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, p); err != nil {
+	if err := testSymlink(t, outside, p); err != nil {
 		t.Fatal(err)
 	}
 	s := searcher{pattern: []byte("needle"), show: func(name string) string { return name }}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -72,6 +73,11 @@ func TestFileDiff(t *testing.T) {
 			name: "space in path", path: "/w/a b.txt", existed: true, old: "a\n", new: "b\n", op: acp.DiffModify,
 			patch: "diff --git /w/a b.txt /w/a b.txt\n--- /w/a b.txt\t\n+++ /w/a b.txt\t\n@@ -1 +1 @@\n-a\n+b\n",
 		},
+		{
+			name: "Windows drive path", path: `C:\work\a.txt`, new: "x\n", op: acp.DiffAdd,
+			patch: `diff --git "C:\\work\\a.txt" "C:\\work\\a.txt"` + "\nnew file mode 100644\n--- /dev/null\n" +
+				`+++ "C:\\work\\a.txt"` + "\n@@ -0,0 +1 @@\n+x\n",
+		},
 		{name: "identical", path: "/w/a.txt", existed: true, old: "a\n", new: "a\n", op: acp.DiffModify},
 		{
 			name: "too large", path: "/w/a.txt", existed: true, op: acp.DiffModify,
@@ -121,7 +127,10 @@ func TestFileDiffAppliesWithGit(t *testing.T) {
 		}
 		return b.String()
 	}
-	names := []string{"plain.txt", "with space.txt", `quo"te.txt`, "ünï.txt"}
+	names := []string{"plain.txt", "with space.txt", "ünï.txt"}
+	if runtime.GOOS != "windows" {
+		names = append(names, `quo"te.txt`)
+	}
 	for i := range 100 {
 		path := filepath.Join(dir, names[i%len(names)])
 		existed, old, updated := i%5 != 0, "", content()
@@ -134,7 +143,13 @@ func TestFileDiffAppliesWithGit(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		d := fileDiff(path, old, existed, updated)
+		diffPath := path
+		if runtime.GOOS == "windows" {
+			// Git's patch paths are relative to the fixture's drive. The unit
+			// table separately pins native Windows absolute-path quoting.
+			diffPath = filepath.Base(path)
+		}
+		d := fileDiff(diffPath, old, existed, updated)
 		if d.Patch == nil {
 			continue // identical or empty: nothing to apply
 		}
@@ -144,6 +159,10 @@ func TestFileDiffAppliesWithGit(t *testing.T) {
 		}
 		cmd := exec.Command("git", "apply", "-p0", "--unsafe-paths", "--directory=/", patch)
 		cmd.Dir = "/"
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("git", "apply", "-p0", "--unsafe-paths", patch)
+			cmd.Dir = dir
+		}
 		cmd.Env = append(os.Environ(), "GIT_DIR="+filepath.Join(dir, "no-repo"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("case %d: git apply: %v\n%s\npatch:\n%s", i, err, out, d.Patch.Text)

@@ -17,11 +17,11 @@ import (
 	"github.com/anesthetised/acplause/internal/llm"
 )
 
-// runBash prompts one bash call, returning the turn's updates.
-func runBash(t *testing.T, c *acpClient, model scriptedModel, sid, command string) []notification {
+// runShell prompts one native shell call, returning the turn's updates.
+func runShell(t *testing.T, c *acpClient, model scriptedModel, sid, command string) []notification {
 	t.Helper()
 	args, _ := json.Marshal(map[string]string{"command": command})
-	model.callTool("b", "bash", string(args))
+	model.callTool("b", testShellName(), string(args))
 	model.reply("ok", llm.FinishStop, nil)
 	c.await(c.prompt(sid, "run"))
 	return c.untilIdle(sid)
@@ -60,20 +60,20 @@ func TestRememberedShellAllow(t *testing.T) {
 	c.answer = func(context.Context) (string, string) { return acp.OutcomeSelected, optionAllowAlways }
 	c.mu.Unlock()
 
-	runBash(t, c, model, sid, "touch ran")
+	runShell(t, c, model, sid, testShellCommand(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
 	if got := c.permissionKinds(0); !slices.Equal(got, []string{"allow_once", "allow_always", "reject_once", "reject_always"}) {
 		t.Fatalf("options: %v", got)
 	}
 	// The same command runs without a request; a different spelling asks.
 	os.Remove(filepath.Join(cwd, "ran"))
-	updates := runBash(t, c, model, sid, "touch ran")
+	updates := runShell(t, c, model, sid, testShellCommand(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
 	if c.permissionCount() != 1 || !anyStatus(updates, acp.ToolCompleted) {
 		t.Fatalf("remembered allow asked again or failed: requests=%d %+v", c.permissionCount(), updates)
 	}
 	if _, err := os.Stat(filepath.Join(cwd, "ran")); err != nil {
 		t.Fatal("remembered command did not run")
 	}
-	runBash(t, c, model, sid, "touch  ran")
+	runShell(t, c, model, sid, testShellCommand(`touch  ran`, `[IO.File]::WriteAllText('ran',  '')`))
 	if c.permissionCount() != 2 {
 		t.Fatalf("near-matching command was not asked about: %d requests", c.permissionCount())
 	}
@@ -90,17 +90,17 @@ func TestRememberedShellReject(t *testing.T) {
 	c.answer = func(context.Context) (string, string) { return acp.OutcomeSelected, optionRejectAlways }
 	c.mu.Unlock()
 
-	if updates := runBash(t, c, model, sid, "touch ran"); !anyStatus(updates, acp.ToolFailed) {
+	if updates := runShell(t, c, model, sid, testShellCommand(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)); !anyStatus(updates, acp.ToolFailed) {
 		t.Fatalf("tool not failed: %+v", updates)
 	}
 	// Even a client that would now allow is not asked: the denial is remembered.
 	c.mu.Lock()
 	c.answer = func(context.Context) (string, string) { return acp.OutcomeSelected, optionAllow }
 	c.mu.Unlock()
-	if updates := runBash(t, c, model, sid, "touch ran"); !anyStatus(updates, acp.ToolFailed) || c.permissionCount() != 1 {
+	if updates := runShell(t, c, model, sid, testShellCommand(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)); !anyStatus(updates, acp.ToolFailed) || c.permissionCount() != 1 {
 		t.Fatalf("remembered reject: requests=%d %+v", c.permissionCount(), updates)
 	}
-	if updates := runBash(t, c, model, sid, "touch ran"); !slices.ContainsFunc(updates, func(u notification) bool {
+	if updates := runShell(t, c, model, sid, testShellCommand(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)); !slices.ContainsFunc(updates, func(u notification) bool {
 		return strings.HasSuffix(u.Update.Title, "(rejected earlier this session)")
 	}) {
 		t.Fatalf("remembered reject not marked: %+v", updates)
@@ -125,8 +125,8 @@ func TestShellDecisionsNotRecordedWithoutExplicitChoice(t *testing.T) {
 			c.mu.Lock()
 			c.answer = func(context.Context) (string, string) { return tc.outcome, tc.option }
 			c.mu.Unlock()
-			runBash(t, c, model, sid, "true")
-			runBash(t, c, model, sid, "true")
+			runShell(t, c, model, sid, testShellCommand(`true`, `$null = 1`))
+			runShell(t, c, model, sid, testShellCommand(`true`, `$null = 1`))
 			if c.permissionCount() != 2 {
 				t.Fatalf("a decision was remembered: %d requests", c.permissionCount())
 			}
@@ -186,14 +186,14 @@ func TestRememberedShellDecisionClearedByRootsChange(t *testing.T) {
 	c.mu.Lock()
 	c.answer = func(context.Context) (string, string) { return acp.OutcomeSelected, optionAllowAlways }
 	c.mu.Unlock()
-	runBash(t, c, model, sid, "true")
-	runBash(t, c, model, sid, "true")
+	runShell(t, c, model, sid, testShellCommand(`true`, `$null = 1`))
+	runShell(t, c, model, sid, testShellCommand(`true`, `$null = 1`))
 	if c.permissionCount() != 1 {
 		t.Fatalf("not remembered: %d requests", c.permissionCount())
 	}
 	c.ok(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd, "additionalDirectories": []string{dirB}}, nil)
 	c.untilIdle(sid)
-	runBash(t, c, model, sid, "true")
+	runShell(t, c, model, sid, testShellCommand(`true`, `$null = 1`))
 	if c.permissionCount() != 2 {
 		t.Fatalf("roots change kept the decision: %d requests", c.permissionCount())
 	}
@@ -209,11 +209,11 @@ func TestRememberedShellDecisionDoesNotBypassPlanMode(t *testing.T) {
 	c.mu.Lock()
 	c.answer = func(context.Context) (string, string) { return acp.OutcomeSelected, optionAllowAlways }
 	c.mu.Unlock()
-	runBash(t, c, model, sid, "touch ran")
+	runShell(t, c, model, sid, testShellCommand(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
 	os.Remove(filepath.Join(cwd, "ran"))
 	c.ok(acp.MethodSessionSetConfig, map[string]any{"sessionId": sid, "configId": configMode, "type": "id", "value": modePlan}, nil)
 	// A stale call in Plan mode fails before memory is consulted.
-	model.callTool("b", "bash", `{"command":"touch ran"}`)
+	model.callTool("b", testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
 	model.reply("ok", llm.FinishStop, nil)
 	c.await(c.prompt(sid, "run"))
 	if updates := c.untilIdle(sid); !anyStatus(updates, acp.ToolFailed) {
@@ -244,8 +244,8 @@ func TestRememberedAnswerAfterRootsChangeIsDropped(t *testing.T) {
 		return acp.OutcomeSelected, optionAllowAlways
 	}
 	c.mu.Unlock()
-	args, _ := json.Marshal(map[string]string{"command": "true"})
-	model.callTool("b", "bash", string(args))
+	args, _ := json.Marshal(map[string]string{"command": testShellCommand(`true`, `$null = 1`)})
+	model.callTool("b", testShellName(), string(args))
 	model.reply("ok", llm.FinishStop, nil)
 	c.await(c.prompt(sid, "run"))
 	<-asked
@@ -256,7 +256,7 @@ func TestRememberedAnswerAfterRootsChangeIsDropped(t *testing.T) {
 	c.mu.Lock()
 	c.answer = func(context.Context) (string, string) { return acp.OutcomeSelected, optionAllow }
 	c.mu.Unlock()
-	runBash(t, c, model, sid, "true")
+	runShell(t, c, model, sid, testShellCommand(`true`, `$null = 1`))
 	if c.permissionCount() != 2 {
 		t.Fatalf("decision made under the old roots was kept: %d requests", c.permissionCount())
 	}

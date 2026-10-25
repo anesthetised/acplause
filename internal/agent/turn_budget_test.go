@@ -70,7 +70,7 @@ func TestTurnBudgetStopsSiblingToolsRetainsOutputAndResets(t *testing.T) {
 					delta(llm.Delta{Kind: llm.DeltaText, Text: "Retained answer."})
 					return &llm.Completion{Content: "Retained answer.", Usage: budgetUsage(10, 0.5), ToolCalls: []llm.ToolCall{
 						{ID: "write", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"changed","content":"bad"}`}},
-						{ID: "shell", Function: llm.FunctionCall{Name: "bash", Arguments: `{"command":"touch changed"}`}},
+						{ID: "shell", Function: llm.FunctionCall{Name: testShellName(), Arguments: testShellArgs(`touch changed`, `[IO.File]::WriteAllText('changed', '')`)}},
 					}}, nil
 				}
 				assertToolPairs(t, req.Messages)

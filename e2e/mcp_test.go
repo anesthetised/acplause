@@ -76,7 +76,12 @@ func TestMCPStdioRelay(t *testing.T) {
 	updates := a.untilIdle(sid)
 	msgs := llm.request(1).Messages
 	text := msgs[len(msgs)-1]["content"].(string)
-	for _, want := range []string{`"schedule":{"type":"interval","everyMs":3600000}`, `9007199254740993`, cwd, `configured-token`, `fixture-argument`, `"providerKey":""`} {
+	physicalCwd, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedCwd, _ := json.Marshal(physicalCwd)
+	for _, want := range []string{`"schedule":{"type":"interval","everyMs":3600000}`, `9007199254740993`, string(encodedCwd), `configured-token`, `fixture-argument`, `"providerKey":""`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("result lacks %q: %s", want, text)
 		}

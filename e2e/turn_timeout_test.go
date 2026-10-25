@@ -27,7 +27,7 @@ func assertTurnTimeoutUpdates(t *testing.T, updates []update) {
 
 func TestTurnTimeoutCancelsWorkAndAllowsFollowingPrompt(t *testing.T) {
 	t.Parallel()
-	for _, phase := range []string{"model", "permission", "form", "bash", "compact"} {
+	for _, phase := range []string{"model", "permission", "form", testShellName(), "compact"} {
 		t.Run(phase, func(t *testing.T) {
 			t.Parallel()
 			llm := newMockLLM(t, compactionModels)
@@ -54,9 +54,9 @@ func TestTurnTimeoutCancelsWorkAndAllowsFollowingPrompt(t *testing.T) {
 				llm.enqueue(callTool("write_file", `{"path":"changed","content":"bad"}`))
 			case "form":
 				llm.enqueue(callTool("ask_user", formArgs))
-			case "bash":
+			case testShellName():
 				llm.enqueue(func(s *stream) {
-					s.toolCall(0, "waiting", "bash", `{"command":"echo ready; sleep 30"}`)
+					s.toolCall(0, "waiting", testShellName(), testShellArgs(`echo ready; sleep 30`, "[Console]::Write(\"ready`n\"); Start-Sleep -Seconds 30"))
 					s.toolCall(1, "never", "write_file", `{"path":"changed","content":"bad"}`)
 					s.finish("tool_calls")
 				})
@@ -102,7 +102,7 @@ func TestTurnTimeoutCancelsWorkAndAllowsFollowingPrompt(t *testing.T) {
 			if idle := next[len(next)-1]; idle.StopReason != "end_turn" || len(filter(next, "notice")) != 0 {
 				t.Fatalf("deadline allowance did not reset: %v", kinds(next))
 			}
-			if phase == "permission" || phase == "form" || phase == "bash" {
+			if phase == "permission" || phase == "form" || phase == testShellName() {
 				count := 0
 				for _, m := range llm.request(base + 1).Messages {
 					if m["role"] == "tool" {
@@ -113,7 +113,7 @@ func TestTurnTimeoutCancelsWorkAndAllowsFollowingPrompt(t *testing.T) {
 					}
 				}
 				want := 1
-				if phase == "bash" {
+				if phase == testShellName() {
 					want = 2
 				}
 				if count != want {
