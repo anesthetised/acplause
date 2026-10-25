@@ -95,11 +95,14 @@ an expired HTTP session gets one recovery attempt for future model requests.
 
 Close/delete/shutdown/ownership loss release connections. Stdio cleanup closes
 stdin, waits one second, sends TERM, waits one second, then kills and reaps;
-Unix cleanup includes the process group. Windows starts the server suspended
-and assigns it to a private kill-on-close Job Object before resuming; after
+Unix cleanup includes the process group. Windows creates the server suspended
+atomically inside a private kill-on-close Job Object before resuming; after
 the stdin grace period, cleanup terminates the job and its members. Agent death
 also closes the job handle. This is process cleanup, not an OS sandbox; external
-services/brokers can start work outside the job. HTTP DELETE has a two-second deadline. Limits are 16 servers,
+services/brokers can start work outside the job. A failed stdio process cleanup
+emits one warning to stderr, whether closure was explicit or automatic; it
+omits raw errors and configuration to avoid exposing credentials.
+HTTP DELETE has a two-second deadline. Limits are 16 servers,
 100 pages/1,024 tools per server, 8 MiB per message/event/catalog and 256 KiB
 per projected text/JSON result; exceeding a limit fails explicitly.
 

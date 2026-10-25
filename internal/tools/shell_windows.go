@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 	"unicode/utf16"
 
 	"github.com/anesthetised/acplause/internal/winproc"
@@ -43,10 +47,45 @@ func shellCommand(ctx context.Context, command string) *exec.Cmd {
 		"-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-Command", launcher)
 }
 
-func startShell(cmd *exec.Cmd) (func() error, error) {
-	job, err := winproc.Start(cmd)
+func startShell(ctx context.Context, cmd *exec.Cmd) (*shellProcess, error) {
+	if cmd.Err != nil {
+		return nil, cmd.Err
+	}
+	in, err := os.Open(os.DevNull)
 	if err != nil {
 		return nil, err
 	}
-	return job.Close, nil
+	defer in.Close()
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer w.Close()
+	job, err := winproc.Start(ctx, winproc.Config{Path: cmd.Path, Args: cmd.Args, Dir: cmd.Dir, Env: cmd.Environ(), Files: [3]*os.File{in, w, w}})
+	if err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	// A single pipe preserves the combined byte stream without serialization.
+	drained := make(chan error, 1)
+	go func() { _, err := io.Copy(cmd.Stdout, r); drained <- err }()
+	return &shellProcess{
+		wait: func() (ShellExit, error) { state, err := job.Wait(); return shellExit(state), err },
+		close: func() error {
+			defer r.Close()
+			err := job.Close()
+			timer := time.NewTimer(cmd.WaitDelay)
+			defer timer.Stop()
+			select {
+			case copyErr := <-drained:
+				return errors.Join(err, copyErr)
+			case <-timer.C:
+				// A broker outside the job can retain an inherited pipe. Match
+				// exec.WaitDelay: retain the prefix without blocking completion.
+				_ = r.Close()
+				<-drained
+				return err
+			}
+		},
+	}, nil
 }

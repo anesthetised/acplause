@@ -31,12 +31,15 @@ without writing a new ADR.
 
 - Track substantial changes in issues and separate branches.
 - Only the parent agent commits, pushes, opens PRs, watches CI and merges. Use
-  Conventional Commits and appropriate `Co-Authored-By` trailers. Commits,
-  pushes of work branches, PRs and merges need no separate approval; PRs follow
-  the repository's PR conventions and link their issues. After opening a PR,
-  watch its CI and fix failures caused by the change. Merge with a merge commit
-  only when required checks have passed. Force-pushing, pushing directly to
-  `main` and deleting branches still need an explicit user request.
+  Conventional Commits and appropriate `Co-Authored-By` trailers. Commits and
+  pushes of work branches need no separate approval. Opening PRs and merging
+  require explicit user agreement covering those actions; approval to implement
+  a change alone does not authorize either. PRs follow the repository's PR
+  conventions and link their issues. After opening an approved PR, watch its CI
+  and fix failures caused by the change. Merge with a merge commit only when
+  the user has agreed to the merge and required checks have passed; passing CI
+  alone does not authorize merging. Force-pushing, pushing directly to `main`
+  and deleting branches still need an explicit user request.
 - Preserve unrelated and uncommitted work. Treat files as shared state and
   assign non-overlapping edits to concurrent agents.
 - Use CI, maintain documentation, add meaningful tests, and preserve required

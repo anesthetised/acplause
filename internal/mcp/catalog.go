@@ -121,6 +121,7 @@ func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *s
 	p.t = t
 	switch t := t.(type) {
 	case *stdioTransport:
+		t.log = log
 		t.start()
 	case *httpTransport:
 		t.start()

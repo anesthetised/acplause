@@ -30,9 +30,10 @@ the Go toolchain's supported OS baseline [1]. Keep release binaries CGO-free.
   Keep the command argument, permission subject, remembered decisions, terminal
   updates and existing `ACPLAUSE_BASH_TIMEOUT` setting for both platforms.
 - Place each shell invocation and stdio MCP server in a private, unnamed Job
-  Object with kill-on-close and no breakaway flags [3]. Start suspended, assign
-  the process before resuming its initial thread [5], and reject launch if setup
-  fails. Cancellation and timeout terminate the shell job; normal shell exit
+  Object with kill-on-close and no breakaway flags [3]. Use `CreateProcessW`
+  with `PROC_THREAD_ATTRIBUTE_JOB_LIST` so membership is atomic with creation
+  [5, 7]. Create suspended, then resume the returned initial thread handle;
+  reject launch if setup fails. Cancellation and timeout terminate the shell job; normal shell exit
   also cleans up its remaining members. MCP keeps its existing stdin-close
   grace period before terminating its job. The job handle is not inherited;
   agent death closes it. This uses documented Windows APIs through x/sys;
@@ -55,6 +56,14 @@ the Go toolchain's supported OS baseline [1]. Keep release binaries CGO-free.
   Use the Windows-provided PowerShell baseline instead.
 
 ## Consequences and limits
+
+The post-merge review identified an owner-death gap between `exec.Cmd.Start`
+and `AssignProcessToJobObject`: a suspended child could survive outside the
+job. [#180](https://github.com/anesthetised/acplause/issues/180) replaces that
+sequence with atomic creation. Go's `os/exec` does not expose the job-list
+attribute, so Windows uses a small x/sys launcher with an explicit stdio handle
+allowlist and standard `os.Process.Wait`; Unix keeps `os/exec`. Tests stop the
+owner immediately after native creation, before resuming the child.
 
 Windows commands use PowerShell syntax, not translated bash scripts. Tool
 descriptions must state the actual shell. PowerShell 5.1 file redirection has
@@ -88,7 +97,8 @@ tests for missing/tampered ZIP archives. Preserve existing Unix behavior.
 2. [Microsoft: powershell.exe](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1).
 3. [Microsoft: Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
 4. [Microsoft: character encoding](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_character_encoding?view=powershell-5.1).
-5. [Microsoft: process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
-   [thread traversal](https://learn.microsoft.com/en-us/windows/win32/toolhelp/traversing-the-thread-list),
+5. [Microsoft: CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw),
+   [process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
    and [ResumeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread).
 6. [Microsoft: ScriptBlock.Create](https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.scriptblock.create).
+7. [Microsoft: process attributes and JOB_LIST](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).

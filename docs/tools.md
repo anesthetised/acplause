@@ -125,8 +125,8 @@ result. Terminals provide no stdin or PTY and do not manage detached jobs.
 On Unix, cancellation, timeout and shell exit send `SIGKILL` to the command's
 process group. Descendants that change their process group or session can
 survive, as reproduced in the [Seatbelt prototype](testing/seatbelt-prototype.md).
-On Windows each shell starts suspended, joins a private Job Object and then
-resumes. Cancellation, timeout and shell exit terminate the job's members;
+On Windows each shell is created suspended inside its private Job Object,
+atomically, then resumes. Cancellation, timeout and shell exit terminate the job's members;
 agent death closes its non-inherited kill-on-close handle. Setup failures fail
 the tool instead of running without job ownership. Work started through an
 external service or broker may lie outside the job. Job membership provides
