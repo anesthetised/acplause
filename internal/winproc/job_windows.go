@@ -2,11 +2,12 @@
 package winproc
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -16,14 +17,25 @@ import (
 // Job retains a non-inheritable handle so owner death terminates its members.
 // It is a lifecycle mechanism, not a sandbox against same-user processes.
 type Job struct {
-	mu     sync.Mutex
-	handle windows.Handle
+	mu         sync.Mutex
+	handle     windows.Handle
+	process    *os.Process
+	stopCancel func() bool
 }
 
-// Start launches cmd suspended and assigns it to a job before any user code
-// runs. Failure kills and reaps the suspended process rather than running it
-// without ownership. The caller must Wait on cmd and Close the returned job.
-func Start(cmd *exec.Cmd) (*Job, error) {
+// Start creates a process atomically inside its private job. The caller must
+// Wait and Close the returned Job; neither context cancellation nor owner death
+// can leave a child created before job membership was established.
+func Start(ctx context.Context, cfg Config) (*Job, error) {
+	return start(ctx, cfg, nil)
+}
+
+// afterCreate lets lifecycle tests stop exactly after CreateProcessW, before
+// the suspended child is resumed. Production has no launch-boundary callback.
+func start(ctx context.Context, cfg Config, afterCreate func(uint32)) (*Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	handle, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create process job: %w", err)
@@ -36,70 +48,23 @@ func Start(cmd *exec.Cmd) (*Job, error) {
 		_ = windows.CloseHandle(handle)
 		return nil, fmt.Errorf("configure process job: %w", err)
 	}
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW
-	if cmd.Cancel != nil {
-		cmd.Cancel = j.Terminate
-	}
-	// exec's context watcher starts inside cmd.Start. Serialize cancellation
-	// with assignment, or it could terminate an empty job and miss the process
-	// that we assign and resume immediately afterwards.
-	j.mu.Lock()
-	if err := cmd.Start(); err != nil {
-		_ = windows.CloseHandle(handle)
-		j.handle = 0
-		j.mu.Unlock()
-		return nil, err
-	}
-	err = j.assignAndResume(cmd.Process.Pid)
-	j.mu.Unlock()
+	j.process, err = createProcess(ctx, cfg, handle, afterCreate)
 	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
 		return nil, errors.Join(err, j.Close())
 	}
+	j.stopCancel = context.AfterFunc(ctx, func() { _ = j.Terminate() })
 	return j, nil
 }
 
-func (j *Job) assignAndResume(pid int) error {
-	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid))
-	if err != nil {
-		return fmt.Errorf("open suspended process: %w", err)
+// Wait reaps the direct process and reports its actual status, using the same
+// exit-error shape as os/exec. Closing the job remains the caller's obligation.
+func (j *Job) Wait() (*os.ProcessState, error) {
+	state, err := j.process.Wait()
+	j.stopCancel()
+	if err == nil && !state.Success() {
+		err = &exec.ExitError{ProcessState: state}
 	}
-	defer windows.CloseHandle(process)
-	if err := windows.AssignProcessToJobObject(j.handle, process); err != nil {
-		return fmt.Errorf("assign process job: %w", err)
-	}
-	// os/exec retains the process handle but closes the initial thread handle.
-	// CREATE_SUSPENDED prevents user code from creating threads or descendants,
-	// so a thread snapshot can find the initial thread before resuming it.
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
-	if err != nil {
-		return fmt.Errorf("find suspended thread: %w", err)
-	}
-	defer windows.CloseHandle(snapshot)
-	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
-	for err = windows.Thread32First(snapshot, &entry); err == nil; err = windows.Thread32Next(snapshot, &entry) {
-		if entry.OwnerProcessID != uint32(pid) {
-			continue
-		}
-		thread, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
-		if err != nil {
-			return fmt.Errorf("open suspended thread: %w", err)
-		}
-		defer windows.CloseHandle(thread)
-		count, err := windows.ResumeThread(thread)
-		if err != nil {
-			return fmt.Errorf("resume process: %w", err)
-		}
-		if count != 1 {
-			return fmt.Errorf("unexpected initial thread suspend count: %d", count)
-		}
-		return nil
-	}
-	return fmt.Errorf("suspended process thread unavailable: %w", err)
+	return state, err
 }
 
 // Terminate kills the job rather than just its original process. Keeping the
@@ -117,6 +82,9 @@ func (j *Job) Terminate() error {
 // reach zero before releasing the handle. A bounded failure is reported; the
 // kill-on-close limit still applies when releasing a job after an error.
 func (j *Job) Close() error {
+	if j.stopCancel != nil {
+		j.stopCancel()
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.handle == 0 {

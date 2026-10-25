@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
@@ -28,6 +29,7 @@ type stdioTransport struct {
 	once     sync.Once
 	process  *processControl
 	closeErr error
+	log      *slog.Logger
 }
 
 // processControl keeps platform ownership attached to the invocation, so a
@@ -35,6 +37,7 @@ type stdioTransport struct {
 type processControl struct {
 	signal func(bool)
 	close  func() error
+	wait   func() error
 }
 
 func startStdio(p *peer, cfg Config, cwd string) (*stdioTransport, error) {
@@ -55,7 +58,7 @@ func startStdio(p *peer, cfg Config, cwd string) (*stdioTransport, error) {
 	cmd.Stdout = outW
 	// A nil stderr uses the null device directly, without an exec copy goroutine.
 	// Detached descendants cannot keep cmd.Wait blocked on an inherited pipe.
-	process, err := startProcess(cmd)
+	process, err := startProcess(cmd, inR, outW)
 	if err != nil {
 		inR.Close()
 		inW.Close()
@@ -66,7 +69,7 @@ func startStdio(p *peer, cfg Config, cwd string) (*stdioTransport, error) {
 	inR.Close()
 	outW.Close()
 	t := &stdioTransport{p: p, cmd: cmd, process: process, in: inW, out: outR, writes: make(chan writeItem, 64), exited: make(chan struct{})}
-	go func() { _ = cmd.Wait(); close(t.exited) }()
+	go func() { _ = process.wait(); close(t.exited) }()
 	return t, nil
 }
 func (t *stdioTransport) start() {
@@ -168,6 +171,11 @@ func (t *stdioTransport) Close() error {
 		// Include descendants even when the direct child already exited.
 		t.process.signal(true)
 		t.closeErr = t.process.close()
+		if t.closeErr != nil && t.log != nil {
+			// Run inside once so explicit and background closure report one
+			// failure. Raw transport errors can contain server-supplied secrets.
+			t.log.Warn("MCP stdio cleanup failed")
+		}
 		_ = t.out.Close()
 		<-t.exited
 	})

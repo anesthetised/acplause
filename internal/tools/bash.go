@@ -47,6 +47,12 @@ func (tb *Toolbox) bash(args bashArgs) (*Call, error) {
 
 var errTimeout = errors.New("command timed out")
 
+// shellProcess leaves platform-specific process and pipe ownership together.
+type shellProcess struct {
+	wait  func() (ShellExit, error)
+	close func() error
+}
+
 // runShell owns a process group on Unix and a job on Windows. Unix descendants
 // that detach into another group can survive cleanup; neither is a sandbox.
 func runShell(ctx context.Context, dir, command string, opts Options, observer *ShellObserver) (string, error) {
@@ -65,20 +71,20 @@ func runShell(ctx context.Context, dir, command string, opts Options, observer *
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = time.Second // don't wait on pipes held open by stray children
-	cleanup, err := startShell(cmd)
+	process, err := startShell(runCtx, cmd)
 	if err == nil {
 		out.mu.Lock()
 		out.started, out.command, out.cwd = true, command, dir
 		out.wake()
 		out.mu.Unlock()
-		err = cmd.Wait()
-		cleanupErr := cleanup()
+		status, waitErr := process.wait()
+		err = waitErr
+		cleanupErr := process.close()
 		if errors.Is(err, exec.ErrWaitDelay) {
 			err = nil // the shell exited 0; only a stray child held the output open
 		}
 		err = errors.Join(err, cleanupErr)
 		out.mu.Lock()
-		status := shellExit(cmd.ProcessState)
 		out.exit = &status
 		out.wake()
 		out.mu.Unlock()

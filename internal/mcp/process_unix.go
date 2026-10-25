@@ -3,13 +3,14 @@
 package mcp
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
 
 func configureProcess(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
 
-func startProcess(cmd *exec.Cmd) (*processControl, error) {
+func startProcess(cmd *exec.Cmd, _, _ *os.File) (*processControl, error) {
 	configureProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -17,6 +18,7 @@ func startProcess(cmd *exec.Cmd) (*processControl, error) {
 	return &processControl{
 		signal: func(kill bool) { signalProcess(cmd, kill) },
 		close:  func() error { return nil },
+		wait:   cmd.Wait,
 	}, nil
 }
 func signalProcess(cmd *exec.Cmd, kill bool) {
