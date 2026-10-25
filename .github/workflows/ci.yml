@@ -114,10 +114,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # Bound concurrent PowerShell processes on the shared runner. The e2e
-      # harness also builds and executes the agent with the race detector.
+      # Bound concurrency across packages as well as within each package:
+      # overlapping e2e and unit shells can starve PowerShell startup on the
+      # shared runner. Retain the tests' existing streaming deadlines.
       - name: Unit and protocol e2e tests
-        run: go test -race -count=1 -parallel=4 ./...
+        run: go test -race -count=1 -p=1 -parallel=4 ./...
 
       - name: Build native release binary
         run: go build -o "${{ runner.temp }}/acplause.exe" ./cmd/acplause

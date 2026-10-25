@@ -24,11 +24,11 @@ func shellCommand(ctx context.Context, command string) *exec.Cmd {
 		cmd.Err = err
 		return cmd
 	}
-	// EncodedCommand preserves quotes, newlines and non-ASCII script text.
-	// PowerShell 5.1 still serializes progress as CLIXML with text output.
-	// Suppress that noninteractive UI, including automatic module-load progress.
+	// Preserve quotes, newlines and Unicode in a UTF-16LE payload. Decode it
+	// under -Command: PowerShell 5.1's -EncodedCommand forces CLIXML stderr
+	// even with -OutputFormat Text. Suppress noninteractive progress as well.
 	script := "$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n" + command +
-		// -EncodedCommand otherwise reduces native failure codes to 1. Test $?
+		// -Command otherwise reduces native failure codes to 1. Test $?
 		// immediately, so a successful command after a failure still exits zero.
 		"\nif (-not $?) { if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 1 }\n"
 	units := utf16.Encode([]rune(script))
@@ -36,8 +36,11 @@ func shellCommand(ctx context.Context, command string) *exec.Cmd {
 	for i, unit := range units {
 		binary.LittleEndian.PutUint16(data[i*2:], unit)
 	}
+	// The launcher is ASCII and contains no double quotes. Only Base64 data
+	// enters its single-quoted literal, avoiding another layer of script quoting.
+	launcher := "& ([ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('" + base64.StdEncoding.EncodeToString(data) + "'))))"
 	return exec.CommandContext(ctx, filepath.Join(dir, "WindowsPowerShell", "v1.0", "powershell.exe"),
-		"-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", base64.StdEncoding.EncodeToString(data))
+		"-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-Command", launcher)
 }
 
 func startShell(cmd *exec.Cmd) (func() error, error) {

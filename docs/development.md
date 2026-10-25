@@ -12,6 +12,8 @@ GitHub Actions runs `just check` on Linux on every pull request and push to
 with the race detector, then builds CGO-free amd64 and arm64 binaries. It also
 cross-compiles arm64 test packages without executing them; native arm64 and
 real-client Windows interoperability still require their own runtime checks.
+Windows CI runs test packages sequentially and at most four parallel tests per
+package to avoid overlapping e2e/unit PowerShell startups on a shared runner.
 The checks also need Python 3 and git-cliff 2.14.2 for release automation tests.
 CI reads the Go version from `go.mod` and pins just 1.59.0 and Staticcheck
 2026.2.2 (v0.8.2).

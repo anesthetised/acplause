@@ -22,8 +22,11 @@ CI and ZIP releases on 2026-10-25, including direct use of the already pinned
 the Go toolchain's supported OS baseline [1]. Keep release binaries CGO-free.
 
 - On Windows advertise `powershell`, using Windows PowerShell without profiles
-  or interactive prompts. Pass commands as UTF-16LE encoded commands [2] and
-  select UTF-8 for console output. Unix continues to advertise `bash`.
+  or interactive prompts. Pass a UTF-16LE Base64 payload decoded into a script
+  block under `-Command` [2, 6] and select UTF-8 for console output.
+  PowerShell 5.1's `-EncodedCommand` serializes stderr as CLIXML even with text
+  output selected; the ASCII decoding launcher preserves quoting and Unicode
+  while keeping errors textual. Unix continues to advertise `bash`.
   Keep the command argument, permission subject, remembered decisions, terminal
   updates and existing `ACPLAUSE_BASH_TIMEOUT` setting for both platforms.
 - Place each shell invocation and stdio MCP server in a private, unnamed Job
@@ -88,3 +91,4 @@ tests for missing/tampered ZIP archives. Preserve existing Unix behavior.
 5. [Microsoft: process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
    [thread traversal](https://learn.microsoft.com/en-us/windows/win32/toolhelp/traversing-the-thread-list),
    and [ResumeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread).
+6. [Microsoft: ScriptBlock.Create](https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.scriptblock.create).
