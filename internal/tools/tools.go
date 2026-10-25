@@ -1,5 +1,5 @@
 // Package tools implements the tools acplause offers the model. File tools
-// are confined to the session's workspace roots; bash runs in the working
+// are confined to the session's workspace roots; the shell runs in the working
 // directory without confinement.
 package tools
 
@@ -45,13 +45,13 @@ type Call struct {
 	shellLimit int
 	Title      string
 	Locations  []string // absolute paths the call touches
-	Command    string   // the command line, for bash
+	Command    string   // the command line, for shell calls
 	run        func(ctx context.Context) (string, error)
 	preview    func(ctx context.Context) (*acp.ToolCallContent, error) // file tools
 	diff       *acp.ToolCallContent                                    // set by run before it writes, for file tools
 }
 
-// ObserveShell enables bounded observation of a bash call. Attach it before Run;
+// ObserveShell enables bounded observation of a shell call. Attach it before Run;
 // non-shell calls return nil. Each prepared call owns its observer.
 func (c *Call) ObserveShell() *ShellObserver {
 	if c.Command == "" {
@@ -120,7 +120,7 @@ func New(cwd string, extra []string, opts Options) (*Toolbox, error) {
 		newTool(writeFileSpec, tb.writeFile),
 		newTool(editSpec, tb.edit),
 		newTool(editBatchSpec, tb.editBatch),
-		newTool(bashSpec, tb.bash),
+		newTool(shellSpec, tb.bash),
 	}
 	return tb, nil
 }

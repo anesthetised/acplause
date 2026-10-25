@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -19,12 +20,21 @@ type writeItem struct {
 	dispatch *dispatch
 }
 type stdioTransport struct {
-	p       *peer
-	cmd     *exec.Cmd
-	in, out *os.File
-	writes  chan writeItem
-	exited  chan struct{}
-	once    sync.Once
+	p        *peer
+	cmd      *exec.Cmd
+	in, out  *os.File
+	writes   chan writeItem
+	exited   chan struct{}
+	once     sync.Once
+	process  *processControl
+	closeErr error
+}
+
+// processControl keeps platform ownership attached to the invocation, so a
+// reconfigured MCP server cannot redirect cleanup to a newer process.
+type processControl struct {
+	signal func(bool)
+	close  func() error
 }
 
 func startStdio(p *peer, cfg Config, cwd string) (*stdioTransport, error) {
@@ -45,8 +55,8 @@ func startStdio(p *peer, cfg Config, cwd string) (*stdioTransport, error) {
 	cmd.Stdout = outW
 	// A nil stderr uses the null device directly, without an exec copy goroutine.
 	// Detached descendants cannot keep cmd.Wait blocked on an inherited pipe.
-	configureProcess(cmd)
-	if err := cmd.Start(); err != nil {
+	process, err := startProcess(cmd)
+	if err != nil {
 		inR.Close()
 		inW.Close()
 		outR.Close()
@@ -55,7 +65,7 @@ func startStdio(p *peer, cfg Config, cwd string) (*stdioTransport, error) {
 	}
 	inR.Close()
 	outW.Close()
-	t := &stdioTransport{p: p, cmd: cmd, in: inW, out: outR, writes: make(chan writeItem, 64), exited: make(chan struct{})}
+	t := &stdioTransport{p: p, cmd: cmd, process: process, in: inW, out: outR, writes: make(chan writeItem, 64), exited: make(chan struct{})}
 	go func() { _ = cmd.Wait(); close(t.exited) }()
 	return t, nil
 }
@@ -149,18 +159,19 @@ func (t *stdioTransport) Close() error {
 		select {
 		case <-t.exited:
 		case <-time.After(time.Second):
-			signalProcess(t.cmd, false)
+			t.process.signal(false)
 			select {
 			case <-t.exited:
 			case <-time.After(time.Second):
 			}
 		}
 		// Include descendants even when the direct child already exited.
-		signalProcess(t.cmd, true)
+		t.process.signal(true)
+		t.closeErr = t.process.close()
 		_ = t.out.Close()
 		<-t.exited
 	})
-	return nil
+	return t.closeErr
 }
 func processEnvironment(extra map[string]string) []string {
 	allowed := map[string]bool{}
@@ -168,14 +179,20 @@ func processEnvironment(extra map[string]string) []string {
 		allowed[k] = true
 	}
 	env := map[string]string{}
+	key := func(name string) string {
+		if runtime.GOOS == "windows" {
+			return strings.ToUpper(name)
+		}
+		return name
+	}
 	for _, v := range os.Environ() {
 		k, value, _ := strings.Cut(v, "=")
 		if allowed[strings.ToUpper(k)] || strings.HasPrefix(k, "LC_") {
-			env[k] = value
+			env[key(k)] = value
 		}
 	}
 	for k, v := range extra {
-		env[k] = v
+		env[key(k)] = v
 	}
 	keys := make([]string, 0, len(env))
 	for k := range env {

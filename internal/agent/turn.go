@@ -246,7 +246,7 @@ func asksPermission(kind acp.ToolKind) bool {
 	return kind == acp.ToolEdit || kind == acp.ToolExecute
 }
 
-// Permission option ids. Only bash offers "always" options (ADR 0029); other
+// Permission option ids. Only built-in shells offer "always" options (ADR 0029); other
 // tools keep ADR 0003's once-only choices.
 const (
 	optionAllow  = "allow"
