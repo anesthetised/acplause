@@ -51,6 +51,32 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual(path.read_text(), '')
             run.assert_not_called()
 
+    def test_bundle_requires_windows_zips_and_preserves_their_bytes(self):
+        plan = {'tag': 'v0.202610.0', 'sha': 'a' * 40, 'previous': ''}
+        names = [f'acplause_{plan["tag"]}_{system}_{arch}.{extension}'
+                 for system, extension in [('darwin', 'tar.gz'), ('linux', 'tar.gz'), ('windows', 'zip')]
+                 for arch in ('amd64', 'arm64')]
+        names.append(f'acplause_{plan["tag"]}_source.tar.gz')
+        with tempfile.TemporaryDirectory() as d:
+            directory = Path(d)
+            for name in names:
+                (directory / name).write_bytes(name.encode())
+            def manifest(selected):
+                (directory / 'checksums.txt').write_text(''.join(
+                    hashlib.sha256((directory / name).read_bytes()).hexdigest() + '  ' + name + '\n'
+                    for name in selected))
+            manifest(names)
+            release.bundle(plan, directory)
+            self.assertEqual({p.name for p in release.verify_bundle(plan, directory)}, set(names + ['checksums.txt']))
+            zip_name = f'acplause_{plan["tag"]}_windows_arm64.zip'
+            manifest([name for name in names if name != zip_name])
+            with self.assertRaisesRegex(ValueError, 'Missing or unexpected'):
+                release.bundle(plan, directory)
+            manifest(names)
+            (directory / zip_name).write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'Checksum mismatch'):
+                release.verify_bundle(plan, directory)
+
     def test_publish_resumes_partial_draft_without_replacing_bytes(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d)

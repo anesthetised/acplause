@@ -4,12 +4,15 @@ builds:
   - main: ./cmd/acplause
     binary: acplause
     env: [CGO_ENABLED=0]
-    goos: [darwin, linux]
+    goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     ldflags:
       - -s -w -X main.buildVersion={{ .Tag }} -X main.buildCommit={{ .FullCommit }}
 archives:
   - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: 'acplause_{{ .Tag }}_{{ .Os }}_{{ .Arch }}'
     files: [LICENSE, README.md]
 source:

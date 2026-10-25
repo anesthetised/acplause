@@ -8,7 +8,7 @@
 | `ACPLAUSE_BASE_URL`     | `https://openrouter.ai/api/v1`  | any OpenAI-compatible API root        |
 | `ACPLAUSE_READ_CONCURRENCY` | `1`                         | concurrent built-in reads, integer `1..8` |
 | `ACPLAUSE_MAX_ROUNDS`   | `200`                           | model requests per turn; `0` disables |
-| `ACPLAUSE_BASH_TIMEOUT` | `30m`                           | bash tool timeout; `0` disables       |
+| `ACPLAUSE_BASH_TIMEOUT` | `30m`                           | shell tool timeout (bash/PowerShell); `0` disables |
 | `ACPLAUSE_MCP_TIMEOUT`  | `1h`                            | MCP call timeout; `0` disables        |
 | `ACPLAUSE_TURN_TIMEOUT` | `0`                             | accepted turn timeout; `0` disables   |
 | `ACPLAUSE_MAX_TURN_TOKENS` | `0`                          | reported input+output tokens per turn; `0` disables |
@@ -44,7 +44,7 @@ trade-offs.
 
 The key is sent only to `ACPLAUSE_BASE_URL`, as `Authorization: Bearer`.
 Redirects are not followed: a provider that redirects fails until the final API
-root is configured. Commands the bash tool runs inherit the environment without
+root is configured. Commands the shell tool runs inherit the environment without
 `ACPLAUSE_API_KEY`. This prevents accidental exposure, not a deliberate read:
 commands run as the same user. See [ADR 0022](adr/0022-provider-key-exposure.md).
 

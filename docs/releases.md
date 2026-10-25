@@ -11,7 +11,7 @@ workflow on GitHub, without compiling anything locally.
 The workflow fixes the source commit at dispatch time and chooses
 `v0.YYYYMM.N` using the run's creation month in UTC. `N` starts at zero and
 increases within the month. It runs `just check`, enforces 80% Go coverage,
-packages macOS/Linux binaries for arm64/amd64 with GoReleaser, creates SHA256
+packages macOS/Linux tarballs and Windows ZIP binaries for arm64/amd64 with GoReleaser, creates SHA256
 checksums and GitHub artifact attestations, then publishes the tag and ordinary
 GitHub Release. Finally it updates `Formula/acplause.rb` in
 [homebrew-tap](https://github.com/anesthetised/homebrew-tap).
@@ -68,6 +68,13 @@ gh attestation verify <archive> --repo anesthetised/acplause
 Attestations establish the Actions build's origin; they are not Apple
 notarization. Prebuilt macOS binaries may still need explicit launch approval.
 Byte-for-byte reproducible builds are not a release requirement.
+
+Windows archives contain `acplause.exe`. Extract with `Expand-Archive` and use
+`Get-FileHash <archive> -Algorithm SHA256` to compare the downloaded ZIP against
+`checksums.txt`. Configure the client with the executable path and provider
+environment. No Git Bash/WSL installation is required. Both Windows architectures
+are packaged; native Windows amd64 tests and arm64 cross-build verification are
+distinguished in [development](development.md).
 
 `acplause --version` and `doctor` write build details to stderr. ACP
 `initialize` reports the full version, and provider requests, including the

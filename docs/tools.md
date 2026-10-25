@@ -15,6 +15,7 @@ For client-supplied external tools, see [MCP servers](mcp.md).
 | `edit`        | `edit`    | replace one exact occurrence in a UTF-8 file up to 5 MiB |
 | `edit_batch`  | `edit`    | 1–50 ordered replacements in one file, one approved diff |
 | `bash`        | `execute` | `bash -c` in the working directory, output capped |
+| `powershell`  | `execute` | Windows PowerShell in the working directory, output capped (Windows replaces `bash`) |
 | `ask_user`    | `other`   | one to three constrained text/choice, numeric or boolean questions, when supported |
 | `update_plan` | `other`   | replace the current turn's execution plan          |
 
@@ -79,14 +80,15 @@ lock against external changes racing after the final comparison.
 
 ## Permissions
 
-`write_file`, `edit`, `edit_batch` and `bash` run only after the user allows them through
+`write_file`, `edit`, `edit_batch` and the shell tool (`bash` on Unix,
+`powershell` on Windows) run only after the user allows them through
 `session/request_permission`, with the diff or command shown in the request.
 acplause offers "allow once" and "reject once"; anything else, including a
 cancelled or unrecognised answer, is a rejection, which the model is told
 about. Automatic approval is the client's setting. See
 [ADR 0003](adr/0003-permissions.md).
 
-`bash` also offers "allow always" and "reject always". The session remembers
+The shell tool also offers "allow always" and "reject always". The session remembers
 that choice for the exact command string in the same working directory and
 applies it without asking again, until the session ends, the process exits or
 the additional directories change. Nothing is saved to disk, Plan mode still
@@ -95,14 +97,21 @@ choices are kept per session; beyond that only the once options are offered.
 There is no way to revoke a choice other than ending the session. See
 [ADR 0029](adr/0029-session-remembered-permissions.md).
 
-## Bash terminals
+## Shell terminals
 
-Permitted `bash` commands stream combined stdout/stderr into an agent-owned,
+Permitted shell commands stream combined stdout/stderr into an agent-owned,
 noninteractive ACP terminal. The client gets the command, working directory,
 a terminal reference on the tool call, byte chunks and a final replacement
 snapshot with the process's exit code or signal. Rejected commands and failed
 process starts create no terminal. Commands continue to use the existing
 permissions, timeout and process-group cancellation policy.
+
+On Windows the model receives a `powershell` tool using Windows PowerShell 5.1
+syntax, with no profile or interactive prompts. UTF-16LE encoded commands
+preserve script quoting and Unicode; console output uses UTF-8. This does not
+change every cmdlet's file encoding: PowerShell 5.1 redirection can write
+UTF-16LE. Use the file tools for predictable UTF-8 text edits. The existing
+`ACPLAUSE_BASH_TIMEOUT` setting controls both platforms' shell tools.
 
 Terminal output retains the first 50,000 bytes; excess bytes are counted and
 reported by an omission marker in the final snapshot. Live updates publish at
@@ -114,6 +123,12 @@ result. Terminals provide no stdin or PTY and do not manage detached jobs.
 On Unix, cancellation, timeout and shell exit send `SIGKILL` to the command's
 process group. Descendants that change their process group or session can
 survive, as reproduced in the [Seatbelt prototype](testing/seatbelt-prototype.md).
+On Windows each shell starts suspended, joins a private Job Object and then
+resumes. Cancellation, timeout and shell exit terminate the job's members;
+agent death closes its non-inherited kill-on-close handle. Setup failures fail
+the tool instead of running without job ownership. Work started through an
+external service or broker may lie outside the job. Job membership provides
+cleanup, not filesystem or network isolation. See [ADR 0030](adr/0030-native-windows.md).
 See [ADR 0014](adr/0014-stream-agent-terminals.md). Actual T3 streaming,
 cancellation and restart replay were verified in the
 [runtime smoke record](testing/t3-first-class-smoke.md).
@@ -121,8 +136,8 @@ cancellation and restart replay were verified in the
 ## File sandbox
 
 File tools are confined to the session's `cwd` and `additionalDirectories`
-with `os.Root`, which blocks escapes through `..` and symlinks. `bash` is not
-sandboxed.
+with `os.Root`, which blocks escapes through `..` and symlinks. Shell commands
+are not sandboxed.
 
 Read, write and edit operations accept regular files only; pipes and devices
 are rejected. `write_file.content` and `edit.new_text` must be explicit
