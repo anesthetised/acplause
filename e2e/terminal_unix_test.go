@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -153,4 +154,62 @@ func TestTerminalCrashRecoversUnknownExit(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("recovery tool results: %d", count)
 	}
+}
+
+func TestCancelDuringBash(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(
+		callTool("bash", `{"command":"sleep 60 & echo $! > child.pid; wait"}`),
+		reply("ok"),
+	)
+	a, sid, cwd := started(t, llm, withEnv("ACPLAUSE_BASH_TIMEOUT=0", "ACPLAUSE_MAX_ROUNDS=0"))
+	pidFile := filepath.Join(cwd, "child.pid")
+
+	a.accepted(a.prompt(sid, "run it"))
+	a.toolStarted(sid)
+	waitForFile(t, pidFile)
+	a.notify("session/cancel", map[string]any{"sessionId": sid})
+
+	updates := a.untilIdle(sid)
+	want := []string{"tool_call_update cancelled", "state_update idle cancelled"}
+	if got := kinds(updates); !slices.Equal(got[len(got)-2:], want) || len(filter(updates, "tool_call_update")) != 1 {
+		t.Fatalf("updates after cancel: %v", got)
+	}
+	assertProcessGone(t, pidFile)
+
+	// The history stays valid: the next request carries a result for the
+	// cancelled call.
+	a.accepted(a.prompt(sid, "next"))
+	a.untilIdle(sid)
+	msgs := llm.request(1).Messages
+	if result := msgs[3]; result["role"] != "tool" || result["content"] != "Cancelled by the user." {
+		t.Fatalf("history after cancel: %v", msgs)
+	}
+}
+
+func assertProcessGone(t *testing.T, pidFile string) {
+	t.Helper()
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d started by bash survived cancellation", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Unix start-failure tests remove the prepared working directory instead of
+// using the Windows-only Job Object fixture.
+func denyShellLaunch(t *testing.T, _ *agent) {
+	t.Helper()
+	t.Fatal("denyShellLaunch is a Windows-only fixture")
 }

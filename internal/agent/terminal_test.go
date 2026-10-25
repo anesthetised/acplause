@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ import (
 
 func TestTerminalStreamsAndResumesBeforeExit(t *testing.T) {
 	model := make(scriptedModel, 2)
-	model.callTool("shell", "bash", `{"command":"printf '\\342'; while [ ! -f release ]; do sleep 0.01; done; printf '\\202\\254\\000\\377' >&2"}`)
+	model.callTool("shell", testShellName(), testShellArgs(`printf '\342'; while [ ! -f release ]; do sleep 0.01; done; printf '\202\254\000\377' >&2`, `$out = [Console]::OpenStandardOutput(); $out.WriteByte(226); $out.Flush(); while (!(Test-Path release)) { Start-Sleep -Milliseconds 10 }; $err = [Console]::OpenStandardError(); $err.Write([byte[]](130,172,0,255), 0, 4); $err.Flush()`))
 	model.reply("done", llm.FinishStop, nil)
 	s, out := testSession(t, model)
 	s.Submit(context.Background(), []acp.ContentBlock{acp.Text("run")})
@@ -153,8 +154,8 @@ func TestTerminalMethodsDoNotMixSessions(t *testing.T) {
 	model := fakeModel(func(_ context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
 		last := req.Messages[len(req.Messages)-1]
 		if last.Role == llm.RoleUser {
-			args, _ := json.Marshal(map[string]string{"command": "printf " + last.Content + "; while [ ! -f release ]; do sleep 0.01; done; printf end"})
-			return &llm.Completion{ToolCalls: []llm.ToolCall{{ID: "shell", Function: llm.FunctionCall{Name: "bash", Arguments: string(args)}}, {ID: "sibling", Function: llm.FunctionCall{Name: "list_dir", Arguments: `{}`}}}}, nil
+			args, _ := json.Marshal(map[string]string{"command": testShellCommand("printf "+last.Content+"; while [ ! -f release ]; do sleep 0.01; done; printf end", "[Console]::Write('"+last.Content+"'); while (!(Test-Path release)) { Start-Sleep -Milliseconds 10 }; [Console]::Write('end')")})
+			return &llm.Completion{ToolCalls: []llm.ToolCall{{ID: "shell", Function: llm.FunctionCall{Name: testShellName(), Arguments: string(args)}}, {ID: "sibling", Function: llm.FunctionCall{Name: "list_dir", Arguments: `{}`}}}}, nil
 		}
 		return &llm.Completion{Content: "done", FinishReason: llm.FinishStop}, nil
 	})
@@ -305,12 +306,12 @@ func TestTerminalSlowAndFailingPublication(t *testing.T) {
 			var releaseOnce sync.Once
 			unblock := func() { releaseOnce.Do(func() { close(release) }) }
 			defer unblock()
-			command := `printf ready; while [ ! -f produce ]; do sleep 0.01; done; printf '%1000000s' ''; touch drained; while [ ! -f release ]; do sleep 0.01; done`
+			command := testShellCommand(`printf ready; while [ ! -f produce ]; do sleep 0.01; done; printf '%1000000s' ''; touch drained; while [ ! -f release ]; do sleep 0.01; done`, `[Console]::Write('ready'); while (!(Test-Path produce)) { Start-Sleep -Milliseconds 10 }; [Console]::Write((' ' * 1000000)); [IO.File]::WriteAllText('drained', ''); while (!(Test-Path release)) { Start-Sleep -Milliseconds 10 }`)
 			args, _ := json.Marshal(map[string]string{"command": command})
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				s.runTool(ctx, llm.ToolCall{ID: "shell", Function: llm.FunctionCall{Name: "bash", Arguments: string(args)}}, modelRound{})
+				s.runTool(ctx, llm.ToolCall{ID: "shell", Function: llm.FunctionCall{Name: testShellName(), Arguments: string(args)}}, modelRound{})
 			}()
 			select {
 			case <-blocked:
@@ -359,7 +360,7 @@ func TestTerminalMethodsFailedStartsHaveNoTerminal(t *testing.T) {
 	for _, denied := range []bool{true, false} {
 		t.Run(map[bool]string{true: "denied", false: "start failed"}[denied], func(t *testing.T) {
 			model := make(scriptedModel, 2)
-			model.callTool("shell", "bash", `{"command":"touch ran"}`)
+			model.callTool("shell", testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
 			model.reply("done", llm.FinishStop, nil)
 			c := startAgent(t, t.TempDir(), model, nil)
 			c.initialize()
@@ -369,6 +370,17 @@ func TestTerminalMethodsFailedStartsHaveNoTerminal(t *testing.T) {
 			c.answer = func(context.Context) (string, string) {
 				if denied {
 					return acp.OutcomeSelected, optionReject
+				}
+				if runtime.GOOS == "windows" {
+					c.agent.mu.Lock()
+					session := c.agent.sessions[sid]
+					c.agent.mu.Unlock()
+					session.mu.Lock()
+					err := session.toolbox.Close()
+					session.mu.Unlock()
+					if err != nil {
+						t.Error(err)
+					}
 				}
 				if err := os.Remove(cwd); err != nil {
 					t.Error(err)

@@ -83,6 +83,7 @@ func TestContentImageEncoding(t *testing.T) {
 }
 
 func TestValidation(t *testing.T) {
+	cwd, _ := json.Marshal(t.TempDir())
 	tests := []struct {
 		name    string
 		params  string
@@ -94,10 +95,10 @@ func TestValidation(t *testing.T) {
 		{"initialize fractional", `{"protocolVersion":2.5,"info":{"name":"c","version":"1"}}`, &InitializeRequest{}, "cannot unmarshal"},
 		{"initialize no info", `{"protocolVersion":2}`, &InitializeRequest{}, "info is required"},
 		{"new relative cwd", `{"cwd":"src"}`, &NewSessionRequest{}, "cwd must be an absolute path"},
-		{"new relative extra dir", `{"cwd":"/w","additionalDirectories":["x"]}`, &NewSessionRequest{}, "additionalDirectories must be an absolute path"},
+		{"new relative extra dir", `{"cwd":` + string(cwd) + `,"additionalDirectories":["x"]}`, &NewSessionRequest{}, "additionalDirectories must be an absolute path"},
 		{"prompt missing", `{"sessionId":"s"}`, &PromptRequest{}, "prompt is required"},
 		{"prompt untyped block", `{"sessionId":"s","prompt":[{"text":"x"}]}`, &PromptRequest{}, "content block type is required"},
-		{"resume empty cursor", `{"sessionId":"s","cwd":"/w","replayFrom":{}}`, &ResumeSessionRequest{}, "replayFrom.type is required"},
+		{"resume empty cursor", `{"sessionId":"s","cwd":` + string(cwd) + `,"replayFrom":{}}`, &ResumeSessionRequest{}, "replayFrom.type is required"},
 		{"list null fields", `{"cwd":null,"cursor":null}`, &ListSessionsRequest{}, ""},
 		{"config missing value", `{"sessionId":"s","configId":"model","type":"id"}`, &SetConfigOptionRequest{}, "value is required"},
 		{"cancel no session", `{}`, &CancelSessionNotification{}, "sessionId is required"},

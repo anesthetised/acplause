@@ -91,6 +91,7 @@ jobs:
           name: release-bundle
           path: |
             dist/*.tar.gz
+            dist/*.zip
             dist/checksums.txt
             dist/notes.md
             dist/acplause.rb

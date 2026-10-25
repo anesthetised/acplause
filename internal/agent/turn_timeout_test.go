@@ -54,7 +54,7 @@ func TestTurnTimeoutResetsForQueuedPromptAndPairsSiblingCalls(t *testing.T) {
 			// Even a response arriving at cancellation must pair every call.
 			return &llm.Completion{ToolCalls: []llm.ToolCall{
 				{ID: "a", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"changed","content":"bad"}`}},
-				{ID: "b", Function: llm.FunctionCall{Name: "bash", Arguments: `{"command":"touch changed"}`}},
+				{ID: "b", Function: llm.FunctionCall{Name: testShellName(), Arguments: testShellArgs(`touch changed`, `[IO.File]::WriteAllText('changed', '')`)}},
 			}}, nil
 		}
 		if ctx.Err() != nil {

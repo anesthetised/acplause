@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -42,9 +43,9 @@ func assertTerminalLink(t *testing.T, u update, id string) {
 func TestTerminalLiveResumeAndRestart(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	const command = `printf '\342'; while [ ! -f release ]; do sleep 0.01; done; printf '\202\254\000\377' >&2`
+	command := testShellCommand(`printf '\342'; while [ ! -f release ]; do sleep 0.01; done; printf '\202\254\000\377' >&2`, `$out = [Console]::OpenStandardOutput(); $out.WriteByte(226); $out.Flush(); while (!(Test-Path release)) { Start-Sleep -Milliseconds 10 }; $err = [Console]::OpenStandardError(); $err.Write([byte[]](130,172,0,255), 0, 4); $err.Flush()`)
 	args, _ := json.Marshal(map[string]string{"command": command})
-	llm.enqueue(callTool("bash", string(args)), reply("Done."))
+	llm.enqueue(callTool(testShellName(), string(args)), reply("Done."))
 	data := t.TempDir()
 	a, sid, cwd := started(t, llm, withDataDir(data))
 	a.accepted(a.prompt(sid, "run"))
@@ -113,7 +114,7 @@ func TestTerminalLiveResumeAndRestart(t *testing.T) {
 func TestTerminalBoundedReplacement(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("bash", `{"command":"printf '%100000s' ''; while [ ! -f release ]; do sleep 0.01; done; exit 9"}`), reply("Failed."))
+	llm.enqueue(callTool(testShellName(), testShellArgs(`printf '%100000s' ''; while [ ! -f release ]; do sleep 0.01; done; exit 9`, `[Console]::Write((' ' * 100000)); while (!(Test-Path release)) { Start-Sleep -Milliseconds 10 }; exit 9`)), reply("Failed."))
 	a, sid, cwd := started(t, llm)
 	a.accepted(a.prompt(sid, "run"))
 	streamed := 0
@@ -169,13 +170,15 @@ func TestTerminalDeniedAndStartFailed(t *testing.T) {
 		t.Run(map[bool]string{true: "denied", false: "start failed"}[denied], func(t *testing.T) {
 			t.Parallel()
 			llm := newMockLLM(t)
-			llm.enqueue(callTool("bash", `{"command":"touch ran"}`), reply("Could not run."))
+			llm.enqueue(callTool(testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)), reply("Could not run."))
 			a, sid, cwd := started(t, llm, askingUser)
 			a.accepted(a.prompt(sid, "run"))
 			req := a.permissionRequest()
 			option := "allow_once"
 			if denied {
 				option = "reject_once"
+			} else if runtime.GOOS == "windows" {
+				denyShellLaunch(t, a)
 			} else if err := os.Remove(cwd); err != nil {
 				t.Fatal(err)
 			}

@@ -23,9 +23,9 @@ promise compatibility. Breaking changes are highlighted in release notes.
 
 - ACP v2 only, validated against the pinned schema (`testdata/schema/v2`).
 - Streaming text and reasoning, tool calls, usage and cost reporting.
-- Live bash terminal output with bounded snapshots for session replay.
+- Live shell terminal output with bounded snapshots for session replay.
 - Asks permission before changing files or running commands.
-- Prompt queue, cancellation of model requests and Unix shell process groups,
+- Prompt queue, cancellation of model requests and owned shell processes,
   session list/resume/close/delete.
 - Sessions survive restarts and can move between editor windows.
 - Model and reasoning effort selection from OpenRouter's model list.
@@ -53,12 +53,25 @@ including compilation of the SQLite dependency.
 ### Release archives
 
 For a ready-to-run binary without installing Go, download the archive for your
-OS (macOS or Linux) and architecture (arm64 or amd64) from
+OS (macOS, Linux or Windows) and architecture (arm64 or amd64) from
 [GitHub Releases](https://github.com/anesthetised/acplause/releases).
 Extract it and put `acplause` in a directory on your `PATH`. Release archives
 include SHA256 checksums and GitHub artifact attestations. Prebuilt macOS
 binaries are not Developer ID signed or notarized, so macOS may require
 you to explicitly allow them to run.
+
+On Windows 10/11, use the Windows ZIP archive and put `acplause.exe` on your
+`PATH`, or configure your ACP client with its full path. Commands use the
+built-in Windows PowerShell 5.1; Git Bash, WSL and PowerShell 7 are not required.
+For example, from PowerShell:
+
+```powershell
+.\acplause.exe --version
+.\acplause.exe doctor
+```
+
+The client must supply `ACPLAUSE_API_KEY` in the environment used to launch
+`acplause.exe`. See [shell behavior and cleanup](docs/tools.md#shell-terminals).
 
 ### Go
 

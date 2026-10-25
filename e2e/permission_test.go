@@ -104,13 +104,13 @@ func TestPermissionForCommands(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			llm := newMockLLM(t)
-			llm.enqueue(callTool("bash", `{"command":"echo ran; touch ran"}`), reply("ok"))
+			llm.enqueue(callTool(testShellName(), testShellArgs(`echo ran; touch ran`, "[Console]::Write(\"ran`n\"); [IO.File]::WriteAllText('ran', '')")), reply("ok"))
 			a, sid, cwd := started(t, llm, askingUser)
 			a.accepted(a.prompt(sid, "run"))
 
 			req := a.permissionRequest()
 			p := decodePermission(t, req)
-			if p.Subject.Type != "command" || p.Subject.Command != "echo ran; touch ran" || p.Subject.Cwd != cwd || p.Subject.ToolCallID == "" {
+			if p.Subject.Type != "command" || p.Subject.Command != testShellCommand(`echo ran; touch ran`, "[Console]::Write(\"ran`n\"); [IO.File]::WriteAllText('ran', '')") || p.Subject.Cwd != cwd || p.Subject.ToolCallID == "" {
 				t.Fatalf("subject: %s", req.Params)
 			}
 			a.answer(req, tt.answer(t, req))
@@ -138,7 +138,7 @@ func TestPermissionForCommands(t *testing.T) {
 func TestPermissionErrorResponseIsNotApproval(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("bash", `{"command":"touch ran"}`), reply("ok"))
+	llm.enqueue(callTool(testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)), reply("ok"))
 	a, sid, cwd := started(t, llm, askingUser)
 	a.accepted(a.prompt(sid, "run"))
 	req := a.permissionRequest()
@@ -155,7 +155,7 @@ func TestPermissionErrorResponseIsNotApproval(t *testing.T) {
 func TestCancelWhileAwaitingPermission(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("bash", `{"command":"touch ran"}`), reply("next"))
+	llm.enqueue(callTool(testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)), reply("next"))
 	a, sid, cwd := started(t, llm, askingUser)
 	a.accepted(a.prompt(sid, "run"))
 	req := a.permissionRequest()

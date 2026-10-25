@@ -154,6 +154,7 @@ def bundle(plan, directory):
     assets = verify_assets(directory)
     expected = {f'acplause_{plan["tag"]}_{system}_{arch}.tar.gz'
                 for system in ('darwin', 'linux') for arch in ('amd64', 'arm64')}
+    expected.update(f'acplause_{plan["tag"]}_windows_{arch}.zip' for arch in ('amd64', 'arm64'))
     source = directory / f'acplause_{plan["tag"]}_source.tar.gz'
     expected.update([source.name, 'checksums.txt'])
     if {p.name for p in assets} != expected:

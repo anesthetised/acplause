@@ -44,7 +44,7 @@ func TestModeToolsAndRoundAdmission(t *testing.T) {
 		{ID: "write", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"changed","content":"bad"}`}},
 		{ID: "edit", Function: llm.FunctionCall{Name: "edit", Arguments: `{}`}},
 		{ID: "batch", Function: llm.FunctionCall{Name: "edit_batch", Arguments: `{}`}},
-		{ID: "shell-read", Function: llm.FunctionCall{Name: "bash", Arguments: `{"command":"cat AGENTS.md; touch changed"}`}},
+		{ID: "shell-read", Function: llm.FunctionCall{Name: testShellName(), Arguments: testShellArgs(`cat AGENTS.md; touch changed`, `[Console]::Write([IO.File]::ReadAllText('AGENTS.md')); [IO.File]::WriteAllText('changed', '')`)}},
 		{ID: "external", Function: llm.FunctionCall{Name: "external", Arguments: `{}`}},
 		{ID: "unknown", Function: llm.FunctionCall{Name: "_future", Arguments: `{}`}},
 	} {
@@ -68,7 +68,7 @@ func TestModeToolsAndRoundAdmission(t *testing.T) {
 		t.Fatal("Plan lost questions on capable client")
 	}
 	setSessionMode(t, s, "build")
-	if !slices.ContainsFunc(s.request().Tools, func(tool llm.Tool) bool { return tool.Function.Name == "bash" }) {
+	if !slices.ContainsFunc(s.request().Tools, func(tool llm.Tool) bool { return tool.Function.Name == testShellName() }) {
 		t.Fatal("Build tools not restored")
 	}
 }
@@ -153,7 +153,7 @@ func TestModeConfigOverWireFencesSetupAndPreservesPreferences(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	model := make(scriptedModel, 3)
-	model.callTool("blocked", "bash", `{"command":"touch changed"}`)
+	model.callTool("blocked", testShellName(), testShellArgs(`touch changed`, `[IO.File]::WriteAllText('changed', '')`))
 	model <- func(_ context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
 		result := req.Messages[len(req.Messages)-1]
 		if result.Role != llm.RoleTool || result.ToolCallID != "blocked" || !strings.Contains(result.Content, "Plan mode") {

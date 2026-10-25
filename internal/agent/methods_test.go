@@ -474,7 +474,7 @@ func TestPermissionOutcomes(t *testing.T) {
 			c.mu.Lock()
 			c.answer = func(context.Context) (string, string) { return tc.outcome, tc.option }
 			c.mu.Unlock()
-			model.callTool("b1", "bash", `{"command":"touch ran"}`)
+			model.callTool("b1", testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
 			model.reply("ok", llm.FinishStop, nil)
 			c.await(c.prompt(sid, "run"))
 			updates := c.untilIdle(sid)
@@ -501,7 +501,7 @@ func TestPermissionOutcomes(t *testing.T) {
 		return acp.OutcomeSelected, optionAllow
 	}
 	c.mu.Unlock()
-	model.callTool("b2", "bash", `{"command":"touch ran"}`)
+	model.callTool("b2", testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
 	c.await(c.prompt(sid, "run"))
 	<-asked
 	c.notify(acp.MethodSessionCancel, map[string]any{"sessionId": sid})

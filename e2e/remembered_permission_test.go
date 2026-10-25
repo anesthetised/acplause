@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// ADR 0029: bash offers the four permission kinds, a remembered decision is
+// ADR 0029: the native shell offers the four permission kinds, a remembered decision is
 // replayed without a request, and the wire shapes validate against the schema.
 func TestRememberedShellPermissions(t *testing.T) {
 	t.Parallel()
@@ -14,7 +14,7 @@ func TestRememberedShellPermissions(t *testing.T) {
 		t.Run(choice, func(t *testing.T) {
 			t.Parallel()
 			llm := newMockLLM(t)
-			llm.enqueue(callTool("bash", `{"command":"true"}`), reply("one"), callTool("bash", `{"command":"true"}`), reply("two"))
+			llm.enqueue(callTool(testShellName(), testShellArgs(`true`, `$null = 1`)), reply("one"), callTool(testShellName(), testShellArgs(`true`, `$null = 1`)), reply("two"))
 			a, sid, _ := started(t, llm, askingUser)
 
 			a.accepted(a.prompt(sid, "run it"))

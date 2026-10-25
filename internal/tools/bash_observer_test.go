@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 
 func TestShellObserverStreamsBeforeExit(t *testing.T) {
 	w := newWorkspace(t, Options{OutputLimit: 8})
-	call, err := w.prepare("bash", map[string]string{"command": `printf '\342'; while [ ! -f release ]; do sleep 0.01; done; printf '\202\254\000\377xyzMORE' >&2; exit 7`})
+	call, err := w.prepare(testShellName(), map[string]string{"command": testShellCommand(`printf '\342'; while [ ! -f release ]; do sleep 0.01; done; printf '\202\254\000\377xyzMORE' >&2; exit 7`, `$out = [Console]::OpenStandardOutput(); $out.WriteByte(226); $out.Flush(); while (!(Test-Path release)) { Start-Sleep -Milliseconds 10 }; $err = [Console]::OpenStandardError(); $bytes = [byte[]](130,172,0,255,120,121,122,77,79,82,69); $err.Write($bytes, 0, $bytes.Length); $err.Flush(); exit 7`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func awaitShell(t *testing.T, o *ShellObserver, ready func(ShellSnapshot) bool) 
 
 func TestShellObserverUnreadDoesNotBlock(t *testing.T) {
 	w := newWorkspace(t, Options{OutputLimit: 16})
-	call, err := w.prepare("bash", map[string]string{"command": `printf '%1000000s' ''; exit 0`})
+	call, err := w.prepare(testShellName(), map[string]string{"command": testShellCommand(`printf '%1000000s' ''; exit 0`, `[Console]::Write((' ' * 1000000)); exit 0`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,11 +88,16 @@ func TestShellObserverUnreadDoesNotBlock(t *testing.T) {
 
 func TestShellObserverStartFailure(t *testing.T) {
 	w := newWorkspace(t, Options{})
-	call, err := w.prepare("bash", map[string]string{"command": "true"})
+	call, err := w.prepare(testShellName(), map[string]string{"command": testShellCommand(`true`, `$null = 1`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	o := call.ObserveShell()
+	if runtime.GOOS == "windows" {
+		if err := w.tb.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.Remove(w.cwd); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +111,7 @@ func TestShellObserverStartFailure(t *testing.T) {
 
 func TestShellObserverSnapshotsAreDetached(t *testing.T) {
 	w := newWorkspace(t, Options{})
-	c, err := w.prepare("bash", map[string]string{"command": "printf data"})
+	c, err := w.prepare(testShellName(), map[string]string{"command": testShellCommand(`printf data`, `[Console]::Write('data')`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +137,7 @@ func TestShellObserverSnapshotsAreDetached(t *testing.T) {
 
 func TestShellObserverCancelledBeforeStart(t *testing.T) {
 	w := newWorkspace(t, Options{})
-	c, err := w.prepare("bash", map[string]string{"command": "touch ran"})
+	c, err := w.prepare(testShellName(), map[string]string{"command": testShellCommand(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)})
 	if err != nil {
 		t.Fatal(err)
 	}

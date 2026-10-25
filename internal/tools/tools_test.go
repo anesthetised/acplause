@@ -3,11 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -90,16 +93,17 @@ func (w *workspace) fails(name string, args any, want string) {
 
 func TestPrepareRejectsBadCalls(t *testing.T) {
 	w := newWorkspace(t, Options{})
+	outside, _ := json.Marshal(map[string]string{"path": filepath.Join(filepath.Dir(w.cwd), "outside.txt")})
 	tests := []struct{ name, args, want string }{
 		{"nope", `{}`, `unknown tool "nope"`},
 		{"read_file", `{"path":`, "invalid arguments for read_file"},
 		{"read_file", `{"path":42}`, "invalid arguments for read_file"},
 		{"read_file", `{}`, "path is required"},
 		{"read_file", `{"path":"../outside.txt"}`, "outside the workspace"},
-		{"read_file", `{"path":"/etc/passwd"}`, "outside the workspace"},
+		{"read_file", string(outside), "outside the workspace"},
 		{"edit", `{"path":"a","old_text":"","new_text":"x"}`, "old_text is required"},
 		{"search_code", `{"pattern":"x","file_glob":"["}`, "invalid file_glob"},
-		{"bash", ``, "command is required"},
+		{testShellName(), ``, "command is required"},
 	}
 	for _, tt := range tests {
 		if _, err := w.tb.Prepare(tt.name, tt.args); err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -117,7 +121,7 @@ func TestBashTimeoutDefaultsAndZero(t *testing.T) {
 	if *w.tb.opts.BashTimeout != 0 {
 		t.Fatal("explicit zero was replaced by a default")
 	}
-	if got := w.ok("bash", map[string]string{"command": "printf done"}); got != "done" {
+	if got := w.ok(testShellName(), map[string]string{"command": testShellCommand(`printf done`, `[Console]::Write('done')`)}); got != "done" {
 		t.Fatalf("unlimited command output: %q", got)
 	}
 }
@@ -125,27 +129,38 @@ func TestBashTimeoutDefaultsAndZero(t *testing.T) {
 func TestSandbox(t *testing.T) {
 	w := newWorkspace(t, Options{})
 	outside := w.write(filepath.Join(filepath.Dir(w.cwd), "secret.txt"), "secret")
-	if err := os.Symlink(outside, filepath.Join(w.cwd, "link.txt")); err != nil {
-		t.Fatal(err)
+	shared := w.write(filepath.Join(w.extra, "lib.go"), "package lib")
+	inside := w.write("inside.txt", "inside")
+	for _, path := range []string{inside, filepath.ToSlash(inside)} {
+		if got := w.ok("read_file", map[string]string{"path": path}); got != "inside" {
+			t.Fatalf("absolute path %q: %q", path, got)
+		}
 	}
-	if err := os.Symlink(filepath.Dir(w.cwd), filepath.Join(w.cwd, "up")); err != nil {
-		t.Fatal(err)
+	if got := w.ok("read_file", map[string]string{"path": shared}); got != "package lib" {
+		t.Fatalf("additional root: %q", got)
 	}
-	w.write(filepath.Join(w.extra, "lib.go"), "package lib")
-	w.write("inside.txt", "inside")
-
-	w.fails("read_file", map[string]string{"path": "link.txt"}, "escapes")
-	w.fails("read_file", map[string]string{"path": "up/secret.txt"}, "escapes")
-	w.fails("write_file", map[string]string{"path": "up/new.txt", "content": "x"}, "escapes")
-	w.fails("write_file", map[string]string{"path": "link.txt", "content": "x"}, "escapes")
-	if got := w.ok("read_file", map[string]string{"path": filepath.Join(w.extra, "lib.go")}); got != "package lib" {
-		t.Fatalf("read from additional root: %q", got)
+	for _, path := range []string{outside, filepath.ToSlash(outside), "../secret.txt", filepath.FromSlash("../secret.txt")} {
+		for _, name := range []string{"read_file", "write_file"} {
+			if _, err := w.prepare(name, map[string]string{"path": path, "content": "changed"}); err == nil || !strings.Contains(err.Error(), "outside the workspace") {
+				t.Errorf("%s accepted outside path %q: %v", name, path, err)
+			}
+		}
 	}
-	if got := w.ok("read_file", map[string]string{"path": filepath.Join(w.cwd, "inside.txt")}); got != "inside" {
-		t.Fatalf("read by absolute path: %q", got)
-	}
+	t.Run("symlink escapes", func(t *testing.T) {
+		w := &workspace{t: t, cwd: w.cwd, extra: w.extra, tb: w.tb}
+		if err := testSymlink(t, outside, filepath.Join(w.cwd, "link.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if err := testSymlink(t, filepath.Dir(w.cwd), filepath.Join(w.cwd, "up")); err != nil {
+			t.Fatal(err)
+		}
+		w.fails("read_file", map[string]string{"path": "link.txt"}, "escapes")
+		w.fails("read_file", map[string]string{"path": "up/secret.txt"}, "escapes")
+		w.fails("write_file", map[string]string{"path": "up/new.txt", "content": "x"}, "escapes")
+		w.fails("write_file", map[string]string{"path": "link.txt", "content": "x"}, "escapes")
+	})
 	if data, _ := os.ReadFile(outside); string(data) != "secret" {
-		t.Fatalf("file outside the workspace changed: %q", data)
+		t.Fatalf("outside file changed: %q", data)
 	}
 }
 
@@ -168,7 +183,11 @@ func TestReadFile(t *testing.T) {
 	w.fails("read_file", map[string]string{"path": "src"}, "is a directory")
 	w.fails("read_file", map[string]string{"path": "blob.bin"}, "not a text file")
 	w.fails("read_file", map[string]string{"path": "big.txt"}, "too large")
-	w.fails("read_file", map[string]string{"path": "missing.txt"}, "no such file")
+	missing := "no such file"
+	if runtime.GOOS == "windows" {
+		missing = "cannot find the file"
+	}
+	w.fails("read_file", map[string]string{"path": "missing.txt"}, missing)
 }
 
 func TestReadFileRange(t *testing.T) {
@@ -263,6 +282,9 @@ func TestHiddenTraversal(t *testing.T) {
 		{"list hidden descendants from root", "list_dir", map[string]any{"include_hidden": true}, ".env\n.github/\n  .nested/\n    config\n  .settings\n  workflows/\n    ci.yml\nnested/\n  .config\nvisible.txt\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.tool == "search_code" {
+				tc.want = filepath.FromSlash(tc.want)
+			}
 			if got := w.ok(tc.tool, tc.args); got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
@@ -315,7 +337,7 @@ func TestHiddenTraversalAdditionalRootsAndSymlinks(t *testing.T) {
 	}
 	outside := filepath.Join(filepath.Dir(w.cwd), "outside")
 	w.write(filepath.Join(outside, "secret.txt"), "needle\n")
-	if err := os.Symlink(outside, filepath.Join(w.cwd, ".external")); err != nil {
+	if err := testSymlink(t, outside, filepath.Join(w.cwd, ".external")); err != nil {
 		t.Fatal(err)
 	}
 	if got := w.ok("search_code", map[string]any{"pattern": "needle", "include_hidden": true}); got != `No matches for "needle"` {
@@ -369,7 +391,7 @@ func TestSearchCode(t *testing.T) {
 	w.write("notes.md", "needle in notes\n")
 	w.write("node_modules/x/needle.js", "needle\n")
 	w.write(filepath.Join(w.extra, "lib.go"), "// needle\n")
-	if err := os.Symlink(filepath.Join(w.cwd, "main.go"), filepath.Join(w.cwd, "alias.go")); err != nil {
+	if err := testSymlink(t, filepath.Join(w.cwd, "main.go"), filepath.Join(w.cwd, "alias.go")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -402,6 +424,13 @@ func TestWriteFileAndEdit(t *testing.T) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && before.Mode().Perm() != 0o600 {
+		t.Fatalf("chmod fixture: %v", before.Mode().Perm())
+	}
 
 	w.fails("edit", map[string]string{"path": "pkg/new/file.go", "old_text": "three", "new_text": "x"}, "not found")
 	w.fails("edit", map[string]string{"path": "pkg/new/file.go", "old_text": "two", "new_text": "x"}, "occurs 2 times")
@@ -411,7 +440,7 @@ func TestWriteFileAndEdit(t *testing.T) {
 	if err != nil || string(data) != "1 two two" {
 		t.Fatalf("got %q, %v", data, err)
 	}
-	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(path); info.Mode().Perm() != before.Mode().Perm() {
 		t.Fatalf("edit changed permissions to %v", info.Mode().Perm())
 	}
 }
@@ -473,18 +502,22 @@ func TestWriteArgumentsRequireExplicitContent(t *testing.T) {
 
 func TestBash(t *testing.T) {
 	w := newWorkspace(t, Options{})
-	if got := w.ok("bash", map[string]string{"command": "pwd; echo err >&2"}); got != w.cwd+"\nerr\n" && got != "/private"+w.cwd+"\nerr\n" {
+	physicalCwd, err := filepath.EvalSymlinks(w.cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.ok(testShellName(), map[string]string{"command": testShellCommand(`pwd; echo err >&2`, "[Console]::Write((Get-Location).Path + \"`n\"); [Console]::Error.Write(\"err`n\")")}); got != w.cwd+"\nerr\n" && got != physicalCwd+"\nerr\n" {
 		t.Fatalf("got %q", got)
 	}
-	w.fails("bash", map[string]string{"command": "echo partial; exit 3"}, "partial\n\nError: exit status 3")
-	if got := w.ok("bash", map[string]string{"command": "true"}); got != "(no output)" {
+	w.fails(testShellName(), map[string]string{"command": testShellCommand(`echo partial; exit 3`, "[Console]::Write(\"partial`n\"); exit 3")}, "partial\n\nError: exit status 3")
+	if got := w.ok(testShellName(), map[string]string{"command": testShellCommand(`true`, `$null = 1`)}); got != "(no output)" {
 		t.Fatalf("got %q", got)
 	}
 	capped := newWorkspace(t, Options{OutputLimit: 64})
-	if got := capped.ok("bash", map[string]string{"command": "head -c 100 /dev/zero | tr '\\0' x"}); !strings.HasPrefix(got, strings.Repeat("x", 64)+"\n... (36 more bytes") {
+	if got := capped.ok(testShellName(), map[string]string{"command": testShellCommand(`head -c 100 /dev/zero | tr '\0' x`, `[Console]::Write(('x' * 100))`)}); !strings.HasPrefix(got, strings.Repeat("x", 64)+"\n... (36 more bytes") {
 		t.Fatalf("output not capped: %q", got)
 	}
-	call, _ := w.prepare("bash", map[string]string{"command": "  make test\n  && echo done"})
+	call, _ := w.prepare(testShellName(), map[string]string{"command": "  make test\n  && echo done"})
 	if call.Title != "Run make test" {
 		t.Fatalf("title: %q", call.Title)
 	}
@@ -540,4 +573,25 @@ func TestCancelledWriteNeverTruncates(t *testing.T) {
 			t.Fatalf("attempt %d left %d bytes: %v", i, len(data), err)
 		}
 	}
+}
+
+// testShellCommand keeps the same behavior under the platform's native shell.
+func testShellCommand(unix, windows string) string {
+	if runtime.GOOS == "windows" {
+		return windows
+	}
+	return unix
+}
+
+func testShellName() string { return testShellCommand("bash", "powershell") }
+
+// testSymlink skips only when Windows denies the fixture's creation privilege.
+// Successful creation still exercises os.Root's full confinement assertions.
+func testSymlink(t *testing.T, target, link string) error {
+	t.Helper()
+	err := os.Symlink(target, link)
+	if runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(1314)) {
+		t.Skip("symlink fixture requires Developer Mode or SeCreateSymbolicLinkPrivilege")
+	}
+	return err
 }

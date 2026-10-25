@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,7 +29,7 @@ func readCalls(n int) []llm.ToolCall {
 
 func TestParallelReadEligibilityIsExactAndBuiltin(t *testing.T) {
 	round := modelRound{bindings: map[string]mcp.Tool{"read_file": {ReadOnly: true}, "mcp_read": {ReadOnly: true}}}
-	for _, name := range []string{"list_dir", "search_code", "get_instructions", "read_file", "mcp_read", "bash", "write_file", "edit", "edit_batch", "ask_user", "update_plan", "unknown"} {
+	for _, name := range []string{"list_dir", "search_code", "get_instructions", "read_file", "mcp_read", testShellName(), "write_file", "edit", "edit_batch", "ask_user", "update_plan", "unknown"} {
 		want := name == "list_dir" || name == "search_code" || name == "get_instructions"
 		if got := parallelRead(llm.ToolCall{Function: llm.FunctionCall{Name: name}}, round); got != want {
 			t.Errorf("%s eligible=%v want=%v", name, got, want)
@@ -192,17 +193,35 @@ func TestParallelReadPartialCrashKeepsOnlyCommittedPrefix(t *testing.T) {
 }
 
 func TestParallelReadResumePinsGroupAndDrainsBeforeBarriers(t *testing.T) {
+	testParallelReadResumePinsGroup(t, false)
+}
+
+func testParallelReadResumePinsGroup(t *testing.T, replaceRoot bool) {
 	s, _ := testSession(t, noModel(t))
 	s.saves.Wait()
 	s.deps.readConcurrency = 2
-	if err := os.WriteFile(filepath.Join(s.cwd, "marker"), []byte("old root"), 0o600); err != nil {
+	oldDir, newDir := s.cwd, s.cwd
+	nextDirs := []string{t.TempDir()}
+	if !replaceRoot {
+		// Rebind additional roots without renaming an open directory. Calls in
+		// the admitted group must retain the old grant until they have drained.
+		oldDir, newDir = t.TempDir(), t.TempDir()
+		if err := s.Resume(t.Context(), []string{oldDir}, nil, false); err != nil {
+			t.Fatal(err)
+		}
+		s.saves.Wait()
+		nextDirs = []string{newDir}
+	}
+	oldArgs, _ := json.Marshal(map[string]string{"path": filepath.Join(oldDir, "marker")})
+	newArgs, _ := json.Marshal(map[string]string{"path": filepath.Join(newDir, "marker")})
+	if err := os.WriteFile(filepath.Join(oldDir, "marker"), []byte("old root"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	calls := []llm.ToolCall{
-		{ID: "0", Function: llm.FunctionCall{Name: "read_file", Arguments: `{"path":"marker"}`}},
-		{ID: "1", Function: llm.FunctionCall{Name: "read_file", Arguments: `{"path":"marker"}`}},
+		{ID: "0", Function: llm.FunctionCall{Name: "read_file", Arguments: string(oldArgs)}},
+		{ID: "1", Function: llm.FunctionCall{Name: "read_file", Arguments: string(oldArgs)}},
 		{ID: "barrier", Function: llm.FunctionCall{Name: "unknown", Arguments: `{}`}},
-		{ID: "new", Function: llm.FunctionCall{Name: "read_file", Arguments: `{"path":"marker"}`}},
+		{ID: "new", Function: llm.FunctionCall{Name: "read_file", Arguments: string(newArgs)}},
 	}
 	s.appendHistory(llm.Message{Role: llm.RoleAssistant, ToolCalls: calls})
 	saved, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -228,16 +247,18 @@ func TestParallelReadResumePinsGroupAndDrainsBeforeBarriers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no prefix save")
 	}
-	if err := os.Rename(s.cwd, filepath.Join(t.TempDir(), "retired")); err != nil {
+	if replaceRoot {
+		if err := os.Rename(s.cwd, filepath.Join(t.TempDir(), "retired")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(s.cwd, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(newDir, "marker"), []byte("new root"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(s.cwd, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(s.cwd, "marker"), []byte("new root"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Resume(t.Context(), []string{t.TempDir()}, nil, false); err != nil {
+	if err := s.Resume(t.Context(), nextDirs, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
@@ -246,7 +267,7 @@ func TestParallelReadResumePinsGroupAndDrainsBeforeBarriers(t *testing.T) {
 	if !pinned {
 		t.Fatal("resume released group pin")
 	}
-	call, err := old.Prepare("read_file", `{"path":"marker"}`)
+	call, err := old.Prepare("read_file", string(oldArgs))
 	if err != nil || call.Run(t.Context()).Output != "old root" {
 		t.Fatal("retired roots closed before group joined")
 	}

@@ -8,6 +8,14 @@ import (
 	"syscall"
 )
 
+func startShell(cmd *exec.Cmd) (func() error, error) {
+	killProcessGroupOnCancel(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return func() error { killProcessGroup(cmd); return nil }, nil
+}
+
 func killProcessGroupOnCancel(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

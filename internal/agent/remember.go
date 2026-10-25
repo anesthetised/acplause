@@ -12,7 +12,7 @@ import (
 // maxRemembered bounds a session's remembered shell decisions (ADR 0029).
 const maxRemembered = 256
 
-// Option ids of the remembering choices, offered for bash only.
+// Option ids of the remembering choices, offered for built-in shells only.
 const (
 	optionAllowAlways  = "allow_always"
 	optionRejectAlways = "reject_always"

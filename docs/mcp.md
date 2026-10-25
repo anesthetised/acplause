@@ -44,6 +44,13 @@ variables; explicit `env` entries override these. Provider API keys are not
 inherited implicitly. MCP servers run with the agent's OS privileges,
 outside the built-in file sandbox. Server stderr is discarded.
 
+On Windows use an absolute executable path, such as
+`C:\\tools\\mcp-server.exe` in JSON (backslashes must be escaped). To launch a
+`.cmd` entry point, configure an explicit interpreter such as
+`C:\\Windows\\System32\\cmd.exe` with `/d`, `/c` and the command in `args`;
+acplause does not automatically run MCP commands through PowerShell. Environment
+variable overrides are case-insensitive on Windows.
+
 acplause requests MCP `2025-11-25` and also accepts `2025-06-18`. It reads
 every tool-list page, retains input schemas, assigns stable aliases to avoid
 name collisions, and refreshes changed catalogs. Every external call needs
@@ -88,8 +95,11 @@ an expired HTTP session gets one recovery attempt for future model requests.
 
 Close/delete/shutdown/ownership loss release connections. Stdio cleanup closes
 stdin, waits one second, sends TERM, waits one second, then kills and reaps;
-Unix cleanup includes the process group. Other platforms clean up the direct
-child only. HTTP DELETE has a two-second deadline. Limits are 16 servers,
+Unix cleanup includes the process group. Windows starts the server suspended
+and assigns it to a private kill-on-close Job Object before resuming; after
+the stdin grace period, cleanup terminates the job and its members. Agent death
+also closes the job handle. This is process cleanup, not an OS sandbox; external
+services/brokers can start work outside the job. HTTP DELETE has a two-second deadline. Limits are 16 servers,
 100 pages/1,024 tools per server, 8 MiB per message/event/catalog and 256 KiB
 per projected text/JSON result; exceeding a limit fails explicitly.
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -50,6 +51,14 @@ func TestOpenCreatesPrivateFiles(t *testing.T) {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Go's Windows chmod controls only the read-only attribute; POSIX
+		// owner-only modes are a Unix contract, not a Windows ACL assertion.
+		if runtime.GOOS == "windows" {
+			want = 0o666
+			if info.IsDir() {
+				want = 0o777
+			}
 		}
 		if got := info.Mode().Perm(); got != want {
 			t.Errorf("%s: mode %o, want %o", path, got, want)

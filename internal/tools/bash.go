@@ -13,14 +13,14 @@ import (
 	"github.com/anesthetised/acplause/internal/acp"
 )
 
-var bashSpec = Spec{
-	Name:        "bash",
+var shellSpec = Spec{
+	Name:        shellName,
 	Kind:        acp.ToolExecute,
-	Description: "Run a bash command in the working directory and return its combined stdout and stderr. Use it for builds, tests, git and other shell work. Commands are killed on cancellation or when the configured timeout is reached.",
+	Description: "Run a " + shellName + " command in the working directory and return its combined stdout and stderr. Use it for builds, tests, git and other shell work. Commands are killed on cancellation or when the configured timeout is reached.",
 	Parameters: []byte(`{
 		"type": "object",
 		"properties": {
-			"command": {"type": "string", "description": "The command line, run with bash -c"}
+			"command": {"type": "string", "description": "` + shellCommandDescription + `"}
 		},
 		"required": ["command"]
 	}`),
@@ -47,8 +47,8 @@ func (tb *Toolbox) bash(args bashArgs) (*Call, error) {
 
 var errTimeout = errors.New("command timed out")
 
-// runShell uses a separate process group on Unix so cancellation and timeouts
-// also signal descendants that remain in that group. Detached groups can survive.
+// runShell owns a process group on Unix and a job on Windows. Unix descendants
+// that detach into another group can survive cleanup; neither is a sandbox.
 func runShell(ctx context.Context, dir, command string, opts Options, observer *ShellObserver) (string, error) {
 	runCtx := ctx
 	if *opts.BashTimeout > 0 {
@@ -61,23 +61,22 @@ func runShell(ctx context.Context, dir, command string, opts Options, observer *
 	if out == nil {
 		out = &ShellObserver{output: cappedBuffer{limit: opts.OutputLimit}}
 	}
-	cmd := exec.CommandContext(runCtx, "bash", "-c", command)
+	cmd := shellCommand(runCtx, command)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = time.Second // don't wait on pipes held open by stray children
-	killProcessGroupOnCancel(cmd)
-
-	err := cmd.Start()
+	cleanup, err := startShell(cmd)
 	if err == nil {
 		out.mu.Lock()
 		out.started, out.command, out.cwd = true, command, dir
 		out.wake()
 		out.mu.Unlock()
 		err = cmd.Wait()
-		killProcessGroup(cmd)
+		cleanupErr := cleanup()
 		if errors.Is(err, exec.ErrWaitDelay) {
 			err = nil // the shell exited 0; only a stray child held the output open
 		}
+		err = errors.Join(err, cleanupErr)
 		out.mu.Lock()
 		status := shellExit(cmd.ProcessState)
 		out.exit = &status

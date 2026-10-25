@@ -6,7 +6,10 @@
 
 Sessions are stored in `~/.acplause/acplause.db`; `ACPLAUSE_DATA_DIR` selects
 another directory. acplause creates the directory with permissions `0700`
-and the database with `0600`. The database holds prompts, model output and
+and the database with `0600` on Unix. On Windows the default directory is
+`%USERPROFILE%\.acplause`; file access follows inherited Windows ACLs, not Unix
+mode bits. Choose a private user directory for `ACPLAUSE_DATA_DIR`.
+The database holds prompts, model output and
 tool output in plain text, along with workspace paths, titles, timestamps,
 model and effort selections, and accumulated cost. Prompt and tool images are
 stored inline in model history and the original ACP transcript until session deletion;
