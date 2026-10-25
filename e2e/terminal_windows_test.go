@@ -8,9 +8,37 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// denyShellLaunch makes the next real CreateProcess fail without deleting a
+// directory held open by os.Root. The agent consumes its outer job's sole
+// process slot; its command cannot start, even in a nested invocation job.
+func denyShellLaunch(t *testing.T, a *agent) {
+	t.Helper()
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.stop(); _ = windows.CloseHandle(job) })
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+	limits.BasicLimitInformation.ActiveProcessLimit = 1
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+		t.Fatal(err)
+	}
+	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(a.cmd.Process.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(process)
+	if err := windows.AssignProcessToJobObject(job, process); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // windowsChildCommand creates a real native descendant with inherited job
 // membership, not a mock terminal or a process launched by the test itself.

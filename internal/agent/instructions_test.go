@@ -90,68 +90,76 @@ func (b instructionReadBarrier) Handle(_ context.Context, r slog.Record) error {
 func TestInstructionsRefreshResumeAndCancelBarrier(t *testing.T) {
 	for _, cancel := range []bool{false, true} {
 		t.Run(map[bool]string{false: "resume", true: "cancel"}[cancel], func(t *testing.T) {
-			requests := make(chan llm.Request, 1)
-			s, out := testSession(t, fakeModel(func(_ context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
-				requests <- req
-				return &llm.Completion{FinishReason: llm.FinishStop}, nil
-			}))
-			barrier := instructionReadBarrier{Handler: slog.DiscardHandler, read: make(chan struct{}, 1), release: make(chan struct{})}
-			defer close(barrier.release)
-			s.deps.log = slog.New(barrier)
-			writeInstructions(t, s.cwd, string([]byte{0xff}))
-			s.instructions = "Previous marker."
-			old := s.toolbox
-			s.Submit(context.Background(), []acp.ContentBlock{acp.Text("inspect")})
-			select {
-			case <-barrier.read:
-			case <-time.After(5 * time.Second):
-				t.Fatal("worker did not reach instruction read barrier")
-			}
-			if cancel {
-				s.Cancel()
-			} else {
-				// Replace cwd itself so the old and new os.Root descriptors see
-				// different instruction files, even though cwd's name is stable.
-				if err := os.Rename(s.cwd, filepath.Join(t.TempDir(), "retired")); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(s.cwd, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				writeInstructions(t, s.cwd, "Current generation marker.")
-				if err := s.Resume(context.Background(), []string{t.TempDir()}, nil, false); err != nil {
-					t.Fatal(err)
-				}
-			}
-			barrier.release <- struct{}{}
-			updates := out.untilIdle(t)
-			idle := updates[len(updates)-1].(acp.StateUpdate)
-			if cancel {
-				if idle.StopReason != acp.StopCancelled || len(requests) != 0 {
-					t.Fatalf("cancelled read reached model: %+v", idle)
-				}
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				if s.instructions != "Previous marker." || s.activeToolbox != nil {
-					t.Fatal("cancelled read published or retained roots")
-				}
-			} else {
-				if idle.StopReason != acp.StopEndTurn {
-					t.Fatalf("resumed read: %+v", idle)
-				}
-				req := <-requests
-				if !strings.Contains(req.Messages[0].Content, "Current generation marker.") || strings.Contains(req.Messages[0].Content, "Previous marker.") {
-					t.Fatalf("stale instructions published: %s", req.Messages[0].Content)
-				}
-				call, err := old.Prepare("list_dir", `{}`)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got := call.Run(context.Background()); !got.Failed {
-					t.Fatal("retired toolbox retained after refresh")
-				}
-			}
+			testInstructionsRefreshBarrier(t, cancel, false)
 		})
+	}
+}
+
+func testInstructionsRefreshBarrier(t *testing.T, cancel, replaceRoot bool) {
+	requests := make(chan llm.Request, 1)
+	s, out := testSession(t, fakeModel(func(_ context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
+		requests <- req
+		return &llm.Completion{FinishReason: llm.FinishStop}, nil
+	}))
+	barrier := instructionReadBarrier{Handler: slog.DiscardHandler, read: make(chan struct{}, 1), release: make(chan struct{})}
+	defer close(barrier.release)
+	s.deps.log = slog.New(barrier)
+	writeInstructions(t, s.cwd, string([]byte{0xff}))
+	s.instructions = "Previous marker."
+	old := s.toolbox
+	s.Submit(context.Background(), []acp.ContentBlock{acp.Text("inspect")})
+	select {
+	case <-barrier.read:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not reach instruction read barrier")
+	}
+	if cancel {
+		s.Cancel()
+	} else {
+		if replaceRoot {
+			// Physical replacement of an open root is a Unix-only fixture.
+			if err := os.Rename(s.cwd, filepath.Join(t.TempDir(), "retired")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(s.cwd, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// In-place content replacement remains valid with Windows open roots.
+		// The read already captured invalid old text before its barrier, so a
+		// roots-generation retry must observe this fresh content before modeling.
+		writeInstructions(t, s.cwd, "Current generation marker.")
+		if err := s.Resume(context.Background(), []string{t.TempDir()}, nil, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	barrier.release <- struct{}{}
+	updates := out.untilIdle(t)
+	idle := updates[len(updates)-1].(acp.StateUpdate)
+	if cancel {
+		if idle.StopReason != acp.StopCancelled || len(requests) != 0 {
+			t.Fatalf("cancelled read reached model: %+v", idle)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.instructions != "Previous marker." || s.activeToolbox != nil {
+			t.Fatal("cancelled read published or retained roots")
+		}
+	} else {
+		if idle.StopReason != acp.StopEndTurn {
+			t.Fatalf("resumed read: %+v", idle)
+		}
+		req := <-requests
+		if !strings.Contains(req.Messages[0].Content, "Current generation marker.") || strings.Contains(req.Messages[0].Content, "Previous marker.") {
+			t.Fatalf("stale instructions published: %s", req.Messages[0].Content)
+		}
+		call, err := old.Prepare("list_dir", `{}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := call.Run(context.Background()); !got.Failed {
+			t.Fatal("retired toolbox retained after refresh")
+		}
 	}
 }
 

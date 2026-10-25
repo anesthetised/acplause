@@ -157,10 +157,10 @@ func TestFileDiffAppliesWithGit(t *testing.T) {
 		if err := os.WriteFile(patch, []byte(d.Patch.Text), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command("git", "apply", "-p0", "--unsafe-paths", "--directory=/", patch)
+		cmd := exec.Command("git", "-c", "core.autocrlf=false", "apply", "-p0", "--unsafe-paths", "--directory=/", patch)
 		cmd.Dir = "/"
 		if runtime.GOOS == "windows" {
-			cmd = exec.Command("git", "apply", "-p0", "--unsafe-paths", patch)
+			cmd = exec.Command("git", "-c", "core.autocrlf=false", "apply", "-p0", "--unsafe-paths", patch)
 			cmd.Dir = dir
 		}
 		cmd.Env = append(os.Environ(), "GIT_DIR="+filepath.Join(dir, "no-repo"))

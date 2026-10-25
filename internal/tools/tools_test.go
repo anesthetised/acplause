@@ -282,6 +282,9 @@ func TestHiddenTraversal(t *testing.T) {
 		{"list hidden descendants from root", "list_dir", map[string]any{"include_hidden": true}, ".env\n.github/\n  .nested/\n    config\n  .settings\n  workflows/\n    ci.yml\nnested/\n  .config\nvisible.txt\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.tool == "search_code" {
+				tc.want = filepath.FromSlash(tc.want)
+			}
 			if got := w.ok(tc.tool, tc.args); got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
@@ -499,7 +502,11 @@ func TestWriteArgumentsRequireExplicitContent(t *testing.T) {
 
 func TestBash(t *testing.T) {
 	w := newWorkspace(t, Options{})
-	if got := w.ok(testShellName(), map[string]string{"command": testShellCommand(`pwd; echo err >&2`, "[Console]::Write((Get-Location).Path + \"`n\"); [Console]::Error.Write(\"err`n\")")}); got != w.cwd+"\nerr\n" && got != "/private"+w.cwd+"\nerr\n" {
+	physicalCwd, err := filepath.EvalSymlinks(w.cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := w.ok(testShellName(), map[string]string{"command": testShellCommand(`pwd; echo err >&2`, "[Console]::Write((Get-Location).Path + \"`n\"); [Console]::Error.Write(\"err`n\")")}); got != w.cwd+"\nerr\n" && got != physicalCwd+"\nerr\n" {
 		t.Fatalf("got %q", got)
 	}
 	w.fails(testShellName(), map[string]string{"command": testShellCommand(`echo partial; exit 3`, "[Console]::Write(\"partial`n\"); exit 3")}, "partial\n\nError: exit status 3")

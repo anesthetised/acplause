@@ -25,7 +25,10 @@ func TestPowerShellNativeCommands(t *testing.T) {
 	}{
 		{"unicode", `[Console]::Write('Привет 🚀 & < > " quotes'); [Console]::Error.Write(' stderr')`, `Привет 🚀 & < > " quotes stderr`, false, 0},
 		{"multiline", "[Console]::Write('one')\n[Console]::Write('two')", "onetwo", false, 0},
+		{"progress", `Write-Progress -Activity 'test' -Status 'test' -PercentComplete 50; [Console]::Write('done')`, "done", false, 0},
 		{"native exit", `& $env:ComSpec /d /c exit 7`, "", true, 7},
+		{"success after native failure", `& $env:ComSpec /d /c exit 7; [Console]::Write('ok')`, "ok", false, 0},
+		{"cmdlet failure", `Write-Error 'sentinel'`, "", true, 1},
 		{"explicit exit", `exit 9`, "", true, 9},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -35,12 +38,18 @@ func TestPowerShellNativeCommands(t *testing.T) {
 			}
 			observer := call.ObserveShell()
 			result := call.Run(context.Background())
+			if strings.Contains(result.Output, "#< CLIXML") {
+				t.Fatalf("non-text shell output: %q", result.Output)
+			}
 			if result.Failed != tc.failed || tc.output != "" && result.Output != tc.output {
 				t.Fatalf("result: %+v", result)
 			}
 			exit := observer.Snapshot(0).Exit
-			if exit == nil || exit.Code == nil || *exit.Code != tc.code || exit.Signal != "" {
-				t.Fatalf("exit: %+v", exit)
+			if exit == nil || exit.Code == nil {
+				t.Fatalf("missing exit code: %+v", exit)
+			}
+			if *exit.Code != tc.code || exit.Signal != "" {
+				t.Fatalf("exit code=%d signal=%q, want code=%d; output=%q", *exit.Code, exit.Signal, tc.code, result.Output)
 			}
 		})
 	}

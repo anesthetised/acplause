@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -176,6 +177,8 @@ func TestTerminalDeniedAndStartFailed(t *testing.T) {
 			option := "allow_once"
 			if denied {
 				option = "reject_once"
+			} else if runtime.GOOS == "windows" {
+				denyShellLaunch(t, a)
 			} else if err := os.Remove(cwd); err != nil {
 				t.Fatal(err)
 			}

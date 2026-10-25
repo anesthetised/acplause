@@ -206,3 +206,10 @@ func assertProcessGone(t *testing.T, pidFile string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Unix start-failure tests remove the prepared working directory instead of
+// using the Windows-only Job Object fixture.
+func denyShellLaunch(t *testing.T, _ *agent) {
+	t.Helper()
+	t.Fatal("denyShellLaunch is a Windows-only fixture")
+}

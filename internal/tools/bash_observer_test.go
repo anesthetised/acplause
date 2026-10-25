@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,11 @@ func TestShellObserverStartFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := call.ObserveShell()
+	if runtime.GOOS == "windows" {
+		if err := w.tb.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.Remove(w.cwd); err != nil {
 		t.Fatal(err)
 	}

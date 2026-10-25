@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -61,9 +62,9 @@ func TestSearchCodeRegexBoundsAndFilters(t *testing.T) {
 	w.write("outside.txt", "hit\n")
 	got := w.ok("search_code", map[string]any{"pattern": "^hit", "regex": true, "ignore_case": true, "path": "sub", "file_glob": "*.txt"})
 	var want strings.Builder
-	want.WriteString("sub/a.txt:1:HIT " + strings.Repeat("界", 98) + "…\n")
+	want.WriteString(filepath.FromSlash("sub/a.txt") + ":1:HIT " + strings.Repeat("界", 98) + "…\n")
 	for n := 1; n < maxMatches; n++ {
-		fmt.Fprintf(&want, "sub/b.txt:%d:hit hit\n", n)
+		fmt.Fprintf(&want, "%s:%d:hit hit\n", filepath.FromSlash("sub/b.txt"), n)
 	}
 	fmt.Fprintf(&want, "... stopped after %d matches\n", maxMatches)
 	if got != want.String() {

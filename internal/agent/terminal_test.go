@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -369,6 +370,17 @@ func TestTerminalMethodsFailedStartsHaveNoTerminal(t *testing.T) {
 			c.answer = func(context.Context) (string, string) {
 				if denied {
 					return acp.OutcomeSelected, optionReject
+				}
+				if runtime.GOOS == "windows" {
+					c.agent.mu.Lock()
+					session := c.agent.sessions[sid]
+					c.agent.mu.Unlock()
+					session.mu.Lock()
+					err := session.toolbox.Close()
+					session.mu.Unlock()
+					if err != nil {
+						t.Error(err)
+					}
 				}
 				if err := os.Remove(cwd); err != nil {
 					t.Error(err)

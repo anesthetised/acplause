@@ -25,8 +25,12 @@ func shellCommand(ctx context.Context, command string) *exec.Cmd {
 		return cmd
 	}
 	// EncodedCommand preserves quotes, newlines and non-ASCII script text.
-	// Text output avoids PowerShell's encoded-command CLIXML error stream.
-	script := "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n" + command
+	// PowerShell 5.1 still serializes progress as CLIXML with text output.
+	// Suppress that noninteractive UI, including automatic module-load progress.
+	script := "$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n" + command +
+		// -EncodedCommand otherwise reduces native failure codes to 1. Test $?
+		// immediately, so a successful command after a failure still exits zero.
+		"\nif (-not $?) { if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 1 }\n"
 	units := utf16.Encode([]rune(script))
 	data := make([]byte, len(units)*2)
 	for i, unit := range units {

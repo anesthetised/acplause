@@ -2,8 +2,11 @@ package e2e
 
 import (
 	"encoding/json"
+	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,12 +24,17 @@ func TestPromptLifecycle(t *testing.T) {
 		s.finish("stop")
 	})
 	a, sid, cwd := started(t, llm)
+	path := filepath.ToSlash(filepath.Join(cwd, "main.go"))
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	uri := (&url.URL{Scheme: "file", Path: path}).String()
 
 	id := a.request("session/prompt", map[string]any{
 		"sessionId": sid,
 		"prompt": []any{
 			map[string]any{"type": "text", "text": "Say hi", "annotations": map[string]any{"priority": 1}},
-			map[string]any{"type": "resource_link", "uri": "file://" + cwd + "/main.go", "name": "main.go"},
+			map[string]any{"type": "resource_link", "uri": uri, "name": "main.go"},
 			map[string]any{"type": "_vendor_block", "payload": 7},
 		},
 		"_meta": map[string]any{"traceparent": "00-1-2-01"},
@@ -61,7 +69,7 @@ func TestPromptLifecycle(t *testing.T) {
 	if req.Model != "test/model" || !req.Stream || len(req.Tools) != 9 || req.Reasoning != nil {
 		t.Fatalf("chat request: %+v", req)
 	}
-	if len(req.Messages) != 2 || req.Messages[0]["role"] != "system" || req.Messages[1]["content"] != "Say hi\n\n[main.go](file://"+cwd+"/main.go)" {
+	if len(req.Messages) != 2 || req.Messages[0]["role"] != "system" || req.Messages[1]["content"] != "Say hi\n\n[main.go]("+uri+")" {
 		t.Fatalf("chat messages: %v", req.Messages)
 	}
 }

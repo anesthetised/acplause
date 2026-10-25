@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -253,6 +254,9 @@ func TestHiddenSearchAndListInPlanMode(t *testing.T) {
 		t.Fatalf("hidden traversal updates: %v", kinds(updates))
 	}
 	for i, tc := range cases {
+		if tc.tool == "search_code" && !tc.failed {
+			tc.want = filepath.FromSlash(tc.want)
+		}
 		status := "completed"
 		if tc.failed {
 			status = "failed"
@@ -465,9 +469,13 @@ func TestFileToolsReportDiffs(t *testing.T) {
 		t.Fatalf("tool calls: %v", done)
 	}
 	abs := filepath.Join(cwd, "a.txt")
+	headerPath := abs
+	if strings.ContainsAny(abs, "\\\"") {
+		headerPath = strconv.Quote(abs)
+	}
 	want := []struct{ op, path, patch string }{
-		{"modify", abs, "diff --git " + abs + " " + abs + "\n--- " + abs + "\n+++ " + abs + "\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"},
-		{"modify", abs, "diff --git " + abs + " " + abs + "\n--- " + abs + "\n+++ " + abs + "\n@@ -1,3 +1,4 @@\n one\n TWO\n three\n+four\n"},
+		{"modify", abs, "diff --git " + headerPath + " " + headerPath + "\n--- " + headerPath + "\n+++ " + headerPath + "\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"},
+		{"modify", abs, "diff --git " + headerPath + " " + headerPath + "\n--- " + headerPath + "\n+++ " + headerPath + "\n@@ -1,3 +1,4 @@\n one\n TWO\n three\n+four\n"},
 		{"add", filepath.Join(cwd, "sub", "b.txt"), ""},
 	}
 	for i, w := range want {

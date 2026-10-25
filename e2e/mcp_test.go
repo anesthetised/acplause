@@ -76,12 +76,22 @@ func TestMCPStdioRelay(t *testing.T) {
 	updates := a.untilIdle(sid)
 	msgs := llm.request(1).Messages
 	text := msgs[len(msgs)-1]["content"].(string)
-	physicalCwd, err := filepath.EvalSymlinks(cwd)
+	var structured struct{ Cwd string }
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(text, "structuredContent: ")), &structured); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.Stat(structured.Cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encodedCwd, _ := json.Marshal(physicalCwd)
-	for _, want := range []string{`"schedule":{"type":"interval","everyMs":3600000}`, `9007199254740993`, string(encodedCwd), `configured-token`, `fixture-argument`, `"providerKey":""`} {
+	expected, err := os.Stat(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(actual, expected) {
+		t.Fatalf("MCP cwd %q differs from session cwd %q", structured.Cwd, cwd)
+	}
+	for _, want := range []string{`"schedule":{"type":"interval","everyMs":3600000}`, `9007199254740993`, `configured-token`, `fixture-argument`, `"providerKey":""`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("result lacks %q: %s", want, text)
 		}

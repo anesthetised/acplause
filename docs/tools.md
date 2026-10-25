@@ -112,6 +112,8 @@ preserve script quoting and Unicode; console output uses UTF-8. This does not
 change every cmdlet's file encoding: PowerShell 5.1 redirection can write
 UTF-16LE. Use the file tools for predictable UTF-8 text edits. The existing
 `ACPLAUSE_BASH_TIMEOUT` setting controls both platforms' shell tools.
+Noninteractive progress is suppressed. An explicitly requested `exit` code is
+preserved, as is the native exit code when the final external command fails.
 
 Terminal output retains the first 50,000 bytes; excess bytes are counted and
 reported by an omission marker in the final snapshot. Live updates publish at
@@ -138,6 +140,8 @@ cancellation and restart replay were verified in the
 File tools are confined to the session's `cwd` and `additionalDirectories`
 with `os.Root`, which blocks escapes through `..` and symlinks. Shell commands
 are not sandboxed.
+On Windows, workspace root handles prevent renaming or removing the root
+directory while the session uses it; close the session first.
 
 Read, write and edit operations accept regular files only; pipes and devices
 are rejected. `write_file.content` and `edit.new_text` must be explicit
