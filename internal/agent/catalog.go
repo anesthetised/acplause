@@ -2,10 +2,12 @@ package agent
 
 import (
 	"cmp"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/llm"
@@ -17,6 +19,10 @@ const (
 	configModel  = "model"
 	configEffort = "reasoning_effort"
 )
+
+// catalogTTL is how long a loaded catalog is served before the next
+// session/new or resume reloads it in the background.
+const catalogTTL = time.Hour
 
 // effortDefault leaves reasoning effort to the provider.
 const effortDefault = "default"
@@ -31,31 +37,47 @@ var efforts = []acp.ConfigOptionValue{
 
 // cacheCatalog keeps only a successful load, so one provider outage does not
 // fail new sessions and resumes after it recovers. Callers that arrive during
-// a load share it, failure included.
-func cacheCatalog(load func() (*catalog, error)) func() (*catalog, error) {
+// the first load share it, failure included. Once loaded, a catalog older
+// than ttl is reloaded in the background: callers keep getting the previous
+// one without waiting, and a failed reload leaves it in place (warned about
+// and retried by a later caller). At most one load is in flight.
+func cacheCatalog(load func() (*catalog, error), ttl time.Duration, log *slog.Logger) func() (*catalog, error) {
 	var (
-		mu      sync.Mutex
-		loaded  *catalog
-		attempt chan struct{} // closed when the load in flight ends
-		err     error         // of the last finished load
+		mu       sync.Mutex
+		loaded   *catalog
+		loadedAt time.Time
+		attempt  chan struct{} // closed when the load in flight ends
+		err      error         // of the last finished load
 	)
+	start := func() chan struct{} { // mu held
+		done := make(chan struct{})
+		attempt = done
+		go func() {
+			c, e := load()
+			mu.Lock()
+			if e == nil {
+				loaded, loadedAt = c, time.Now()
+			} else if loaded != nil {
+				log.Warn("model catalog reload failed; keeping the previous list", "error", e)
+			}
+			err, attempt = e, nil
+			mu.Unlock()
+			close(done)
+		}()
+		return done
+	}
 	return func() (*catalog, error) {
 		mu.Lock()
 		if loaded != nil {
-			mu.Unlock()
+			if attempt == nil && time.Since(loadedAt) >= ttl {
+				start()
+			}
+			defer mu.Unlock()
 			return loaded, nil
 		}
 		done := attempt
 		if done == nil {
-			done = make(chan struct{})
-			attempt = done
-			go func() {
-				c, e := load()
-				mu.Lock()
-				loaded, err, attempt = c, e, nil
-				mu.Unlock()
-				close(done)
-			}()
+			done = start()
 		}
 		mu.Unlock()
 		<-done

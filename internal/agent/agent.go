@@ -130,7 +130,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 			return nil, errors.New("no models with tool support are available")
 		}
 		return c, nil
-	})
+	}, catalogTTL, cfg.Log)
 	go a.catalog()
 	go a.renewLeases()
 	return a
