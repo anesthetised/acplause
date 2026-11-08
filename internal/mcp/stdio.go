@@ -183,7 +183,7 @@ func (t *stdioTransport) Close() error {
 }
 func processEnvironment(extra map[string]string) []string {
 	allowed := map[string]bool{}
-	for _, k := range strings.Fields("HOME PATH USER LOGNAME TMPDIR TMP TEMP LANG SYSTEMROOT WINDIR COMSPEC PATHEXT USERPROFILE APPDATA LOCALAPPDATA") {
+	for _, k := range strings.Fields("HOME PATH USER LOGNAME TMPDIR TMP TEMP LANG SYSTEMROOT WINDIR COMSPEC PATHEXT USERPROFILE APPDATA LOCALAPPDATA HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY SSL_CERT_FILE SSL_CERT_DIR") {
 		allowed[k] = true
 	}
 	env := map[string]string{}
@@ -195,7 +195,9 @@ func processEnvironment(extra map[string]string) []string {
 	}
 	for _, v := range os.Environ() {
 		k, value, _ := strings.Cut(v, "=")
-		if allowed[strings.ToUpper(k)] || strings.HasPrefix(k, "LC_") {
+		// Proxy names match in either case via the upper-cased lookup, as
+		// tools read both forms; XDG_ follows the platform's name casing.
+		if allowed[strings.ToUpper(k)] || strings.HasPrefix(k, "LC_") || strings.HasPrefix(key(k), "XDG_") {
 			env[key(k)] = value
 		}
 	}

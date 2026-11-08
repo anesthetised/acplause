@@ -39,10 +39,14 @@ as provider setup; `ACPLAUSE_API_KEY` is not an implicit MCP credential.
 
 Stdio executes the absolute command directly, without a shell, in the
 session's `cwd`. It inherits only `HOME`, `PATH`, `USER`, `LOGNAME`,
-`TMPDIR`/`TMP`/`TEMP`, `LANG` and `LC_*`, plus Windows system/profile
-variables; explicit `env` entries override these. Provider API keys are not
-inherited implicitly. MCP servers run with the agent's OS privileges,
-outside the built-in file sandbox. Server stderr is discarded.
+`TMPDIR`/`TMP`/`TEMP`, `LANG` and `LC_*`; the proxy settings `HTTP_PROXY`,
+`HTTPS_PROXY`, `NO_PROXY` and `ALL_PROXY` (upper and lower case; proxy URLs may
+carry credentials); the CA settings `SSL_CERT_FILE` and `SSL_CERT_DIR`; `XDG_*`;
+plus Windows system/profile variables (`SYSTEMROOT`, `WINDIR`, `COMSPEC`,
+`PATHEXT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`); explicit `env` entries
+override these. Nothing else, including provider API keys, is inherited. MCP
+servers run with the agent's OS privileges, outside the built-in file sandbox.
+Server stderr is discarded.
 
 On Windows use an absolute executable path, such as
 `C:\\tools\\mcp-server.exe` in JSON (backslashes must be escaped). To launch a

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -214,6 +215,42 @@ func TestMCPEnvironment(t *testing.T) {
 	}
 	if !filepath.IsAbs(helperConfig(t, "s").Command) {
 		t.Fatal("helper command is not absolute")
+	}
+}
+
+func TestMCPEnvironmentInheritsProxyCertAndXDG(t *testing.T) {
+	inherited := map[string]string{
+		"HTTP_PROXY": "http://user:pw@proxy:3128", "HTTPS_PROXY": "https-proxy", "NO_PROXY": "localhost", "ALL_PROXY": "all-proxy",
+		"http_proxy": "lower-http", "https_proxy": "lower-https", "no_proxy": "lower-no", "all_proxy": "lower-all",
+		"SSL_CERT_FILE": "/ca.pem", "SSL_CERT_DIR": "/certs",
+		"XDG_CONFIG_HOME": "/xdg/config", "XDG_RUNTIME_DIR": "/xdg/run",
+	}
+	for k, v := range inherited {
+		t.Setenv(k, v)
+	}
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+	t.Setenv("ACPLAUSE_API_KEY", "api-key")
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	got := map[string]string{}
+	for _, entry := range processEnvironment(nil) {
+		k, v, _ := strings.Cut(entry, "=")
+		got[strings.ToUpper(k)] = v
+		if k == "AWS_SECRET_ACCESS_KEY" || k == "ACPLAUSE_API_KEY" || k == "OPENAI_API_KEY" {
+			t.Errorf("unrelated variable inherited: %s", k)
+		}
+	}
+	for k := range inherited {
+		if _, ok := got[strings.ToUpper(k)]; !ok {
+			t.Errorf("%s not inherited", k)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		env := strings.Join(processEnvironment(nil), "\n")
+		for _, want := range []string{"http_proxy=lower-http", "HTTP_PROXY=http://user:pw@proxy:3128", "all_proxy=lower-all"} {
+			if !strings.Contains(env, want) {
+				t.Errorf("missing %q", want)
+			}
+		}
 	}
 }
 
