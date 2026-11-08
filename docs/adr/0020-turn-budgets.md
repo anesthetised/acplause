@@ -22,12 +22,13 @@ cancellation invariants.
    | --- | --- |
    | `ACPLAUSE_TURN_TIMEOUT` | Nonnegative Go duration, such as `15m` |
    | `ACPLAUSE_MAX_TURN_TOKENS` | Nonnegative base-10 integer fitting `uint64` |
-   | `ACPLAUSE_MAX_TURN_COST_USD` | Finite nonnegative base-10 decimal, optionally with a decimal exponent |
+   | `ACPLAUSE_MAX_TURN_COST_USD` | Finite nonnegative number as parsed by `strconv.ParseFloat` (amended by #190) |
 
    Reject malformed, negative, overflow and nonfinite values before serving.
    Cost uses `float64`; reject a positive value that cannot be represented as
-   positive finite USD rather than silently disabling the limit. Hexadecimal
-   cost notation is not decimal. Configuration errors name the setting and
+   positive finite USD rather than silently disabling the limit. (#190 dropped
+   the rejection of hexadecimal and underscore notation; the underflow rule
+   stays.) Configuration errors name the setting and
    expected type without echoing its potentially credential-bearing input.
    Existing request/tool defaults and MCP setup/discovery/cleanup deadlines
    remain those of ADR 0008. No price lookup, model fallback or new dependency.

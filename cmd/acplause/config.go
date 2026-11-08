@@ -61,9 +61,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	if v := getenv("ACPLAUSE_MAX_TURN_COST_USD"); v != "" {
 		n, err := strconv.ParseFloat(v, 64)
-		mantissa, _, _ := strings.Cut(strings.ToLower(v), "e")
-		underflow := n == 0 && strings.ContainsAny(mantissa, "123456789")
-		if err != nil || n < 0 || math.IsNaN(n) || math.IsInf(n, 0) || strings.ContainsAny(v, "xXpP_") || underflow {
+		// A nonzero value that underflows to 0 would silently disable the limit (ADR 0020).
+		underflow := n == 0 && strings.ContainsAny(v, "123456789")
+		if err != nil || n < 0 || math.IsNaN(n) || math.IsInf(n, 0) || underflow {
 			errs = append(errs, errors.New("ACPLAUSE_MAX_TURN_COST_USD: want a finite nonnegative representable decimal USD value"))
 		} else {
 			cfg.MaxTurnCostUSD = n
