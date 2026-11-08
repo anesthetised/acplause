@@ -82,6 +82,11 @@ type Session struct {
 	// rootsGen counts root changes, so an "always" answer to a request sent
 	// under older roots is not recorded under the new ones.
 	rootsGen uint64
+	// replaying is set while Resume writes a replay snapshot without holding
+	// mu, so a slow client cannot stall the read loop on the lock; send
+	// defers live updates into deferred until the snapshot is out.
+	replaying bool
+	deferred  []acp.Update
 
 	// Persistence (persist.go). flushMu serialises saves and is taken
 	// before mu.
@@ -242,17 +247,36 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 		}
 		s.flushAsync()
 	}
-	if replay {
-		for _, u := range s.transcript {
-			s.send(u)
-		}
+	var snapshot []acp.Update
+	if replay { // session operations are serialised, so replays never overlap
+		snapshot = append(slices.Clone(s.transcript), s.state)
+		s.replaying = true
+	} else {
+		s.send(s.state)
 	}
-	s.send(s.state)
 	s.mu.Unlock()
 	if old != nil {
 		s.closeToolbox(old)
 	}
+	if snapshot != nil {
+		s.replay(snapshot)
+	}
 	return nil
+}
+
+// replay writes a resume snapshot outside mu, then whatever send deferred
+// meanwhile, until nothing is left. Transcript entries are replaced, never
+// mutated, so the snapshot is safe to read without the lock.
+func (s *Session) replay(updates []acp.Update) {
+	for len(updates) > 0 {
+		for _, u := range updates {
+			s.notify(u)
+		}
+		s.mu.Lock()
+		updates, s.deferred = s.deferred, nil
+		s.replaying = len(updates) > 0
+		s.mu.Unlock()
+	}
 }
 
 // acquireToolbox pins roots for one worker operation, including a read group,
@@ -505,7 +529,16 @@ func (s *Session) setState(u acp.StateUpdate) {
 }
 
 // send requires s.mu so replay snapshots and live updates cannot interleave.
+// During a replay it queues u behind the snapshot instead.
 func (s *Session) send(u acp.Update) {
+	if s.replaying {
+		s.deferred = append(s.deferred, u)
+		return
+	}
+	s.notify(u)
+}
+
+func (s *Session) notify(u acp.Update) {
 	n := acp.SessionNotification{SessionID: s.id, Update: u}
 	if err := s.deps.out.Notify(acp.MethodSessionUpdate, n); err != nil {
 		s.deps.log.Warn("dropping session update", "session", s.id, "err", err)
