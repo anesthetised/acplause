@@ -94,10 +94,11 @@ instead, capped at 30 seconds. Cancelling the turn ends the wait.
 ## Token and cost budgets
 
 `ACPLAUSE_MAX_TURN_TOKENS` accepts a nonnegative base-10 `uint64` count;
-`ACPLAUSE_MAX_TURN_COST_USD` accepts a finite nonnegative decimal (including
-decimal exponent notation). Unset, empty and `0` disable each limit independently.
-Invalid, negative, overflow, nonfinite and unrepresentably small positive USD
-settings fail startup without echoing their input.
+`ACPLAUSE_MAX_TURN_COST_USD` accepts a finite nonnegative number as parsed by
+Go's `strconv.ParseFloat`. Unset, empty and `0` disable each limit independently.
+Invalid, negative, overflowing and nonfinite settings, and a nonzero value too
+small to represent (it would otherwise disable the limit), fail startup without
+echoing their input.
 
 These counters reset after prompt insertion and include ordinary and
 automatic/manual summary responses. Tokens count reported input+output once,

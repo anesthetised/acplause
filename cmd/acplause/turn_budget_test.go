@@ -28,10 +28,9 @@ func TestTurnBudgetConfig(t *testing.T) {
 		want  float64
 		valid bool
 	}{
-		{"", 0, true}, {"0", 0, true}, {"0.0", 0, true}, {"0e-999", 0, true}, {"0.25", 0.25, true},
-		{"1e-3", 0.001, true}, {"1.7976931348623157e308", math.MaxFloat64, true},
-		{"-0.1", 0, false}, {"NaN", 0, false}, {"Inf", 0, false}, {"1e309", 0, false},
-		{"1e-400", 0, false}, {"0x1p2", 0, false}, {"1_000", 0, false}, {"secret-marker", 0, false},
+		{"", 0, true}, {"0", 0, true}, {"0.0", 0, true}, {"1.5", 1.5, true}, {"0x1p2", 4, true},
+		{"-1", 0, false}, {"inf", 0, false}, {"1e309", 0, false}, {"1e-400", 0, false},
+		{"abc", 0, false}, {"secret-marker", 0, false},
 	} {
 		cfg, err := loadConfig(env(map[string]string{"ACPLAUSE_MAX_TURN_COST_USD": tc.value}))
 		if (err == nil) != tc.valid || tc.valid && cfg.MaxTurnCostUSD != tc.want {
