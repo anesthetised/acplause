@@ -11,6 +11,7 @@
 | `ACPLAUSE_BASH_TIMEOUT` | `30m`                           | shell tool timeout (bash/PowerShell); `0` disables |
 | `ACPLAUSE_MCP_TIMEOUT`  | `1h`                            | MCP call timeout; `0` disables        |
 | `ACPLAUSE_TURN_TIMEOUT` | `0`                             | accepted turn timeout; `0` disables   |
+| `ACPLAUSE_IDLE_TIMEOUT` | `2m`                            | longest provider silence; `0` disables |
 | `ACPLAUSE_MAX_TURN_TOKENS` | `0`                          | reported input+output tokens per turn; `0` disables |
 | `ACPLAUSE_MAX_TURN_COST_USD` | `0`                        | reported USD per turn; `0` disables |
 | `ACPLAUSE_DATA_DIR`    | `~/.acplause`                    | session database directory            |
@@ -72,6 +73,23 @@ tools, permission/form waiting and automatic/manual compaction. Expiry cancels
 active work and ends once with `idle(cancelled)`, preceded by a live warning
 notice explaining the turn deadline. User/session cancellation takes priority
 and does not produce that timeout notice. Notices are not conversation replay.
+
+## Provider stalls and rate limits
+
+`ACPLAUSE_IDLE_TIMEOUT` accepts a nonnegative Go duration; it defaults to `2m`
+and `0` disables it. The provider must send something, response headers first
+and then any bytes of the stream, keepalive comments such as
+`: OPENROUTER PROCESSING` included, at least that often. Longer silence is a
+stalled connection: the request is abandoned with a `timeout` error. It is
+retried only if no response headers had arrived; a stream that has started is
+never replayed, so the turn ends once with `idle(error)`. A local backend that
+processes a very long prompt without sending anything hits the same deadline;
+raise the setting for such a backend.
+
+Transient failures (HTTP 408, 429, 5xx and connection errors) are retried up to
+three times with a 500 ms doubling backoff. When the response carries a
+`Retry-After` header, in seconds or as an HTTP date, acplause waits that long
+instead, capped at 30 seconds. Cancelling the turn ends the wait.
 
 ## Token and cost budgets
 

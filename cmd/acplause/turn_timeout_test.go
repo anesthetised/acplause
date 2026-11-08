@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+func TestIdleTimeoutConfig(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+		valid bool
+	}{
+		{"", 2 * time.Minute, true}, {"0", 0, true}, {"90s", 90 * time.Second, true},
+		{"-1s", 0, false}, {"secret-marker", 0, false},
+	} {
+		cfg, err := loadConfig(env(map[string]string{"ACPLAUSE_IDLE_TIMEOUT": tc.value}))
+		if (err == nil) != tc.valid || tc.valid && cfg.IdleTimeout != tc.want {
+			t.Errorf("%q: valid=%v timeout=%v err=%v", tc.value, tc.valid, cfg.IdleTimeout, err)
+		}
+		if err != nil && (!strings.Contains(err.Error(), "ACPLAUSE_IDLE_TIMEOUT") || strings.Contains(err.Error(), "secret-marker")) {
+			t.Fatalf("unsafe or unclear configuration error: %v", err)
+		}
+	}
+}
+
 func TestTurnTimeoutConfig(t *testing.T) {
 	for _, tc := range []struct {
 		value string
