@@ -60,7 +60,7 @@ func doctor(getenv func(string) string, stderr io.Writer, home func() (string, e
 		// Reuse the parser for individual settings instead of trying to redact
 		// arbitrary error text. These are names owned by this binary, not inputs.
 		var invalid []string
-		for _, key := range []string{"ACPLAUSE_READ_CONCURRENCY", "ACPLAUSE_MAX_TURN_TOKENS", "ACPLAUSE_MAX_TURN_COST_USD", "ACPLAUSE_TURN_TIMEOUT", "ACPLAUSE_MCP_TIMEOUT", "ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_LOG_LEVEL"} {
+		for _, key := range []string{"ACPLAUSE_READ_CONCURRENCY", "ACPLAUSE_MAX_TURN_TOKENS", "ACPLAUSE_MAX_TURN_COST_USD", "ACPLAUSE_TURN_TIMEOUT", "ACPLAUSE_IDLE_TIMEOUT", "ACPLAUSE_MCP_TIMEOUT", "ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_LOG_LEVEL"} {
 			_, bad := loadConfig(func(name string) string {
 				if name == key {
 					return getenv(name)

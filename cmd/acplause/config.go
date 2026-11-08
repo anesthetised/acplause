@@ -23,6 +23,7 @@ type config struct {
 	BashTimeout     time.Duration
 	MCPTimeout      time.Duration
 	TurnTimeout     time.Duration
+	IdleTimeout     time.Duration
 	MaxTurnTokens   uint64
 	MaxTurnCostUSD  float64
 	LogLevel        slog.Level
@@ -38,6 +39,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		MaxRounds:       agent.DefaultMaxRounds,
 		BashTimeout:     tools.DefaultBashTimeout,
 		MCPTimeout:      agent.DefaultMCPTimeout,
+		IdleTimeout:     llm.DefaultIdleTimeout,
 	}
 
 	var errs []error
@@ -73,6 +75,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 			errs = append(errs, errors.New("ACPLAUSE_TURN_TIMEOUT: want a nonnegative duration such as 15m"))
 		} else {
 			cfg.TurnTimeout = d
+		}
+	}
+	if v := getenv("ACPLAUSE_IDLE_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			errs = append(errs, errors.New("ACPLAUSE_IDLE_TIMEOUT: want a nonnegative duration such as 2m"))
+		} else {
+			cfg.IdleTimeout = d
 		}
 	}
 	if v := getenv("ACPLAUSE_MCP_TIMEOUT"); v != "" {

@@ -10,6 +10,7 @@
 //	ACPLAUSE_BASH_TIMEOUT   bash tool timeout; default 30m, 0 disables
 //	ACPLAUSE_MCP_TIMEOUT    MCP tool timeout; default 1h, 0 disables
 //	ACPLAUSE_TURN_TIMEOUT   accepted turn timeout; default 0 (unlimited)
+//	ACPLAUSE_IDLE_TIMEOUT   longest provider silence; default 2m, 0 disables
 //	ACPLAUSE_MAX_TURN_TOKENS reported input+output tokens per turn; default 0
 //	ACPLAUSE_MAX_TURN_COST_USD reported USD per turn; default 0
 //	ACPLAUSE_LOG_LEVEL      debug, info, warn or error; default info
@@ -62,9 +63,10 @@ func serve() error {
 	defer stop()
 
 	client := llm.New(llm.Config{
-		BaseURL: cfg.BaseURL,
-		APIKey:  cfg.APIKey,
-		Header:  providerHeaders(),
+		BaseURL:     cfg.BaseURL,
+		APIKey:      cfg.APIKey,
+		Header:      providerHeaders(),
+		IdleTimeout: &cfg.IdleTimeout,
 	})
 	dir, err := dataDirectory(cfg.DataDir, os.UserHomeDir)
 	if err != nil {

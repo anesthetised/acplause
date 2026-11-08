@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // ErrorKind classifies failures so callers can react without parsing text.
@@ -31,6 +32,9 @@ type Error struct {
 	Kind    ErrorKind
 	Status  int // HTTP status; 0 when there is none
 	Message string
+
+	// retryAfter is the provider's Retry-After, if any, uncapped.
+	retryAfter time.Duration
 }
 
 func (e *Error) Error() string {

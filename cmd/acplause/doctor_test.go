@@ -117,7 +117,7 @@ func TestDoctorDispatcherDoesNotEnterServer(t *testing.T) {
 }
 
 func TestDoctorSanitizesEveryParsedSetting(t *testing.T) {
-	for _, key := range []string{"ACPLAUSE_READ_CONCURRENCY", "ACPLAUSE_MAX_TURN_TOKENS", "ACPLAUSE_MAX_TURN_COST_USD", "ACPLAUSE_TURN_TIMEOUT", "ACPLAUSE_MCP_TIMEOUT", "ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_LOG_LEVEL"} {
+	for _, key := range []string{"ACPLAUSE_READ_CONCURRENCY", "ACPLAUSE_MAX_TURN_TOKENS", "ACPLAUSE_MAX_TURN_COST_USD", "ACPLAUSE_TURN_TIMEOUT", "ACPLAUSE_IDLE_TIMEOUT", "ACPLAUSE_MCP_TIMEOUT", "ACPLAUSE_MAX_ROUNDS", "ACPLAUSE_BASH_TIMEOUT", "ACPLAUSE_LOG_LEVEL"} {
 		t.Run(key, func(t *testing.T) {
 			var report bytes.Buffer
 			err := doctor(env(map[string]string{key: "secret-marker", "ACPLAUSE_DATA_DIR": t.TempDir()}), &report, os.UserHomeDir, os.CreateTemp, false)

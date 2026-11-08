@@ -51,6 +51,9 @@ func readStream(ctx context.Context, body io.Reader, onDelta func(Delta)) (*Comp
 			case errors.Is(err, io.EOF):
 				return nil, &Error{Kind: KindTruncated, Message: "stream ended before [DONE]"}
 			}
+			if e, ok := errors.AsType[*Error](err); ok {
+				return nil, e // an idle timeout from the body
+			}
 			return nil, &Error{Kind: KindUnreachable, Message: err.Error()}
 		}
 		if string(data) == "[DONE]" {
