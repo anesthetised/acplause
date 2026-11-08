@@ -27,7 +27,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | `session/cancel` | client→agent | Covered | `e2e/lifecycle_test.go`, `internal/agent/queue_test.go` |
 | `session/list` | client→agent | Covered | `e2e/store_test.go` |
 | `session/resume` | client→agent | Covered | `e2e/replay_unix_test.go`, `internal/agent/resume_setup_test.go` |
-| `session/close` | client→agent | Covered | `e2e/sessions_test.go`, `e2e/issue50_test.go` |
+| `session/close` | client→agent | Covered | `e2e/sessions_test.go`, `e2e/store_retake_test.go` |
 | `session/delete` | client→agent | Covered | `e2e/delete_test.go` |
 | `session/set_config_option` | client→agent | Covered (select options only) | `e2e/selection_test.go`, `e2e/mode_test.go`; boolean options Deferred #143 |
 | `session/update` | agent→client | Covered (see variants) | `e2e/` replay and lifecycle tests |
@@ -36,7 +36,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | `elicitation/complete` | agent→client | Deferred #140 | no non-auth producer |
 | `$/cancel_request` | both | Covered | `internal/jsonrpc/cancellable_test.go`, `internal/jsonrpc/conn_test.go` |
 | `auth/login`, `auth/logout` | client→agent | Excluded | ADR 0023 |
-| JSON-RPC batches | both | Covered | `internal/jsonrpc/conn_test.go`, `internal/jsonrpc/issue54_test.go` |
+| JSON-RPC batches | both | Covered | `internal/jsonrpc/conn_test.go`, `internal/jsonrpc/reply_ordering_test.go` |
 
 ## `session/update` variants
 
