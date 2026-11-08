@@ -223,3 +223,12 @@ difficult.
   binary. Harness-native T3 calls are not evidence that this bridge works.
   See [the smoke record](../testing/mcp-t3-smoke.md) and
   [the implementation plan](../../tasks/plan.md) for verification and #23.
+
+## Amendment: stdio environment allowlist (2026-11-09, #188)
+
+The stdio allowlist also inherits `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and
+`ALL_PROXY` (upper and lower case), `SSL_CERT_FILE`, `SSL_CERT_DIR` and `XDG_*`.
+MCP servers are user-configured and run as the user, so withholding proxy and
+CA settings breaks them without real isolation. Proxy URLs can carry
+credentials; they are inherited deliberately. Everything else stays excluded,
+and values are never logged or persisted.

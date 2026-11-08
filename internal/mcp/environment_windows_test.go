@@ -25,3 +25,23 @@ func TestWindowsEnvironmentOverridesCaseInsensitive(t *testing.T) {
 		t.Fatalf("case aliases were not collapsed: %v", counts)
 	}
 }
+
+func TestWindowsEnvironmentInheritsAllowlistCaseInsensitively(t *testing.T) {
+	t.Setenv("Https_Proxy", "proxy")
+	t.Setenv("xdg_config_home", "xdg")
+	t.Setenv("Ssl_Cert_File", "ca")
+	t.Setenv("Aws_Secret_Access_Key", "must-not-inherit")
+	got := map[string]string{}
+	for _, entry := range processEnvironment(nil) {
+		key, value, _ := strings.Cut(entry, "=")
+		got[key] = value
+	}
+	for key, want := range map[string]string{"HTTPS_PROXY": "proxy", "XDG_CONFIG_HOME": "xdg", "SSL_CERT_FILE": "ca"} {
+		if got[key] != want {
+			t.Errorf("%s = %q, want %q", key, got[key], want)
+		}
+	}
+	if _, ok := got["AWS_SECRET_ACCESS_KEY"]; ok {
+		t.Error("unrelated secret inherited")
+	}
+}
