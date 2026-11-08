@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,9 +23,15 @@ type peer struct {
 
 func newPeer(t *testing.T, methods Methods) *peer {
 	t.Helper()
+	return newPeerLimit(t, methods, maxLine)
+}
+
+func newPeerLimit(t *testing.T, methods Methods, limit int) *peer {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	conn := NewConn(inR, outW, slog.New(slog.DiscardHandler))
+	conn.maxLine = limit
 	p := &peer{t: t, in: inW, lines: make(chan string, 16), conn: conn}
 
 	served := make(chan struct{})
@@ -114,6 +121,15 @@ func TestErrorsForMalformedInput(t *testing.T) {
 			p.expect(tt.want)
 		})
 	}
+}
+
+func TestOverlongLineIsRejectedAndServingContinues(t *testing.T) {
+	p := newPeerLimit(t, Methods{"echo": echo}, 256)
+	// Larger than the limit and than bufio's buffer, so it spans several reads.
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"echo","params":"` + strings.Repeat("x", 10_000) + `"}`)
+	p.expect(`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"line too long"}}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":[1]}`)
+	p.expect(`{"jsonrpc":"2.0","id":2,"result":[1]}`)
 }
 
 func TestEchoesIDsVerbatim(t *testing.T) {
