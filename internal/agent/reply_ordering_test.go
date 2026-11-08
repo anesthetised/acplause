@@ -1,5 +1,7 @@
 package agent
 
+// Regression tests for #54: early prompt response precedes the user message.
+
 import (
 	"bytes"
 	"context"

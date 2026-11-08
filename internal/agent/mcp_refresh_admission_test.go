@@ -1,5 +1,7 @@
 package agent
 
+// Regression tests for #55: MCP refresh and cancellation around admission.
+
 import (
 	"context"
 	"encoding/json"

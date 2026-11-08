@@ -1,5 +1,7 @@
 package store
 
+// Regression tests for #50: acquire reports previous ownership.
+
 import (
 	"testing"
 	"time"

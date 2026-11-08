@@ -2,6 +2,8 @@
 
 package e2e
 
+// Regression tests for #52: special data directory survives restart.
+
 import (
 	"os"
 	"path/filepath"

@@ -1,5 +1,7 @@
 package jsonrpc
 
+// Regression tests for #54: deferred replies, settlement and ordering.
+
 import (
 	"context"
 	"encoding/json"

@@ -1,5 +1,7 @@
 package e2e
 
+// Regression tests for #51: malformed reasoning identity ends the turn.
+
 import (
 	"encoding/json"
 	"testing"

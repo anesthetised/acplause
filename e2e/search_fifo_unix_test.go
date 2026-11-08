@@ -2,6 +2,8 @@
 
 package e2e
 
+// Regression tests for #53: search over a FIFO then cancel and close.
+
 import (
 	"os"
 	"path/filepath"

@@ -1,5 +1,7 @@
 package agent
 
+// Regression tests for #50: ownership retake and renewal races.
+
 import (
 	"context"
 	"errors"

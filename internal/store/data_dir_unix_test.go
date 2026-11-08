@@ -2,6 +2,8 @@
 
 package store
 
+// Regression tests for #52: relative and special data directories.
+
 import (
 	"os"
 	"path/filepath"

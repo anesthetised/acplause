@@ -1,5 +1,7 @@
 package tools
 
+// Regression tests for #53: search bounds files changed or replaced mid-read.
+
 import (
 	"context"
 	"io/fs"
