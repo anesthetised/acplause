@@ -1,5 +1,7 @@
 package e2e
 
+// Regression tests for #54: prompt response precedes the user message.
+
 import "testing"
 
 func TestIssue54PromptResponsePrecedesUserMessage(t *testing.T) {

@@ -2,6 +2,8 @@
 
 package tools
 
+// Regression tests for #53: search rejects a file replaced by a FIFO.
+
 import (
 	"context"
 	"os"

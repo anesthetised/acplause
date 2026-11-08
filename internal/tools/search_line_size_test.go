@@ -1,5 +1,7 @@
 package tools
 
+// Regression tests for #57: search line-size boundary.
+
 import (
 	"strings"
 	"testing"

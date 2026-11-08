@@ -1,5 +1,7 @@
 package e2e
 
+// Regression tests for #57: search at the exact file limit.
+
 import (
 	"os"
 	"path/filepath"

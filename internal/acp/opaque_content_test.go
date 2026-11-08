@@ -1,5 +1,7 @@
 package acp
 
+// Regression tests for #56: unknown content fields stay opaque.
+
 import (
 	"bytes"
 	"encoding/json"

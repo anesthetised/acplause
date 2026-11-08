@@ -1,5 +1,7 @@
 package e2e
 
+// Regression tests for #56: opaque content echo, replay and model projection.
+
 import (
 	"encoding/json"
 	"strings"

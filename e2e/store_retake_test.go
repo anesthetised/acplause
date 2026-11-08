@@ -1,5 +1,7 @@
 package e2e
 
+// Regression tests for #50: store retake keeps another owner's turn.
+
 import (
 	"database/sql"
 	"encoding/json"

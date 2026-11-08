@@ -1,5 +1,7 @@
 package mcp
 
+// Regression tests for #55: tool call admission versus refresh and revocation.
+
 import (
 	"context"
 	"encoding/json"

@@ -1,5 +1,7 @@
 package e2e
 
+// Regression tests for #55: MCP refresh and cancellation around admission.
+
 import (
 	"encoding/json"
 	"fmt"

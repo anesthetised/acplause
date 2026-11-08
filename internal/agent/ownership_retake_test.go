@@ -1,5 +1,7 @@
 package agent
 
+// Regression tests for #50: retake and resume preserve owned work.
+
 import (
 	"context"
 	"encoding/json"

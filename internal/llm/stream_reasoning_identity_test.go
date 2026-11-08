@@ -1,5 +1,7 @@
 package llm
 
+// Regression tests for #51: malformed reasoning identities in streams.
+
 import (
 	"context"
 	"errors"
