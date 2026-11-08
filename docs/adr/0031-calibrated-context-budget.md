@@ -1,6 +1,6 @@
 # ADR 0031: Calibrate the context budget from provider usage
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-09
 - Issues: [#182](https://github.com/anesthetised/acplause/issues/182),
   [#183](https://github.com/anesthetised/acplause/issues/183)
