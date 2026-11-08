@@ -1,12 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -83,7 +87,7 @@ func TestCacheCatalogSharesAttemptsAndRetriesFailures(t *testing.T) {
 				return nil, err
 			}
 			return newCatalog(testModels), nil
-		})
+		}, time.Hour, slog.New(slog.DiscardHandler))
 		results := make(chan error, 2)
 		for range 2 {
 			go func() {
@@ -106,5 +110,107 @@ func TestCacheCatalogSharesAttemptsAndRetriesFailures(t *testing.T) {
 		if again, err := get(); err != nil || again != first || calls.Load() != 2 {
 			t.Fatalf("cached catalog: %p, %p, %v, %d loads", first, again, err, calls.Load())
 		}
+	})
+}
+
+// refreshing drives cacheCatalog with a scripted loader: each load returns the
+// next result and counts itself.
+type refreshing struct {
+	calls   atomic.Int32
+	results chan *catalog // nil makes the load fail
+	log     bytes.Buffer
+	get     func() (*catalog, error)
+}
+
+func newRefreshing(ttl time.Duration) *refreshing {
+	r := &refreshing{results: make(chan *catalog, 4)}
+	r.get = cacheCatalog(func() (*catalog, error) {
+		r.calls.Add(1)
+		if c := <-r.results; c != nil {
+			return c, nil
+		}
+		return nil, errors.New("down")
+	}, ttl, slog.New(slog.NewTextHandler(&r.log, nil)))
+	return r
+}
+
+func TestCacheCatalogReloadsAfterTTLInBackground(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newRefreshing(time.Hour)
+		oldCat, newCat := newCatalog([]llm.Model{{ID: "old"}}), newCatalog([]llm.Model{{ID: "new"}})
+		r.results <- oldCat
+		if c, err := r.get(); err != nil || c != oldCat {
+			t.Fatalf("first load: %p, %v", c, err)
+		}
+		time.Sleep(time.Hour - time.Second)
+		if c, _ := r.get(); c != oldCat {
+			t.Fatal("catalog changed before the TTL")
+		}
+		synctest.Wait()
+		if r.calls.Load() != 1 {
+			t.Fatalf("reloaded before the TTL: %d loads", r.calls.Load())
+		}
+		time.Sleep(time.Second)
+		// The reload is blocked on the network; the caller must not wait for it.
+		if c, err := r.get(); err != nil || c != oldCat {
+			t.Fatalf("stale call: %p, %v", c, err)
+		}
+		synctest.Wait()
+		if r.calls.Load() != 2 {
+			t.Fatalf("no reload after the TTL: %d loads", r.calls.Load())
+		}
+		r.results <- newCat
+		synctest.Wait()
+		if c, _ := r.get(); c != newCat {
+			t.Fatal("later caller did not see the reloaded catalog")
+		}
+		if r.calls.Load() != 2 {
+			t.Fatalf("fresh catalog reloaded again: %d loads", r.calls.Load())
+		}
+	})
+}
+
+func TestCacheCatalogKeepsPreviousListWhenReloadFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newRefreshing(time.Hour)
+		oldCat := newCatalog([]llm.Model{{ID: "old"}})
+		r.results <- oldCat
+		r.get()
+		time.Sleep(time.Hour)
+		r.results <- nil
+		r.get()
+		synctest.Wait()
+		if c, err := r.get(); err != nil || c != oldCat {
+			t.Fatalf("after failed reload: %p, %v", c, err)
+		}
+		if !strings.Contains(r.log.String(), "level=WARN") || !strings.Contains(r.log.String(), "down") {
+			t.Fatalf("no warning logged: %q", r.log.String())
+		}
+		// The stale list stays eligible for a retry.
+		newCat := newCatalog([]llm.Model{{ID: "new"}})
+		synctest.Wait()
+		r.results <- newCat
+		synctest.Wait()
+		if c, _ := r.get(); c != newCat {
+			t.Fatal("retry after a failed reload did not refresh")
+		}
+	})
+}
+
+func TestCacheCatalogReloadsAtMostOnceConcurrently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newRefreshing(time.Hour)
+		r.results <- newCatalog([]llm.Model{{ID: "old"}})
+		r.get()
+		time.Sleep(time.Hour)
+		for range 10 {
+			go r.get()
+		}
+		synctest.Wait()
+		if r.calls.Load() != 2 {
+			t.Fatalf("%d loads for concurrent stale callers, want 1 reload", r.calls.Load()-1)
+		}
+		r.results <- newCatalog([]llm.Model{{ID: "new"}})
+		synctest.Wait()
 	})
 }

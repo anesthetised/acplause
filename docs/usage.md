@@ -17,8 +17,12 @@ same data directory. If there is no remembered selection or the model is no
 longer available, sessions show "Select a model"; prompts are rejected until
 the client selects one. The agent never picks a substitute model. If the
 provider's model list cannot be loaded or contains no models with tool
-support, session creation fails; the next request retries the list, and a
-loaded list is kept for the process lifetime. See [ADR 0005](adr/0005-remember-model-selection.md).
+support, session creation fails and the next request retries the list. A
+loaded list is served for one hour; the next `session/new` or resume after
+that reloads it in the background without delaying the response. Sessions
+created or resumed after a successful reload see the new list, open sessions
+keep their list and selected model, and no `config_option_update` is sent. A
+failed reload keeps the previous list and logs a warning. See [ADR 0005](adr/0005-remember-model-selection.md).
 
 ## Plan and Build modes
 
