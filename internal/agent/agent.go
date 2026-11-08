@@ -111,7 +111,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	}
 	a := &Agent{
 		cfg:        cfg,
-		deps:       deps{forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store},
+		deps:       deps{forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store, calibration: new(calibration)},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*Session),

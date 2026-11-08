@@ -15,8 +15,15 @@ import (
 func compactionSession(t *testing.T, model Model) (*Session, recorder) {
 	t.Helper()
 	s, out := testSession(t, model)
-	s.catalog = newCatalog([]llm.Model{{ID: "m", ContextLength: 16000}})
+	s.catalog = newCatalog([]llm.Model{windowModel("m", 16000, 16000)})
 	return s, out
+}
+
+// windowModel publishes a context window and an output ceiling; zero is unknown.
+func windowModel(id string, window, ceiling uint64) llm.Model {
+	m := llm.Model{ID: id, ContextLength: window}
+	m.TopProvider.MaxCompletionTokens = ceiling
+	return m
 }
 
 func callMessage(ids ...string) llm.Message {
@@ -58,7 +65,7 @@ func TestPrepareTrimsOldToolOutputFirst(t *testing.T) {
 	// Leave room for the expanded built-in catalog plus the untrimmed latest
 	// result; only the oldest result should need trimming in this fixture.
 	const window = 18000
-	s.catalog = newCatalog([]llm.Model{{ID: "m", ContextLength: window}})
+	s.catalog = newCatalog([]llm.Model{windowModel("m", window, window)})
 	old := strings.Repeat("old ", 2000)
 	latest := strings.Repeat("new ", 750)
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: "read"}, callMessage("a"), toolResult("a", old), callMessage("b"), toolResult("b", latest))
@@ -219,7 +226,7 @@ func TestCompactionUsesNewConfigAfterSummary(t *testing.T) {
 		}
 		return &llm.Completion{Content: "summary", FinishReason: llm.FinishStop}, nil
 	}))
-	s.catalog = newCatalog([]llm.Model{{ID: "m", ContextLength: 16000}, {ID: "other", ContextLength: 32000}})
+	s.catalog = newCatalog([]llm.Model{windowModel("m", 16000, 16000), windowModel("other", 32000, 100000)})
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: strings.Repeat("x", 11000)}, llm.Message{Role: llm.RoleAssistant, Content: "answer"}, llm.Message{Role: llm.RoleUser, Content: "continue"})
 	remaining := 5
 	req, err := s.prepareRequest(context.Background(), &remaining)

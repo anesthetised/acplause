@@ -50,7 +50,7 @@ func (s *Session) converse(ctx context.Context) (acp.StopReason, *jsonrpc.Error)
 			return acp.StopError, turnError(err)
 		}
 		s.budget.record(completion.Usage)
-		s.reportUsage(req.Model, completion.Usage)
+		s.reportUsage(req.Request, completion.Usage)
 		s.appendHistory(completion.Message())
 		s.flush()
 
@@ -361,10 +361,14 @@ func (s *Session) reportToolLocked(entry int, patch acp.ToolCallUpdate) int {
 	return entry
 }
 
-func (s *Session) reportUsage(model string, u *llm.Usage) {
+// reportUsage also calibrates the size estimate with the request that was
+// sent, whatever the window (ADR 0031).
+func (s *Session) reportUsage(req llm.Request, u *llm.Usage) {
 	if u == nil {
 		return
 	}
+	s.deps.calibration.observe(req, u)
+	model := req.Model
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if total := s.cost + u.Cost; u.Cost >= 0 && !math.IsNaN(total) && !math.IsInf(total, 0) {
