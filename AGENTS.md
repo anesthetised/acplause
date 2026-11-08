@@ -100,7 +100,8 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 - **Every turn ends with exactly one idle `state_update`**, `cancelled` when
   the turn's context was cancelled, whatever error surfaced.
 - **State updates are sent under the session lock**, so resume snapshots and
-  live changes cannot reorder.
+  live changes cannot reorder. A replay snapshot itself is written outside the
+  lock; `Session.send` defers live updates behind it meanwhile.
 - **Every tool call the model made gets a tool result in the history**, even
   when cancelled, or the next request is invalid.
 - **Updates are patches.** Omitted fields mean "unchanged"; acplause never
