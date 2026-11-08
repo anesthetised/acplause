@@ -51,6 +51,8 @@ type Conn struct {
 	out io.Writer
 	log *slog.Logger
 
+	maxLine int // inbound line bound; a field so tests can shrink it
+
 	queue      chan []byte
 	quit       chan struct{}
 	closeOnce  sync.Once
@@ -68,6 +70,7 @@ func NewConn(in io.Reader, out io.Writer, log *slog.Logger) *Conn {
 		in:         in,
 		out:        out,
 		log:        log,
+		maxLine:    maxLine,
 		queue:      make(chan []byte, 256),
 		quit:       make(chan struct{}),
 		writerDone: make(chan struct{}),
@@ -197,7 +200,7 @@ func (c *Conn) Serve(ctx context.Context, methods Methods) error {
 
 	lines := make(chan []byte)
 	readErr := make(chan error, 1)
-	go func() { readErr <- readLines(c.in, lines, ctx.Done()) }()
+	go func() { readErr <- readLines(c.in, lines, ctx.Done(), c.maxLine) }()
 
 	for {
 		select {
@@ -220,18 +223,48 @@ func (c *Conn) Close() error {
 	return nil
 }
 
-func readLines(r io.Reader, lines chan<- []byte, done <-chan struct{}) error {
+// maxLine bounds one inbound line. Image prompts at the ADR 0010 maximum
+// (media.MaxSetBytes, base64-encoded) are about 11 MiB, so 64 MiB leaves ample
+// room for text and framing while keeping a runaway line from exhausting
+// memory. The client is trusted; this is robustness, not a security boundary.
+const maxLine = 64 << 20
+
+// readLines sends each non-blank line to lines. A line longer than limit is
+// discarded as it streams in, never buffered whole, and reported as a nil
+// line (blank lines are otherwise skipped, so nil is unambiguous).
+func readLines(r io.Reader, lines chan<- []byte, done <-chan struct{}, limit int) error {
 	defer close(lines)
+	send := func(line []byte) bool {
+		select {
+		case lines <- line:
+			return true
+		case <-done:
+			return false
+		}
+	}
 	br := bufio.NewReader(r)
+	var buf []byte
+	skipping := false
 	for {
-		line, err := br.ReadBytes('\n')
-		if line = bytes.TrimSpace(line); len(line) > 0 {
-			select {
-			case lines <- line:
-			case <-done:
+		chunk, err := br.ReadSlice('\n')
+		if !skipping {
+			buf = append(buf, chunk...)
+			if len(buf) > limit {
+				skipping, buf = true, nil
+				if !send(nil) {
+					return nil
+				}
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if line := bytes.TrimSpace(buf); !skipping && len(line) > 0 {
+			if !send(line) {
 				return nil
 			}
 		}
+		buf, skipping = nil, false
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -242,6 +275,10 @@ func readLines(r io.Reader, lines chan<- []byte, done <-chan struct{}) error {
 }
 
 func (c *Conn) handleLine(ctx context.Context, methods Methods, line []byte) {
+	if line == nil {
+		c.respond(errorResponse(NullID, NewError(CodeParseError, "line too long")))
+		return
+	}
 	if !json.Valid(line) {
 		c.respond(errorResponse(NullID, NewError(CodeParseError, "parse error")))
 		return
