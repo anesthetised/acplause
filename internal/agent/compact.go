@@ -34,11 +34,21 @@ const (
 )
 
 // requestSize deliberately overestimates tokens without a model-specific
-// tokenizer: one serialized byte per token, plus framing (ADR 0006). Image
-// bytes are never counted as text; images the model will see are reserved.
+// tokenizer: one serialized byte per token, plus framing (ADR 0006). Session
+// estimates calibrate this with provider usage; see calibration.
 func requestSize(req llm.Request) uint64 {
+	text, images := requestParts(req)
+	if text == math.MaxUint64 {
+		return text
+	}
+	return text + images
+}
+
+// requestParts splits the estimate into serialized text bytes with framing
+// and the image reserve, which is already in tokens. Image bytes are never
+// counted as text; images the model will see are reserved.
+func requestParts(req llm.Request) (text, images uint64) {
 	messages := make([]llm.Message, len(req.Messages))
-	var images uint64
 	for i, m := range req.Messages {
 		if len(m.Images) > 0 {
 			images += imageLabelBytes
@@ -54,9 +64,9 @@ func requestSize(req llm.Request) uint64 {
 		Tools    []llm.Tool    `json:"tools,omitempty"`
 	}{messages, req.Tools})
 	if err != nil {
-		return math.MaxUint64 // invalid input must never be considered to fit
+		return math.MaxUint64, images // invalid input must never be considered to fit
 	}
-	return uint64(len(data)) + uint64(len(req.Messages))*16 + 256 + images
+	return uint64(len(data)) + uint64(len(req.Messages))*16 + 256, images
 }
 
 // summaryPrefix starts the assistant message that replaces compacted history.
@@ -214,14 +224,9 @@ func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force
 		if force && (window == 0 || user <= 1 || onlyCommands(req.Messages[1:user])) {
 			return round, false, nil
 		}
-		if window > 0 {
-			req.MaxTokens = max(1, min(window/4, 8192))
-			if limit := s.catalog.outputLimit(req.Model); limit > 0 {
-				req.MaxTokens = min(req.MaxTokens, limit)
-			}
-		}
+		req.MaxTokens = maxTokens(window, s.catalog.outputLimit(req.Model))
 		// An unknown window leaves the size unchecked; image limits still apply.
-		fits := func(r llm.Request) bool { return window == 0 || requestSize(r) <= budget }
+		fits := func(r llm.Request) bool { return window == 0 || s.deps.calibration.size(r) <= budget }
 		sent, err := projectImages(*req, fits)
 		if err != nil {
 			return round, false, err
@@ -275,6 +280,17 @@ func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force
 		}
 		// A config change during compaction applies to the next request.
 	}
+}
+
+// maxTokens reserves a quarter of the window for output, capped by the
+// provider's advertised ceiling (ADR 0031). Without a known ceiling, zero
+// omits max_tokens and leaves the provider default; without a window there
+// is no reserve to size.
+func maxTokens(window, ceiling uint64) uint64 {
+	if window == 0 || ceiling == 0 {
+		return 0
+	}
+	return max(1, min(window/4, ceiling))
 }
 
 // trimToolOutput keeps useful headers and trailing diagnostics without
@@ -336,7 +352,7 @@ func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained
 	messages = append(messages, retained...)
 	next := req
 	next.Messages = messages
-	if requestSize(next) > budget || requestSize(next) >= requestSize(req) {
+	if size := s.deps.calibration.size(next); size > budget || size >= s.deps.calibration.size(req) {
 		return nil, fmt.Errorf("compaction could not fit the retained conversation in the context window")
 	}
 	return messages, nil
@@ -379,7 +395,7 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 					{Role: llm.RoleSystem, Content: summaryInstruction},
 					{Role: llm.RoleUser, Content: "Previous summary:\n" + summary + "\nConversation JSON:\n" + string(data)},
 				}}
-			if requestSize(candidate) > budget {
+			if s.deps.calibration.size(candidate) > budget {
 				break
 			}
 			chunk, end = candidate, next
@@ -399,7 +415,7 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 			return "", err
 		}
 		s.budget.record(completion.Usage)
-		s.reportUsage(req.Model, completion.Usage)
+		s.reportUsage(chunk, completion.Usage)
 		if err := s.budget.check(ctx); err != nil {
 			return "", err
 		}

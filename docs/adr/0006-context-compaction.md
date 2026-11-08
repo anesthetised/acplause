@@ -1,6 +1,7 @@
 # ADR 0006: Compact the model history before its context window fills
 
-- Status: accepted
+- Status: accepted; decision 1's size estimate and `max_tokens` superseded by
+  [ADR 0031](0031-calibrated-context-budget.md)
 - Date: 2026-10-19
 - Issue: #11
 - Source: ACP schema at `3be9cfc` (`testdata/schema/v2/VERSION`),
@@ -16,7 +17,9 @@ user saw. No tokenizer is shared by all supported models.
 
 ## Decisions
 
-1. **Check before every model request.** Use the selected model's advertised
+1. *Superseded by [ADR 0031](0031-calibrated-context-budget.md): the byte
+   estimate is now calibrated from provider usage, and `max_tokens` has no
+   fixed cap.* **Check before every model request.** Use the selected model's advertised
    context length. Budget 75% for input and reserve 25% for output; send
    `max_tokens` capped at 8192 and the catalog's nonzero
    `top_provider.max_completion_tokens` ceiling. Count serialized message and

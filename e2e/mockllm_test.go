@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +39,8 @@ type mockLLM struct {
 type script func(s *stream)
 
 type chatRequest struct {
+	size int // wire bytes; finish reports them as prompt tokens
+
 	MaxTokens uint64           `json:"max_tokens"`
 	Model     string           `json:"model"`
 	Stream    bool             `json:"stream"`
@@ -108,9 +111,14 @@ func (m *mockLLM) serve(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, m.models)
 	case "/chat/completions":
 		var req chatRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err == nil {
+			err = json.Unmarshal(body, &req)
+		}
+		if err != nil {
 			m.t.Errorf("bad chat request: %v", err)
 		}
+		req.size = len(body)
 		m.mu.Lock()
 		m.requests = append(m.requests, req)
 		var next script
@@ -174,11 +182,13 @@ func (s *stream) toolCall(index int, id, name string, argFragments ...string) {
 	}
 }
 
-// finish ends the response with a usage chunk and [DONE].
+// finish ends the response with a usage chunk and [DONE]. Prompt tokens are
+// the request's bytes, the agent's uncalibrated estimate, so default usage
+// never changes when compaction starts.
 func (s *stream) finish(reason string) {
 	s.data(map[string]any{
 		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": ""}, "finish_reason": reason}},
-		"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.001},
+		"usage":   map[string]any{"prompt_tokens": s.req.size, "completion_tokens": 5, "total_tokens": s.req.size + 5, "cost": 0.001},
 	})
 	s.done()
 }

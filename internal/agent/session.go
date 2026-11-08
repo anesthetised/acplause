@@ -39,6 +39,9 @@ type deps struct {
 	tools           tools.Options
 	log             *slog.Logger
 	store           Store // nil keeps sessions in memory only
+	// calibration is shared by every session of the process; nil keeps the
+	// uncalibrated byte estimate.
+	calibration *calibration
 }
 
 // Session is one conversation. Prompts queue up and run one turn at a time

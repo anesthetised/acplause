@@ -154,10 +154,25 @@ are shortened oldest first; if that is insufficient, the same model summarizes
 older history. The system instructions, latest user prompt and latest tool
 exchange in the active turn are retained. The editor receives compaction
 status and the summary, and replay keeps the original full conversation.
-Summary requests count toward the request limit and usage cost. The portable
-byte-based estimate is conservative; providers without a published context
-length do not enable automatic compaction. See
-[ADR 0006](adr/0006-context-compaction.md) for limits and recovery behavior.
+Summary requests count toward the request limit and usage cost. Until a
+model has answered once, the estimate counts one serialized byte as one
+token, which compacts early. After each response that reports
+`prompt_tokens`, the agent learns that model's bytes per token, shared by all
+sessions of the process and forgotten on restart, keeps the most
+conservative ratio seen, and adds a 20% margin; the estimate never exceeds
+one token per byte, and implausible ratios above 6 bytes per token are
+ignored. Requests carrying images do
+not calibrate; images keep a fixed reserve. Providers without a published
+context length do not enable automatic compaction.
+
+Each request asks for at most a quarter of the window as output
+(`max_tokens`), capped by the provider's published output limit. Without a
+published limit `max_tokens` is omitted and the provider default applies.
+OpenRouter checks the balance against the requested output; with little
+credit left it can answer 402 ("requires more credits, or fewer
+max_tokens"). See [ADR 0006](adr/0006-context-compaction.md) and
+[ADR 0031](adr/0031-calibrated-context-budget.md) for limits and recovery
+behavior.
 
 ### Manual compaction
 
