@@ -12,14 +12,18 @@ import (
 	"testing"
 )
 
-// kill bypasses graceful shutdown to exercise crash recovery.
+// kill bypasses graceful shutdown to exercise crash recovery. It must not
+// close stdin before the agent is reaped: SIGKILL is asynchronous, and an
+// agent still running when it reads EOF starts its graceful shutdown, which
+// kills the shell's process group and rewrites interrupted tool calls as
+// cancelled, instead of leaving the state a crash would. Wait closes stdin
+// once the process is gone.
 func (a *agent) kill() {
 	a.t.Helper()
 	a.stopOnce.Do(func() {
 		if err := a.cmd.Process.Kill(); err != nil {
 			a.t.Fatal(err)
 		}
-		_ = a.stdin.Close()
 		_ = a.cmd.Wait()
 		<-a.readerDone
 	})
@@ -29,7 +33,8 @@ func TestSessionRecoversAfterCrash(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool("bash", `{"command":"echo $$ > pid; sleep 30"}`), reply("recovered"))
+	// The pid file is renamed into place, so waitForFile never sees it empty.
+	llm.enqueue(callTool("bash", `{"command":"echo $$ > pid.tmp && mv pid.tmp pid; sleep 30"}`), reply("recovered"))
 	a, sid, cwd := started(t, llm, withDataDir(dir))
 	a.accepted(a.prompt(sid, "run"))
 	call := a.toolStarted(sid)
