@@ -490,57 +490,19 @@ func (a *Agent) publishRestored(ctx context.Context, s *Session) error {
 }
 
 // open preserves a live local session only when Acquire proves this process
-// still owned it. Old saves must finish before ownership can return to this
-// process, or their process-owner check could overwrite the new history.
-// A restored session gets the request's directories, which Resume applies
-// anyway: a saved directory removed since must not block the session. The bool
-// identifies a private restored session whose caller must publish or close it.
+// still owned it. A restored session gets the request's directories, which
+// Resume applies anyway: a saved directory removed since must not block the
+// session. The bool identifies a private restored session whose caller must
+// publish or close it.
+//
+// Only acquire runs under ownershipMu. The first catalog load can wait on the
+// provider for catalogTimeout, which must not delay lease renewal; the session
+// stays private until publishRestored, so nothing else can observe it meanwhile.
 func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Session, bool, error) {
-	a.ownershipMu.Lock()
-	defer a.ownershipMu.Unlock()
-	a.mu.Lock()
-	old := a.sessions[id]
-	a.mu.Unlock()
-	if old != nil {
-		// Reject a bad workspace before changing ownership of a cached
-		// session. Its cwd is immutable for the session's lifetime.
-		if old.cwd != cwd {
-			return nil, false, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, old.cwd)
-		}
-		old.flushMu.Lock()
-		defer old.flushMu.Unlock()
+	live, l, err := a.acquire(ctx, id, cwd)
+	if live != nil || err != nil {
+		return live, false, err
 	}
-	l, err := a.cfg.Store.Acquire(ctx, id)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return nil, false, acp.ErrSessionNotFound(id)
-	case errors.Is(err, store.ErrBusy):
-		return nil, false, errSessionBusy()
-	case err != nil:
-		return nil, false, jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot load the session: %v", err)
-	}
-	if l.Cwd != cwd {
-		if old == nil {
-			a.releaseID(id)
-		}
-		return nil, false, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
-	}
-	if old != nil {
-		if l.AlreadyOwned && !old.isLost() {
-			return old, false, nil
-		}
-		// A lost context/MCP manager cannot be revived. Mark loss while
-		// flushMu still fences queued flushes and prompt insertions.
-		old.markLost()
-		a.mu.Lock()
-		if a.sessions[id] == old {
-			delete(a.sessions, id)
-		}
-		a.lost[id] = true
-		a.mu.Unlock()
-		go old.Close() // never release the replacement's process-owned lease
-	}
-
 	c, err := a.catalog()
 	if err != nil {
 		a.releaseID(id)
@@ -553,6 +515,58 @@ func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Sessi
 		return nil, false, acp.ErrInvalidParams("cannot restore the session: %v", err)
 	}
 	return s, true, nil
+}
+
+// acquire takes the session's lease and returns either the continuously owned
+// live session or the stored record to restore. Old saves must finish before
+// ownership can return to this process, or their process-owner check could
+// overwrite the new history; a live session that lost ownership is marked lost
+// while its flushMu still fences queued flushes and prompt insertions.
+func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.Loaded, error) {
+	a.ownershipMu.Lock()
+	defer a.ownershipMu.Unlock()
+	a.mu.Lock()
+	old := a.sessions[id]
+	a.mu.Unlock()
+	if old != nil {
+		// Reject a bad workspace before changing ownership of a cached
+		// session. Its cwd is immutable for the session's lifetime.
+		if old.cwd != cwd {
+			return nil, nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, old.cwd)
+		}
+		old.flushMu.Lock()
+		defer old.flushMu.Unlock()
+	}
+	l, err := a.cfg.Store.Acquire(ctx, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, nil, acp.ErrSessionNotFound(id)
+	case errors.Is(err, store.ErrBusy):
+		return nil, nil, errSessionBusy()
+	case err != nil:
+		return nil, nil, jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot load the session: %v", err)
+	}
+	if l.Cwd != cwd {
+		if old == nil {
+			a.releaseID(id)
+		}
+		return nil, nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
+	}
+	if old != nil {
+		if l.AlreadyOwned && !old.isLost() {
+			return old, nil, nil
+		}
+		// A lost context/MCP manager cannot be revived.
+		old.markLost()
+		a.mu.Lock()
+		if a.sessions[id] == old {
+			delete(a.sessions, id)
+		}
+		a.lost[id] = true
+		a.mu.Unlock()
+		go old.Close() // never release the replacement's process-owned lease
+	}
+	return nil, l, nil
 }
 
 // closeSession cancels the session's work at once, to keep ordering with
