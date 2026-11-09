@@ -89,6 +89,9 @@ testdata/schema/v2 pinned ACP schema; see VERSION
 
 ## Invariants
 
+How the code upholds these (locks and their order, goroutines, reply
+ownership) is in [docs/concurrency.md](docs/concurrency.md).
+
 - **stdout carries only protocol messages.** Log with `slog` to stderr. All
   output goes through `jsonrpc.Conn`'s single writer.
 - **Handlers run on the read loop in arrival order and must not block.** Work
