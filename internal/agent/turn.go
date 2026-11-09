@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
+	"github.com/anesthetised/acplause/internal/forms"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
 	"github.com/anesthetised/acplause/internal/mcp"
@@ -139,7 +140,7 @@ func (s *Session) executeToolCall(ctx context.Context, call llm.ToolCall, round 
 		prepared, err = s.preparePlan(call.Function.Arguments)
 	} else if name == "ask_user" && s.supportsForms() {
 		var req acp.ElicitationRequest
-		req, err = parseQuestions(call.Function.Arguments)
+		req, err = forms.ParseQuestions(call.Function.Arguments)
 		req.SessionID, req.ToolCallID = s.id, update.ToolCallID
 		prepared = &preparedTool{Title: req.Message, run: func(ctx context.Context) toolOutput { return s.askUser(ctx, req) }}
 	} else if binding, ok := round.bindings[name]; ok {
