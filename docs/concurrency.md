@@ -25,18 +25,17 @@ together. A lock may be skipped, but never taken after a later one.
 8. `jsonrpc.Conn.mu` | the batch collector's mutex in `Conn.handleBatch`
 
 Leaves, never held while another lock is taken: the catalog cache mutex in
-`cacheCatalog` (taken under `ownershipMu`, from `Agent.open`),
-`calibration.mu`, `mcp.httpTransport.mu`, and outside these packages
+`cacheCatalog`, `calibration.mu`, `mcp.httpTransport.mu`, and outside these packages
 `tools.ShellObserver.mu` and the Windows-only `winproc.Job.mu`.
 
 Where each edge comes from:
 
 | Edge | Where |
 | --- | --- |
-| `ownershipMu` → `Agent.mu` | `agent.go`: `Agent.renew`, `Agent.dropLocked`, `Agent.open`, `Agent.publishRestored` |
-| `ownershipMu` → `flushMu` | `Agent.dropLocked` drains a save; `Agent.open` holds the live session's `flushMu` across `Store.Acquire`; `Agent.publishRestored` calls `Session.flush` |
-| `flushMu` → `Agent.mu` | `Agent.open` removes a session that lost ownership while holding its `flushMu` |
-| `flushMu` → `Session.mu` | `persist.go`: `Session.flush`; `session.go`: `Session.insert`; `Agent.open` → `Session.markLost` |
+| `ownershipMu` → `Agent.mu` | `agent.go`: `Agent.renew`, `Agent.dropLocked`, `Agent.acquire`, `Agent.publishRestored` |
+| `ownershipMu` → `flushMu` | `Agent.dropLocked` drains a save; `Agent.acquire` holds the live session's `flushMu` across `Store.Acquire`; `Agent.publishRestored` calls `Session.flush` |
+| `flushMu` → `Agent.mu` | `Agent.acquire` removes a session that lost ownership while holding its `flushMu` |
+| `flushMu` → `Session.mu` | `persist.go`: `Session.flush`; `session.go`: `Session.insert`; `Agent.acquire` → `Session.markLost` |
 | `Session.mu` → `Manager.mu` → `server.mu` | `turn.go`: `Session.request` → `Manager.Snapshot` |
 | `Session.mu` → `Manager.mu` → `peer.mu` | `Session.Resume` → `Change.Commit` → `peer.fail` (`mcp/catalog.go`) |
 | `Manager.mu` → `peer.mu` | `Manager.Recover` → `peer.err` |
@@ -46,7 +45,7 @@ Where each edge comes from:
 
 | Lock | Guards | Why it exists |
 | --- | --- | --- |
-| `Agent.ownershipMu` (`agent.go`) | Ownership transitions: lease renewal and its loss handling, `Store.Acquire` in `Agent.open`, publication and first save of a restored session | A renewal that finds a session lost must not interleave with a resume that reacquires it. Only background work takes it; turns never do |
+| `Agent.ownershipMu` (`agent.go`) | Ownership transitions: lease renewal and its loss handling, `Store.Acquire` in `Agent.acquire`, publication and first save of a restored session | A renewal that finds a session lost must not interleave with a resume that reacquires it. Only background work takes it; turns never do |
 | `Agent.mu` (`agent.go`) | `sessions`, `lost`, `operations`, `shuttingDown`, `selectionSaved` | The session map and the `sessionOperation` chain. Held briefly; never across I/O or while waiting for `Session.mu` |
 | `Session.flushMu` (`session.go`, `persist.go`) | Serialises store writes: `Session.flush` and the prompt's `Session.claimTurn` | Each save takes the latest state, so saves cannot reorder. Ownership changes take it to drain an in-flight save, so an old write cannot revive this process's owner ID after a takeover |
 | `Session.mu` (`session.go`) | Every mutable `Session` field except those below: settings, `history`, `transcript`, `state`, `queue`, `worker`, `claimed`, `stopTurn`, `closed`, toolbox pins, roots, remembered shell decisions, `replaying`/`deferred`, and the persistence marks `saved`, `dirty`, `lost`, `saveWarning` | Transcript changes and their live update are one step, so a resume snapshot and live updates cannot reorder |
@@ -83,8 +82,8 @@ Not lock-guarded, by ownership instead:
 | `Session.mu` | `tools.New`, `Toolbox.Close`, `AGENTS.md` reads, model requests | `Session.Resume`, `Session.releaseToolbox`, `Session.refreshInstructions` and `Session.converse` do this work unlocked |
 | `Agent.mu` | waiting for `Session.mu`, which a live update holds across `Conn.Notify` | `Agent.setConfigOption` reads pending setup under `Agent.mu`, releases it, then admits the change under `Session.mu` (see [Session operations](#session-operations)) |
 | `Session.mu` | writing a replay snapshot | `Session.replay` writes outside the lock; `Session.send` defers live updates meanwhile (see [Resume](#resume)) |
-| `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` and `Agent.open` start it with `go` |
-| `Agent.ownershipMu` | MCP setup | `Agent.resume` runs `Session.Resume` between `Agent.open` and `Agent.publishRestored`, outside the lock, so a slow server cannot delay lease renewal |
+| `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` and `Agent.acquire` start it with `go` |
+| `Agent.ownershipMu` | MCP setup, the catalog load, `restoreSession` | `Agent.open` takes the lock only in `Agent.acquire`, then waits for the catalog (up to `catalogTimeout` when none has loaded) and restores the private session; `Agent.resume` runs `Session.Resume` before `Agent.publishRestored`. A slow provider or server cannot delay lease renewal |
 | `Manager.mu` | connecting or closing a server | `Manager.Prepare` and `Manager.Recover` connect unlocked; `Manager.closeResource` closes before locking |
 
 Live updates are the deliberate exception: `Session.send` notifies under
@@ -108,7 +107,7 @@ Per connection:
 | Selection save, chained in request order | `Agent.rememberSelection` | its save finishes |
 | `session/new`, `session/list` work | `Agent.newSession`, `Agent.listSessions`; tracked by `Agent.jobs` | reply settled |
 | One per `sessionOperation` | `Agent.startOperation`; tracked by `Agent.jobs` | its work and `done` |
-| Session closers | `Agent.Shutdown`, `Agent.dropLocked`, `Agent.open` | `Session.Close` returns |
+| Session closers | `Agent.Shutdown`, `Agent.dropLocked`, `Agent.acquire` | `Session.Close` returns |
 
 Per session:
 
@@ -216,8 +215,10 @@ pending resume publishes afterwards.
 
 ## Resume
 
-`Agent.open` runs under `ownershipMu`, and under the live session's `flushMu`
-when there is one, so old saves finish before ownership changes.
+`Agent.open` calls `Agent.acquire`, which runs `Store.Acquire` and the loss
+handling below under `ownershipMu`, and under the live session's `flushMu`
+when there is one, so old saves finish before ownership changes. Loading the
+catalog and restoring happen after both are released.
 
 - **Continuously owned live session** (`Store.Acquire` reports it already
   owned and it is not lost): the same `Session` is reused and a running turn
@@ -258,7 +259,7 @@ Loss is detected in three places:
 - `Session.flush` or `Session.claimTurn` getting `store.ErrLost`, under
   `flushMu` and `Session.mu`. `Session.loseLocked` marks the session lost; it
   stays in the map until the next renewal drops it.
-- `Agent.open`, when the live session was not continuously owned.
+- `Agent.acquire`, when the live session was not continuously owned.
 
 `Session.loseLocked` sets `lost`, cancels `Session.ctx` and closes MCP servers
 on a goroutine. A running turn's context is cancelled, so the turn ends with
