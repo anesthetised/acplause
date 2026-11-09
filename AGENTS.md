@@ -68,6 +68,7 @@ cmd/acplause/      entry point; configuration from ACPLAUSE_* env vars
 internal/jsonrpc/  NDJSON framing, dispatch, batches, single stdout writer
 internal/acp/      ACP v2 wire types, only those acplause uses
 internal/agent/    sessions, prompt queue, lifecycle, cancellation, tool loop
+internal/forms/    ask_user form parsing and answer validation, stateless
 internal/llm/      Chat Completions client: SSE, retries, models list
 internal/mcp/      session-owned MCP peers, discovery, stdio and HTTP
 internal/media/    validated PNG/JPEG values with ADR 0009 bounds

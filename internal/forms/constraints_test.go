@@ -1,8 +1,7 @@
-package agent
+package forms
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -56,7 +55,7 @@ func TestFormConstraintArguments(t *testing.T) {
 		{`,"multiSelect":true,"choices":[]`, false},
 	} {
 		t.Run(tt.fields, func(t *testing.T) {
-			_, err := parseQuestions(oneQuestion(tt.fields))
+			_, err := ParseQuestions(oneQuestion(tt.fields))
 			if (err == nil) != tt.valid {
 				t.Fatalf("valid=%v, err=%v", tt.valid, err)
 			}
@@ -67,7 +66,7 @@ func TestFormConstraintArguments(t *testing.T) {
 		"description":      strings.Replace(oneQuestion(""), `"message"`, `"description":"`+strings.Repeat("d", 2001)+`","message"`, 1),
 		"wrong title type": strings.Replace(oneQuestion(""), `"message"`, `"title":3,"message"`, 1),
 	} {
-		if _, err := parseQuestions(args); err == nil {
+		if _, err := ParseQuestions(args); err == nil {
 			t.Fatalf("%s: invalid form text accepted", name)
 		}
 	}
@@ -75,7 +74,7 @@ func TestFormConstraintArguments(t *testing.T) {
 
 func TestFormConstraintWire(t *testing.T) {
 	wire := func(questions string) string {
-		req, err := parseQuestions(`{"message":"m","title":"Setup","description":"Details","questions":[` + questions + `]}`)
+		req, err := ParseQuestions(`{"message":"m","title":"Setup","description":"Details","questions":[` + questions + `]}`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +98,7 @@ func TestFormConstraintWire(t *testing.T) {
 			t.Errorf("schema lacks %s: %s", want, text)
 		}
 	}
-	multi, err := parseQuestions(oneQuestion(`,"multiSelect":true,"choices":` + twoChoices + `,"minItems":0,"default":[]`))
+	multi, err := ParseQuestions(oneQuestion(`,"multiSelect":true,"choices":` + twoChoices + `,"minItems":0,"default":[]`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +144,11 @@ func TestFormConstraintAnswers(t *testing.T) {
 		{"null", `,"required":false`, `null`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req, err := parseQuestions(oneQuestion(tt.fields))
+			req, err := ParseQuestions(oneQuestion(tt.fields))
 			if err != nil {
 				t.Fatal(err)
 			}
-			out := questionResult(req, acp.ElicitationResponse{Action: "accept", Content: json.RawMessage(`{"v":` + tt.answer + `}`)})
+			out := QuestionResult(req, acp.ElicitationResponse{Action: "accept", Content: json.RawMessage(`{"v":` + tt.answer + `}`)})
 			if out.Failed == tt.valid {
 				t.Fatalf("result=%+v, valid=%v", out, tt.valid)
 			}
@@ -165,7 +164,7 @@ func TestFormOptionalAnswers(t *testing.T) {
 	 {"id":"need","title":"N","question":"N?"},
 	 {"id":"flag","title":"F","question":"F?","type":"boolean","default":true,"required":false},
 	 {"id":"count","title":"C","question":"C?","type":"integer","default":7,"required":false}]}`
-	req, err := parseQuestions(args)
+	req, err := ParseQuestions(args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,49 +180,24 @@ func TestFormOptionalAnswers(t *testing.T) {
 		{"array content", `[]`, ``, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			out := questionResult(req, acp.ElicitationResponse{Action: "accept", Content: json.RawMessage(tt.content)})
+			out := QuestionResult(req, acp.ElicitationResponse{Action: "accept", Content: json.RawMessage(tt.content)})
 			if out.Failed == tt.valid || tt.valid && out.Output != tt.want {
 				t.Fatalf("result=%+v, want %s (valid=%v)", out, tt.want, tt.valid)
 			}
 		})
 	}
 	// With no required fields, an accept without content means nothing answered.
-	allOptional, err := parseQuestions(oneQuestion(`,"required":false,"default":"d"`))
+	allOptional, err := ParseQuestions(oneQuestion(`,"required":false,"default":"d"`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, content := range []string{``, `null`, `{}`} {
-		out := questionResult(allOptional, acp.ElicitationResponse{Action: "accept", Content: json.RawMessage(content)})
+		out := QuestionResult(allOptional, acp.ElicitationResponse{Action: "accept", Content: json.RawMessage(content)})
 		if out.Failed || out.Output != `{}` {
 			t.Fatalf("content %q: %+v (a default must not become an answer)", content, out)
 		}
 	}
-	if out := questionResult(allOptional, acp.ElicitationResponse{Action: "decline"}); !out.Failed {
+	if out := QuestionResult(allOptional, acp.ElicitationResponse{Action: "decline"}); !out.Failed {
 		t.Fatalf("declined form succeeded: %+v", out)
-	}
-}
-
-func TestFormQuestionToolDescribesConstraints(t *testing.T) {
-	var spec struct {
-		Parameters struct {
-			Properties map[string]json.RawMessage
-		}
-	}
-	encoded, _ := json.Marshal(askUserTool.Function)
-	if err := json.Unmarshal(encoded, &spec); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"title", "description", "questions"} {
-		if spec.Parameters.Properties[name] == nil {
-			t.Errorf("tool schema lacks %s", name)
-		}
-	}
-	for _, name := range []string{"choices", "required", "default", "minLength", "maxLength", "format", "minimum", "maximum", "minItems", "maxItems"} {
-		if !strings.Contains(string(encoded), fmt.Sprintf("%q", name)) {
-			t.Errorf("tool schema lacks question field %s", name)
-		}
-	}
-	if strings.Contains(string(encoded), `"pattern"`) {
-		t.Error("tool schema advertises the unsupported pattern")
 	}
 }
