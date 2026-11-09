@@ -314,7 +314,9 @@ func (s *Session) ConfigOptions() []acp.ConfigOption {
 	return s.catalog.options(s.model, s.effort, s.mode)
 }
 
-// setConfigOption admits a mode change under the same locks as setup and prompts.
+// setConfigOption admits a mode change under mu, which fences queued prompts.
+// setupPending comes from Agent.mu; see Agent.setConfigOption for why the
+// two checks need not hold both locks.
 func (s *Session) setConfigOption(id, valueType string, raw json.RawMessage, setupPending bool) error {
 	var value string
 	if valueType != acp.ConfigValueID || json.Unmarshal(raw, &value) != nil {

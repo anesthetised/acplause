@@ -663,12 +663,14 @@ func (a *Agent) setConfigOption(_ context.Context, req acp.SetConfigOptionReques
 	if err != nil {
 		return nil, err
 	}
-	// Hold the setup reservation lock through mode admission. Session.mu
-	// simultaneously fences queued prompts, including pre-insertion work.
+	// Session.mu may be held across a full writer queue, so do not wait for it
+	// under Agent.mu. Admission stays atomic: only read-loop handlers reserve
+	// setup, so none can start before Session.mu is taken, and a pending
+	// setup submits its prompts to the session queue before it leaves operations.
 	a.mu.Lock()
-	err = s.setConfigOption(req.ConfigID, req.Type, req.Value, a.operations[req.SessionID] != nil)
+	setupPending := a.operations[req.SessionID] != nil
 	a.mu.Unlock()
-	if err != nil {
+	if err = s.setConfigOption(req.ConfigID, req.Type, req.Value, setupPending); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()

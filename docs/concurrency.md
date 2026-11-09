@@ -37,7 +37,6 @@ Where each edge comes from:
 | `ownershipMu` → `flushMu` | `Agent.dropLocked` drains a save; `Agent.open` holds the live session's `flushMu` across `Store.Acquire`; `Agent.publishRestored` calls `Session.flush` |
 | `flushMu` → `Agent.mu` | `Agent.open` removes a session that lost ownership while holding its `flushMu` |
 | `flushMu` → `Session.mu` | `persist.go`: `Session.flush`; `session.go`: `Session.insert`; `Agent.open` → `Session.markLost` |
-| `Agent.mu` → `Session.mu` | `Agent.setConfigOption` holds `Agent.mu` through `Session.setConfigOption`, so mode admission sees pending setup and queued prompts together |
 | `Session.mu` → `Manager.mu` → `server.mu` | `turn.go`: `Session.request` → `Manager.Snapshot` |
 | `Session.mu` → `Manager.mu` → `peer.mu` | `Session.Resume` → `Change.Commit` → `peer.fail` (`mcp/catalog.go`) |
 | `Manager.mu` → `peer.mu` | `Manager.Recover` → `peer.err` |
@@ -48,7 +47,7 @@ Where each edge comes from:
 | Lock | Guards | Why it exists |
 | --- | --- | --- |
 | `Agent.ownershipMu` (`agent.go`) | Ownership transitions: lease renewal and its loss handling, `Store.Acquire` in `Agent.open`, publication and first save of a restored session | A renewal that finds a session lost must not interleave with a resume that reacquires it. Only background work takes it; turns never do |
-| `Agent.mu` (`agent.go`) | `sessions`, `lost`, `operations`, `shuttingDown`, `selectionSaved` | The session map and the `sessionOperation` chain. Held briefly; never across I/O |
+| `Agent.mu` (`agent.go`) | `sessions`, `lost`, `operations`, `shuttingDown`, `selectionSaved` | The session map and the `sessionOperation` chain. Held briefly; never across I/O or while waiting for `Session.mu` |
 | `Session.flushMu` (`session.go`, `persist.go`) | Serialises store writes: `Session.flush` and the prompt's `Session.claimTurn` | Each save takes the latest state, so saves cannot reorder. Ownership changes take it to drain an in-flight save, so an old write cannot revive this process's owner ID after a takeover |
 | `Session.mu` (`session.go`) | Every mutable `Session` field except those below: settings, `history`, `transcript`, `state`, `queue`, `worker`, `claimed`, `stopTurn`, `closed`, toolbox pins, roots, remembered shell decisions, `replaying`/`deferred`, and the persistence marks `saved`, `dirty`, `lost`, `saveWarning` | Transcript changes and their live update are one step, so a resume snapshot and live updates cannot reorder |
 | `mcp.Manager.mu` (`mcp/catalog.go`) | `servers`, `revision`, `closed`, `resources`, each server's `recoveryAttempted`; `preparing.Add` happens under it | Configuration publication is atomic; `Close` cannot miss a preparation in progress |
@@ -82,6 +81,7 @@ Not lock-guarded, by ownership instead:
 | `Session.mu` | store I/O | `Session.flush` saves after unlocking; `Session.claimTurn` unlocks around `Store.Save` while `flushMu` keeps saves ordered |
 | `Session.mu` | MCP `Prepare`, `Change.Discard`, `Manager.Close`, `Manager.Recover` | `Session.Resume` prepares before locking and defers `Discard`; `Change.Commit` under the lock only swaps pointers. `Session.loseLocked` closes MCP on a goroutine |
 | `Session.mu` | `tools.New`, `Toolbox.Close`, `AGENTS.md` reads, model requests | `Session.Resume`, `Session.releaseToolbox`, `Session.refreshInstructions` and `Session.converse` do this work unlocked |
+| `Agent.mu` | waiting for `Session.mu`, which a live update holds across `Conn.Notify` | `Agent.setConfigOption` reads pending setup under `Agent.mu`, releases it, then admits the change under `Session.mu` (see [Session operations](#session-operations)) |
 | `Session.mu` | writing a replay snapshot | `Session.replay` writes outside the lock; `Session.send` defers live updates meanwhile (see [Resume](#resume)) |
 | `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` and `Agent.open` start it with `go` |
 | `Agent.ownershipMu` | MCP setup | `Agent.resume` runs `Session.Resume` between `Agent.open` and `Agent.publishRestored`, outside the lock, so a slow server cannot delay lease renewal |
@@ -208,7 +208,11 @@ pending resume publishes afterwards.
   published late, closes it and releases the lease; `delete` also removes the
   record.
 - `session/set_config_option` refuses a mode change while any operation is
-  pending, under `Agent.mu`.
+  pending or a prompt is queued or running. It reads pending setup under
+  `Agent.mu`, then checks the queue and state under `Session.mu` without
+  holding both. That stays atomic: only read-loop handlers reserve
+  operations, so none starts between the two checks, and a pending setup's
+  prompts enter the session queue before the operation leaves `operations`.
 
 ## Resume
 

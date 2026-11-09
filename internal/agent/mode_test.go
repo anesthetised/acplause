@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -102,6 +103,80 @@ func TestModeBusyAdmissionAndIdempotence(t *testing.T) {
 				t.Fatalf("same mode refused: %v", err)
 			}
 		})
+	}
+}
+
+// renewStore counts lease renewals and loses nothing.
+type renewStore struct {
+	Store
+	renewals atomic.Int32
+}
+
+func (s *renewStore) Renew(context.Context, []string) ([]string, error) {
+	s.renewals.Add(1)
+	return nil, nil
+}
+
+// A live update may hold Session.mu while the writer queue is full. Mode
+// admission waits for that lock, but must not hold Agent.mu meanwhile.
+func TestModeAdmissionWaitsWithoutTheAgentLock(t *testing.T) {
+	s, out := testSession(t, nil)
+	other, _ := testSession(t, nil)
+	st := &renewStore{}
+	a := &Agent{
+		cfg:        Config{Store: st},
+		ctx:        context.Background(),
+		sessions:   map[string]*Session{s.id: s, other.id: other},
+		lost:       map[string]bool{},
+		operations: map[string]*sessionOperation{},
+	}
+	client := &slowReplayClient{recorder: out, entered: make(chan struct{}), release: make(chan struct{})}
+	s.deps.out = client
+	var release sync.Once
+	unblock := func() { release.Do(func() { close(client.release) }) }
+	defer unblock()
+	go s.setState(acp.StateUpdate{State: acp.StateRunning})
+	select {
+	case <-client.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("state update did not reach the client")
+	}
+	configured := make(chan error, 1)
+	go func() {
+		req := acp.SetConfigOptionRequest{SessionID: s.id, ConfigID: configMode, Type: acp.ConfigValueID, Value: jsonString(modePlan)}
+		_, err := a.setConfigOption(context.Background(), req)
+		configured <- err
+	}()
+	select {
+	case err := <-configured:
+		t.Fatalf("set_config_option did not wait for the session lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	free := make(chan error, 1)
+	go func() {
+		_, err := a.session(other.id)
+		a.renew()
+		free <- err
+	}()
+	select {
+	case err := <-free:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("session lookup and lease renewal waited for the writer")
+	}
+	if st.renewals.Load() != 1 {
+		t.Fatalf("renewals = %d, want 1", st.renewals.Load())
+	}
+	unblock()
+	select {
+	case err := <-configured:
+		if err == nil || !strings.Contains(err.Error(), "busy") {
+			t.Fatalf("mode change during a turn: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("set_config_option did not finish")
 	}
 }
 
