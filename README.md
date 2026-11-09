@@ -1,13 +1,18 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/acplause-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/acplause-light.svg">
-  <img alt="acplause" src="docs/assets/acplause-light.svg" width="340">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/acplause-dark.svg">
+    <img src="docs/assets/acplause-light.svg" alt="acplause, two clapping hands on an orange tile" width="128">
+  </picture>
+</p>
 
-*Don't hold your acplause — it streams.*
+<h1 align="center">acplause</h1>
 
-[![CI](https://github.com/anesthetised/acplause/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/anesthetised/acplause/actions/workflows/ci.yml)
-[![Go coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/anesthetised/acplause/badges/coverage.json)](https://github.com/anesthetised/acplause/actions/workflows/ci.yml)
+<p align="center"><em>Don't hold your acplause — it streams.</em></p>
+
+<p align="center">
+  <a href="https://github.com/anesthetised/acplause/actions/workflows/ci.yml"><img src="https://github.com/anesthetised/acplause/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/anesthetised/acplause/actions/workflows/ci.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/anesthetised/acplause/badges/coverage.json" alt="Go coverage"></a>
+</p>
 
 acplause is an [Agent Client Protocol](https://agentclientprotocol.com) v2
 agent. Your editor talks to it over stdio; it thinks with any
@@ -18,23 +23,30 @@ Inspired by [acp-bridge](https://github.com/BlakeHung/acp-bridge), which serves
 as a behavioral reference for the tool loop, limits and error handling.
 acplause follows the pinned ACP v2 specification for its wire protocol.
 
-acplause is experimental. Calendar versions identify releases; they do not
-promise compatibility. Breaking changes are highlighted in release notes.
+> **Status:** experimental. Calendar versions identify releases; they do not
+> promise compatibility. Breaking changes are highlighted in release notes.
 
-- ACP v2 only, validated against the pinned schema (`testdata/schema/v2`).
-- Streaming text and reasoning, tool calls, usage and cost reporting.
-- Live shell terminal output with bounded snapshots for session replay.
-- Asks permission before changing files or running commands.
-- Prompt queue, cancellation of model requests and owned shell processes,
-  session list/resume/close/delete.
-- Sessions survive restarts and can move between editor windows.
-- Model and reasoning effort selection from OpenRouter's model list.
-- PNG/JPEG prompt attachments and MCP tool images for models known to accept images.
-- Session-owned MCP tools over stdio and Streamable HTTP.
-- Structured user questions on clients advertising ACP form elicitation.
-- Native ACP execution plans with persistent progress snapshots.
-- Per-session Plan/Build modes with enforced tool restrictions.
-- A discoverable `/compact` command to summarize older model context on demand.
+## Highlights
+
+- **ACP v2 only.** Wire shapes follow the pinned schema
+  (`testdata/schema/v2`), and tests validate every message against it.
+- **Streams everything.** Text and reasoning, tool calls, usage and cost
+  reporting, and live shell terminal output with bounded snapshots for
+  session replay.
+- **Asks first.** Permission before changing files or running commands, and
+  per-session Plan/Build modes with enforced tool restrictions.
+- **Sessions that last.** Prompt queue, cancellation of model requests and
+  owned shell processes, session list/resume/close/delete. Sessions survive
+  restarts and can move between editor windows.
+- **Your model, your effort.** Model and reasoning effort selection from
+  OpenRouter's model list, and a discoverable `/compact` command to summarize
+  older model context on demand.
+- **MCP and images.** Session-owned MCP tools over stdio and Streamable HTTP;
+  PNG/JPEG prompt attachments and MCP tool images for models known to accept
+  images.
+- **Talks back.** Structured user questions on clients advertising ACP form
+  elicitation, and native ACP execution plans with persistent progress
+  snapshots.
 
 ## Install
 
