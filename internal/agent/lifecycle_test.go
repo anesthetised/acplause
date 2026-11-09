@@ -224,3 +224,71 @@ func TestCancelledSetupReportsCancellation(t *testing.T) {
 		}
 	})
 }
+
+// acquiredStore reports each Acquire that has returned.
+type acquiredStore struct {
+	Store
+	acquired chan struct{}
+}
+
+func (s acquiredStore) Acquire(ctx context.Context, id string) (*store.Loaded, error) {
+	l, err := s.Store.Acquire(ctx, id)
+	s.acquired <- struct{}{}
+	return l, err
+}
+
+// TestResumeWaitsForCatalogOutsideOwnership is the regression test for #210:
+// a resume waiting for the first catalog load must not hold ownershipMu, or
+// lease renewal would stall for the whole provider timeout.
+func TestResumeWaitsForCatalogOutsideOwnership(t *testing.T) {
+	dir, cwd := t.TempDir(), t.TempDir()
+	a := startAgent(t, dir, nil, nil)
+	a.initialize()
+	id := a.newSession(cwd)
+
+	listing, release := make(chan struct{}, 1), make(chan struct{})
+	list := func(ctx context.Context) ([]llm.Model, error) {
+		select {
+		case listing <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+			return testModels, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	acquired := make(chan struct{}, 1)
+	b := startAgent(t, dir, nil, list, func(st Store) Store { return acquiredStore{st, acquired} })
+	b.initialize()
+	resumed := b.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd, "mcpServers": []any{}})
+	for _, ch := range []chan struct{}{listing, acquired} {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatal("resume did not reach the catalog load")
+		}
+	}
+
+	renewed := make(chan struct{})
+	go func() { b.agent.renew(); close(renewed) }()
+	select {
+	case <-renewed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lease renewal waited for the provider's model list")
+	}
+	select {
+	case r := <-resumed:
+		t.Fatalf("resume finished before the catalog loaded: %+v", r)
+	default:
+	}
+
+	close(release)
+	if r := b.await(resumed); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	if _, err := b.agent.session(id); err != nil {
+		t.Fatalf("resumed session not published: %v", err)
+	}
+}
