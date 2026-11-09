@@ -65,12 +65,19 @@ func (c *calibration) observe(req llm.Request, u *llm.Usage) {
 // reserves are already tokens and are not scaled.
 func (c *calibration) size(req llm.Request) uint64 {
 	text, images := requestParts(req)
+	return c.estimate(req.Model, text, images)
+}
+
+// estimate applies size's rule to the parts of an already measured request.
+// Callers that keep the parts incrementally (requestSizer) use it directly, so
+// both paths share the ratio, margin and cap.
+func (c *calibration) estimate(model string, text, images uint64) uint64 {
 	if text == math.MaxUint64 {
 		return text
 	}
 	if c != nil {
 		c.mu.Lock()
-		ratio := c.ratios[req.Model]
+		ratio := c.ratios[model]
 		c.mu.Unlock()
 		if est := math.Ceil(float64(text) / ratio * calibrationMargin); ratio > 0 && est < float64(text) {
 			text = uint64(est)

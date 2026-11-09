@@ -69,6 +69,176 @@ func requestParts(req llm.Request) (text, images uint64) {
 	return uint64(len(data)) + uint64(len(req.Messages))*16 + 256, images
 }
 
+// byteCounter counts what is written to it.
+type byteCounter uint64
+
+func (c *byteCounter) Write(p []byte) (int, error) {
+	*c += byteCounter(len(p))
+	return len(p), nil
+}
+
+// jsonLen is len(json.Marshal(v)) without keeping the encoding.
+func jsonLen(v any) (uint64, error) {
+	var n byteCounter
+	if err := json.NewEncoder(&n).Encode(v); err != nil {
+		return 0, err
+	}
+	return uint64(n) - 1, nil // Encode ends the value with a newline
+}
+
+// Pieces of requestParts' body, {"messages":[m1,m2],"tools":[...]}: the braces
+// and brackets around the messages, the comma between two of them, and the
+// key that introduces tools.
+const (
+	bodyFraming    = len(`{"messages":[]}`)
+	toolsKeyBytes  = len(`,"tools":`)
+	messageFraming = 16 // per message, ADR 0006
+)
+
+// messageCost is what one message adds to requestParts.
+type messageCost struct {
+	text, images uint64
+	bad          bool // does not serialize, so the request never fits
+}
+
+// costOf measures a message as requestParts does, including its comma.
+func costOf(m llm.Message, vision bool) messageCost {
+	var c messageCost
+	if len(m.Images) > 0 {
+		c.images = imageLabelBytes
+		if vision {
+			c.images += imageTokens * uint64(len(m.Images))
+		}
+		m.Images = nil
+	}
+	// As an element of a slice, which is how requestParts and the summary
+	// encode it: the brackets stand in for the comma.
+	n, err := jsonLen([]llm.Message{m})
+	c.text, c.bad = n-2+messageFraming+1, err != nil
+	return c
+}
+
+// requestSizer keeps requestParts for a message list that changes one message
+// at a time, and for its image projection (projectImages), so that neither the
+// trimming loop nor an image removal has to serialize the whole request again.
+// The total is the sum of per-message sizes plus a constant; a test holds it
+// equal to requestParts. A nil sizer is valid and tracks nothing, for requests
+// whose size is never read. The caller must keep it in step with the messages.
+type requestSizer struct {
+	vision       bool
+	fixed        uint64 // framing and tools
+	bad          int    // tools or messages that do not serialize
+	text, images uint64 // sums over msgs, as projected
+	msgs         []sizedMessage
+}
+
+type sizedMessage struct {
+	cost    messageCost // as in the request
+	omitted *omission   // built when its images are first dropped
+	dropped bool        // the projection uses omitted
+}
+
+// omission is a message with its images replaced by a marker.
+type omission struct {
+	msg  llm.Message
+	cost messageCost
+}
+
+func newRequestSizer(req llm.Request) *requestSizer {
+	z := &requestSizer{vision: req.Vision, fixed: uint64(bodyFraming) + 256, msgs: make([]sizedMessage, len(req.Messages))}
+	if len(req.Tools) > 0 {
+		if n, err := jsonLen(req.Tools); err == nil {
+			z.fixed += uint64(toolsKeyBytes) + n
+		} else {
+			z.bad++
+		}
+	}
+	for i, m := range req.Messages {
+		z.msgs[i].cost = costOf(m, z.vision)
+		z.add(z.msgs[i].cost)
+	}
+	return z
+}
+
+func (z *requestSizer) add(c messageCost) {
+	z.text += c.text
+	z.images += c.images
+	if c.bad {
+		z.bad++
+	}
+}
+
+func (z *requestSizer) sub(c messageCost) {
+	z.text -= c.text
+	z.images -= c.images
+	if c.bad {
+		z.bad--
+	}
+}
+
+// current is the cost message i has in the projection.
+func (z *requestSizer) current(i int) messageCost {
+	if m := &z.msgs[i]; m.dropped {
+		return m.omitted.cost
+	}
+	return z.msgs[i].cost
+}
+
+// set replaces message i, whose images are back, with m.
+func (z *requestSizer) set(i int, m llm.Message) {
+	if z == nil {
+		return
+	}
+	z.sub(z.current(i))
+	z.msgs[i] = sizedMessage{cost: costOf(m, z.vision)}
+	z.add(z.msgs[i].cost)
+}
+
+// reset restores every message's images, starting a projection over.
+func (z *requestSizer) reset() {
+	if z == nil {
+		return
+	}
+	for i := range z.msgs {
+		if z.msgs[i].dropped {
+			z.sub(z.current(i))
+			z.msgs[i].dropped = false
+			z.add(z.msgs[i].cost)
+		}
+	}
+}
+
+// dropImages projects message i, which must be the one the sizer holds, to
+// omitImages(m, reason). The result is built once per message and reason.
+func (z *requestSizer) dropImages(i int, m llm.Message, reason string) llm.Message {
+	if z == nil {
+		return omitImages(m, reason)
+	}
+	e := &z.msgs[i]
+	if e.omitted == nil {
+		o := omitImages(m, reason)
+		e.omitted = &omission{o, costOf(o, z.vision)}
+	}
+	if !e.dropped {
+		z.sub(e.cost)
+		e.dropped = true
+		z.add(e.omitted.cost)
+	}
+	return e.omitted.msg
+}
+
+// size is calibration.size of the projected request.
+func (z *requestSizer) size(c *calibration, model string) uint64 {
+	if z.bad > 0 {
+		return math.MaxUint64 // invalid input must never be considered to fit
+	}
+	text := z.fixed + z.text
+	if len(z.msgs) > 0 {
+		text-- // one comma fewer than messages
+	}
+	return c.estimate(model, text, z.images)
+}
+
 // summaryPrefix starts the assistant message that replaces compacted history.
 const summaryPrefix = "Conversation summary:\n"
 
@@ -111,13 +281,16 @@ func latest(messages []llm.Message) (user, keep int) {
 // markers, a whole message at a time, until the request is within the image
 // limits and fits. Protected images over the limits are an error; protected
 // content over the window is left to text trimming and compaction.
-func projectImages(req llm.Request, fits func(llm.Request) bool) (llm.Request, error) {
+//
+// z follows the projection, and fits reads it.
+func projectImages(req llm.Request, z *requestSizer, fits func() bool) (llm.Request, error) {
+	z.reset()
 	req.Messages = slices.Clone(req.Messages)
 	messages := req.Messages
 	if !req.Vision {
 		for i, m := range messages {
 			if len(m.Images) > 0 {
-				messages[i] = omitImages(m, "the selected model does not accept images")
+				messages[i] = z.dropImages(i, m, "the selected model does not accept images")
 			}
 		}
 		return req, nil
@@ -129,13 +302,13 @@ func projectImages(req llm.Request, fits func(llm.Request) bool) (llm.Request, e
 	}
 	within := func() bool { return count <= media.MaxImages && size <= media.MaxSetBytes }
 	user, keep := latest(messages)
-	for i := 0; i < keep && !(within() && fits(req)); i++ {
+	for i := 0; i < keep && !(within() && fits()); i++ {
 		if i == user || len(messages[i].Images) == 0 {
 			continue
 		}
 		count -= len(messages[i].Images)
 		size -= imageBytes(messages[i].Images)
-		messages[i] = omitImages(messages[i], "removed from this request to fit the model's limits")
+		messages[i] = z.dropImages(i, messages[i], "removed from this request to fit the model's limits")
 	}
 	if !within() {
 		return req, fmt.Errorf("the latest prompt and tool results carry %d images of %d bytes; one model request allows %d images of %d bytes",
@@ -226,12 +399,18 @@ func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force
 		}
 		req.MaxTokens = maxTokens(window, s.catalog.outputLimit(req.Model))
 		// An unknown window leaves the size unchecked; image limits still apply.
-		fits := func(r llm.Request) bool { return window == 0 || s.deps.calibration.size(r) <= budget }
-		sent, err := projectImages(*req, fits)
+		// The sizer measures every message once, however often the trimming
+		// loop below asks whether the request fits.
+		var z *requestSizer
+		if window != 0 {
+			z = newRequestSizer(*req)
+		}
+		fits := func() bool { return window == 0 || z.size(s.deps.calibration, req.Model) <= budget }
+		sent, err := projectImages(*req, z, fits)
 		if err != nil {
 			return round, false, err
 		}
-		withinBudget := fits(sent)
+		withinBudget := fits()
 		if withinBudget && !force {
 			round.Request = sent
 			return round, false, nil
@@ -246,8 +425,9 @@ func (s *Session) prepareModelRequest(ctx context.Context, remaining *int, force
 				continue
 			}
 			req.Messages[i].Content = trimToolOutput(m.Content)
+			z.set(i, req.Messages[i])
 			trimmed = true
-			if p, err := projectImages(*req, fits); err == nil && fits(p) {
+			if _, err := projectImages(*req, z, fits); err == nil && fits() {
 				break
 			}
 		}
@@ -358,6 +538,96 @@ func (s *Session) compact(ctx context.Context, req llm.Request, prefix, retained
 	return messages, nil
 }
 
+// historyJSON keeps the serialization of history messages, and the bytes each
+// takes once embedded in a JSON string, while a summary chunk grows over them.
+// A message is serialized once however many candidates contain it.
+type historyJSON struct {
+	data    [][]byte
+	escaped []uint64
+}
+
+// extend serializes messages up to n.
+func (h *historyJSON) extend(messages []llm.Message, n int) error {
+	for len(h.data) < n {
+		data, err := json.Marshal(messages[len(h.data) : len(h.data)+1])
+		if err != nil {
+			return err
+		}
+		data = data[1 : len(data)-1] // the element, as in the array of the whole chunk
+		quoted, err := jsonLen(string(data))
+		if err != nil {
+			return err
+		}
+		h.data = append(h.data, data)
+		h.escaped = append(h.escaped, quoted-2) // without the quotes
+	}
+	return nil
+}
+
+// drop forgets the first n messages once they are summarized.
+func (h *historyJSON) drop(n int) {
+	clear(h.data[:n])
+	h.data, h.escaped = h.data[n:], h.escaped[n:]
+}
+
+// summaryRequest asks for the summary of history, the JSON array of messages.
+func summaryRequest(req llm.Request, previous, history string) llm.Request {
+	return llm.Request{Model: req.Model, MaxTokens: req.MaxTokens, ReasoningEffort: req.ReasoningEffort,
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: summaryInstruction},
+			{Role: llm.RoleUser, Content: "Previous summary:\n" + previous + "\nConversation JSON:\n" + history},
+		}}
+}
+
+// summaryChunk builds the summary request for the most whole exchanges at the
+// start of prefix that fit the budget, and returns how many messages it
+// covers; none if not even the first exchange fits. A candidate's size is that
+// of the request without history plus the history's escaped bytes, summed from
+// the cached messages, so growing the chunk by an exchange never serializes
+// the rest again. The request is assembled once.
+func summaryChunk(ctx context.Context, cal *calibration, req llm.Request, prefix []llm.Message, h *historyJSON, summary string, budget uint64) (llm.Request, int, error) {
+	base, _ := requestParts(summaryRequest(req, summary, ""))
+	var escaped uint64 // of prefix[:counted]
+	counted, end := 0, 0
+	for next := 1; next <= len(prefix); next++ {
+		if err := ctx.Err(); err != nil {
+			return llm.Request{}, 0, err
+		}
+		for next < len(prefix) && prefix[next].Role == llm.RoleTool {
+			next++
+		}
+		if err := h.extend(prefix, next); err != nil {
+			return llm.Request{}, 0, err
+		}
+		for ; counted < next; counted++ {
+			escaped += h.escaped[counted]
+		}
+		// Brackets and one comma between each pair of messages.
+		if base == math.MaxUint64 || cal.estimate(req.Model, base+uint64(next)+1+escaped, 0) > budget {
+			break
+		}
+		end = next
+	}
+	if end == 0 {
+		return llm.Request{}, 0, nil
+	}
+	size := end + 1
+	for _, data := range h.data[:end] {
+		size += len(data)
+	}
+	var b strings.Builder
+	b.Grow(size)
+	b.WriteByte('[')
+	for i, data := range h.data[:end] {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(data)
+	}
+	b.WriteByte(']')
+	return summaryRequest(req, summary, b.String()), end, nil
+}
+
 // summarize folds complete exchanges into a rolling summary. Historical
 // messages are JSON data, so archived tool calls cannot become new requests
 // to execute tools. Reasoning is excluded from the user-displayable summary,
@@ -370,6 +640,7 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		prefix[i] = describeImages(prefix[i])
 	}
 	var summary string
+	var history historyJSON
 	for len(prefix) > 0 {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -377,29 +648,9 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		if remaining != nil && *remaining <= reserve {
 			return "", errRoundLimit
 		}
-		var chunk llm.Request
-		end := 0
-		for next := 1; next <= len(prefix); {
-			if err := ctx.Err(); err != nil {
-				return "", err
-			}
-			for next < len(prefix) && prefix[next].Role == llm.RoleTool {
-				next++
-			}
-			data, err := json.Marshal(prefix[:next])
-			if err != nil {
-				return "", err
-			}
-			candidate := llm.Request{Model: req.Model, MaxTokens: req.MaxTokens, ReasoningEffort: req.ReasoningEffort,
-				Messages: []llm.Message{
-					{Role: llm.RoleSystem, Content: summaryInstruction},
-					{Role: llm.RoleUser, Content: "Previous summary:\n" + summary + "\nConversation JSON:\n" + string(data)},
-				}}
-			if s.deps.calibration.size(candidate) > budget {
-				break
-			}
-			chunk, end = candidate, next
-			next++
+		chunk, end, err := summaryChunk(ctx, s.deps.calibration, req, prefix, &history, summary, budget)
+		if err != nil {
+			return "", err
 		}
 		if end == 0 {
 			return "", fmt.Errorf("a history exchange is too large for a bounded compaction request")
@@ -424,6 +675,7 @@ func (s *Session) summarize(ctx context.Context, req llm.Request, prefix []llm.M
 		}
 		summary = completion.Content
 		prefix = prefix[end:]
+		history.drop(end)
 	}
 	return summary, nil
 }
