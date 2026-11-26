@@ -157,6 +157,7 @@ type submission struct {
 	ctx       context.Context // the session/prompt request's context
 	prompt    []acp.ContentBlock
 	key       string
+	compact   bool
 	reply     requestReply
 	stopWatch func() bool // stops watching ctx for cancellation
 }
@@ -225,6 +226,7 @@ func (s *Session) submit(sub *submission, setupErr error) {
 		sub.reply.Reject(errSessionLost())
 		return
 	}
+	// A recorded key resolves the original prompt before command validation.
 	if id, ok := s.keys[sub.key]; ok {
 		if s.deps.store == nil {
 			sub.reply.Resolve(acp.PromptResponse{MessageID: id})
@@ -241,10 +243,16 @@ func (s *Session) submit(sub *submission, setupErr error) {
 		sub.reply.Reject(acp.ErrRequestCancelled())
 		return
 	}
+	compact, err := classifyCompact(sub.prompt)
+	if err != nil {
+		s.rejectSubmissionsLocked(err, sub)
+		return
+	}
 	if s.model == "" {
 		sub.reply.Reject(acp.ErrInvalidParams("select a model before submitting a prompt"))
 		return
 	}
+	sub.compact = compact
 	s.queue = append(s.queue, sub)
 	sub.stopWatch = context.AfterFunc(sub.ctx, func() { s.withdraw(sub) })
 	if s.worker == nil {
@@ -264,19 +272,21 @@ func (s *Session) cancelLocked() {
 	if s.stopTurn != nil {
 		s.stopTurn()
 	}
-	s.rejectQueuedLocked(s.queue)
+	s.rejectSubmissionsLocked(acp.ErrRequestCancelled(), s.queue...)
 	s.queue = nil
 }
 
-// rejectQueuedLocked ends admission to each withdrawn group on the reader.
+// rejectSubmissionsLocked ends admission to each rejected group on the reader.
 // Only writing the replies can wait for stdout. Close joins that work.
-func (s *Session) rejectQueuedLocked(queued []*submission) {
-	if len(queued) == 0 {
+func (s *Session) rejectSubmissionsLocked(err error, submissions ...*submission) {
+	if len(submissions) == 0 {
 		return
 	}
-	replies := make([]requestReply, 0, len(queued))
-	for _, sub := range queued {
-		sub.stopWatch()
+	replies := make([]requestReply, 0, len(submissions))
+	for _, sub := range submissions {
+		if sub.stopWatch != nil {
+			sub.stopWatch()
+		}
 		if group, ok := sub.reply.(*promptGroup); ok {
 			for _, w := range group.takeWaiters() {
 				replies = append(replies, w.reply)
@@ -287,7 +297,7 @@ func (s *Session) rejectQueuedLocked(queued []*submission) {
 	}
 	s.rejections.Go(func() {
 		for _, reply := range replies {
-			reply.Reject(acp.ErrRequestCancelled())
+			reply.Reject(err)
 		}
 	})
 }
@@ -515,7 +525,7 @@ func (s *Session) withdraw(sub *submission) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if i := slices.Index(s.queue, sub); i >= 0 {
-		s.rejectQueuedLocked(s.queue[i : i+1])
+		s.rejectSubmissionsLocked(acp.ErrRequestCancelled(), sub)
 		s.queue = slices.Delete(s.queue, i, i+1)
 	}
 }
@@ -572,7 +582,7 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	}
 	var stop acp.StopReason
 	var err *jsonrpc.Error
-	if isCompactCommand(sub.prompt) {
+	if sub.compact {
 		stop, err = s.compactCommand(ctx)
 	} else {
 		stop, err = s.converse(ctx)
@@ -644,8 +654,8 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	}
 	msg := acp.UserMessage{MessageID: newID(), Content: sub.prompt}
 	user := llm.Message{Role: llm.RoleUser, Content: promptText(sub.prompt), Images: images}
-	if isCompactCommand(sub.prompt) {
-		user.LocalCommand = "compact"
+	if sub.compact {
+		user.LocalCommand = compactName
 	}
 	updated := time.Now()
 	// Until the transaction commits, neither replay nor the model may see

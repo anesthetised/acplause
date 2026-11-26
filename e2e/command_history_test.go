@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -12,18 +14,43 @@ func TestCompactClassifiesPromptsAfterRestart(t *testing.T) {
 			dir := t.TempDir()
 			llm := newMockLLM(t, compactionModels)
 			a, sid, cwd := started(t, llm, withDataDir(dir))
-			blocks := []any{map[string]any{"type": "text", "text": "/compact"}}
+			prompt := "/compact"
 			if multipart {
-				blocks = append(blocks, map[string]any{"type": "text", "text": ""})
+				prompt = "ordinary prompt"
 				llm.enqueue(reply(strings.Repeat("ordinary answer ", 100)))
 			}
-			a.accepted(a.request("session/prompt", imageParams(sid, blocks)))
+			original, _ := a.accepted(a.prompt(sid, prompt))
 			a.untilIdle(sid)
 			a.stop()
+
+			// Recreate the text and blocks that an older agent wrote. Leave its
+			// stored command marker in place for the old single-block command.
+			legacy, historyText := `[{"type":"text","text":" /compact"}]`, " /compact"
+			if multipart {
+				legacy, historyText = `[{"type":"text","text":"/compact"},{"type":"text","text":""}]`, "/compact\n\n"
+			}
+			db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(`UPDATE transcript SET data = json_set(data, '$.update.content', json(?))
+				WHERE session_id = ? AND json_extract(data, '$.kind') = 'user_message'`, legacy, sid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE history SET data = json_set(data, '$.content', ?)
+				WHERE session_id = ? AND json_extract(data, '$.role') = 'user'`, historyText, sid); err != nil {
+				t.Fatal(err)
+			}
+
 			b := start(t, llm, withDataDir(dir))
 			b.initialize()
-			b.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
-			b.untilIdle(sid)
+			b.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
+			replayed := filter(b.untilIdle(sid), "user_message")
+			if len(replayed) != 1 || replayed[0].MessageID != original {
+				t.Fatalf("legacy replay: %+v", replayed)
+			}
+			assertJSON(t, replayed[0].Content, legacy)
 			before := llm.requestCount()
 			if multipart {
 				llm.enqueue(reply("Summary of the ordinary answer."))

@@ -165,10 +165,11 @@ configured values. Tests cover both setup methods and credential handling.
 - **Mixed-content command dispatch.** Alpha.9 already allowed commands to
   accompany other content. Beta.4
   specifies how to recognize a command in the first text block.
-  [The parser](../../internal/agent/commands.go) still requires a single
-  text block. Define and test how argument-free `/compact` should handle
-  accompanying content.
-  [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
+  Acplause recognizes `/compact` at the start of the first text block.
+  New invocations with arguments or additional blocks receive `-32602` before
+  insertion. Accepted commands retain the original content and message ID
+  in replay.
+  [ADR 0037](../adr/0037-compact-prompt-admission.md) · [Stdio tests](../../e2e/commands_test.go) · [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
 - **MCP partial setup.** The spec recommends continuing with the peers that
   did connect and notifying the user about failures. Both setup paths currently
   fail if a peer cannot connect. Decide how to handle partial success and test
