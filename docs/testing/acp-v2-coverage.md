@@ -115,6 +115,11 @@ values acplause emits. System prompts, individual tool and terminal
 cancellation, subagents and background work have no advertised producer or
 capability here. [Upstream schema changelog][beta-changelog]
 
+Both setup methods reject an unsupported non-null `systemPrompt` with `-32602`
+before starting session setup or MCP connections. Tests cover cold and active
+resumes, replay ordering, and omitted or null prompts.
+[Stdio coverage](../../e2e/system_prompt_test.go) · [System prompt][beta-system-prompt]
+
 Prompt retries share one insertion and retain the original message ID across
 compaction and restart. Coverage includes validation, pending setup, cancellation
 during commit, and retry after a lost response. [ADR 0033](../adr/0033-prompt-idempotency-keys.md) · [Retrying prompts][beta-retry]
@@ -167,17 +172,10 @@ configured values. Tests cover both setup methods and credential handling.
   text block. Define and test how argument-free `/compact` should handle
   accompanying content.
   [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
-- **Unsupported system prompts.** Beta.4 requires `-32602` when the agent
-  cannot apply a supplied `systemPrompt` because its value uses an unsupported
-  mode or content type. [Both setup request types](../../internal/acp/session.go)
-  silently drop the field. Add focused tests that an unsupported prompt
-  leaves the session uncreated or unresumed in `session/new` and
-  `session/resume`. [System prompt][beta-system-prompt]
 - **MCP partial setup.** The spec recommends continuing with the peers that
-  did connect and notifying the user about failures. [New](../../internal/agent/agent.go) and
-  [resume](../../internal/agent/session.go) currently fail setup if a peer cannot
-  connect. Decide how to handle partial success and test it with one working
-  and one failing peer. [MCP servers][beta-mcp]
+  did connect and notifying the user about failures. Both setup paths currently
+  fail if a peer cannot connect. Decide how to handle partial success and test
+  it with one working and one failing peer. [MCP servers][beta-mcp]
 - **Configuration.** The spec recommends broadcasting the complete config when
   it changes, including client-initiated changes. [Set config](../../internal/agent/agent.go)
   only returns the response. Expand the scope of [#144](https://github.com/anesthetised/acplause/issues/144)
