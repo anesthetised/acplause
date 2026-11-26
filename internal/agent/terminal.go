@@ -16,6 +16,10 @@ const terminalChunkLimit = 16 * 1024
 // executeTool joins the invocation's publication pump before the caller can
 // finish the tool. The pipe writer only touches the tools-owned bounded buffer.
 func (s *Session) executeTool(ctx context.Context, call *preparedTool, toolEntry int, toolID string) toolOutput {
+	// Publishing in_progress can block on stdout after permission returned.
+	if err := ctx.Err(); err != nil {
+		return toolOutput{Failed: true, Output: err.Error()}
+	}
 	var observer *tools.ShellObserver
 	if call.observeShell != nil {
 		observer = call.observeShell()

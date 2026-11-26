@@ -84,7 +84,7 @@ func TestCallCancellableBackpressure(t *testing.T) {
 		sent := make(chan error, 1)
 		go func() { sent <- c.CallCancellable(ctx, "sent", nil, &struct{}{}) }()
 		synctest.Wait()
-		for range cap(c.queue) {
+		for range cap(c.ordinary.lines) {
 			if err := c.Notify("filler", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -103,7 +103,7 @@ func TestCallCancellableBackpressure(t *testing.T) {
 		if bytes.Contains(out.Bytes(), []byte("cancel_request")) || bytes.Contains(out.Bytes(), []byte("unsent")) {
 			t.Fatalf("unexpected request/cancellation: %s", out.Bytes())
 		}
-		if got := bytes.Count(out.Bytes(), []byte("\n")); got != cap(c.queue)+1 {
+		if got := bytes.Count(out.Bytes(), []byte("\n")); got != cap(c.ordinary.lines)+1 {
 			t.Fatalf("wrote %d messages", got)
 		}
 	})
@@ -158,7 +158,7 @@ func TestCallCancellableCloseUnderBackpressure(t *testing.T) {
 		errs := make(chan error, 2)
 		go func() { errs <- c.CallCancellable(context.Background(), "sent", nil, &struct{}{}) }()
 		synctest.Wait()
-		for range cap(c.queue) {
+		for range cap(c.ordinary.lines) {
 			_ = c.Notify("filler", nil)
 		}
 		go func() { errs <- c.CallCancellable(context.Background(), "unsent", nil, &struct{}{}) }()
@@ -206,34 +206,6 @@ func TestCallCancellableNotEnqueued(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestOrdinaryCallKeepsEnqueueAndPermissionSemantics(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		c, out, release := heldConn(t)
-		_ = c.Notify("block_writer", nil)
-		synctest.Wait()
-		for range cap(c.queue) {
-			_ = c.Notify("filler", nil)
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		errs := make(chan error, 1)
-		go func() { errs <- c.Call(ctx, "session/request_permission", nil, &struct{}{}) }()
-		synctest.Wait()
-		cancel()
-		synctest.Wait()
-		select {
-		case err := <-errs:
-			t.Fatalf("ordinary Call abandoned its enqueue: %v", err)
-		default:
-		}
-		release()
-		expectCallError(t, errs, context.Canceled)
-		_ = c.Close()
-		if !bytes.Contains(out.Bytes(), []byte("session/request_permission")) || bytes.Contains(out.Bytes(), []byte("cancel_request")) {
-			t.Fatalf("ordinary Call changed wire behavior: %s", out.Bytes())
-		}
-	})
 }
 
 func TestCallCancellableConcurrentRequests(t *testing.T) {

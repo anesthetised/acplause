@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
@@ -301,4 +304,60 @@ func TestResumeWaitsForCatalogOutsideOwnership(t *testing.T) {
 	if _, err := b.agent.session(id); err != nil {
 		t.Fatalf("resumed session not published: %v", err)
 	}
+}
+
+func TestCancelledCloseWaitsForPredecessorAndLeaseRelease(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, err := newSession(t.Context(), deps{}, newCatalog(nil), t.TempDir(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gate := &gatedReleaseStore{Store: &cancelledCreateStore{}, entered: make(chan struct{}, 1), release: make(chan struct{})}
+		previous := &sessionOperation{done: make(chan struct{}), cancel: func() {}}
+		a := &Agent{ctx: t.Context(), cfg: Config{Store: gate}, sessions: map[string]*Session{s.id: s},
+			operations: map[string]*sessionOperation{s.id: previous}}
+		in, peer := io.Pipe()
+		defer peer.Close()
+		var out bytes.Buffer
+		conn := jsonrpc.NewConn(in, &out, slog.New(slog.DiscardHandler))
+		go func() {
+			_ = conn.Serve(t.Context(), jsonrpc.Methods{
+				acp.MethodSessionClose: jsonrpc.Handle(a.closeSession),
+				"fence":                func(context.Context, json.RawMessage) (any, error) { return true, nil },
+			})
+		}()
+		_, err = fmt.Fprintf(peer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/close\",\"params\":{\"sessionId\":%q}}\n", s.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.WriteString(peer, `{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":1}}
+{"jsonrpc":"2.0","id":2,"method":"fence"}
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if got := out.String(); got != "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":true}\n" {
+			t.Fatalf("reader fence while predecessor is blocked: %s", got)
+		}
+		out.Reset()
+		close(previous.done)
+		<-gate.entered
+		synctest.Wait()
+		if out.Len() != 0 {
+			t.Fatalf("close answered before lease release: %s", out.String())
+		}
+		close(gate.release)
+		a.jobs.Wait()
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var response struct {
+			ID    int
+			Error *jsonrpc.Error
+		}
+		if err := json.Unmarshal(out.Bytes(), &response); err != nil || response.ID != 1 || response.Error == nil || response.Error.Code != -32800 {
+			t.Fatalf("close response after release: %s, %v", out.String(), err)
+		}
+	})
 }

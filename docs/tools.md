@@ -88,6 +88,10 @@ cancelled or unrecognised answer, is a rejection, which the model is told
 about. Automatic approval is the client's setting. See
 [ADR 0003](adr/0003-permissions.md).
 
+When a turn ends while waiting for permission, acplause sends
+`$/cancel_request` for the pending request. A late answer is ignored,
+including “allow always.” [ADR 0034](adr/0034-permission-request-cancellation.md)
+
 The shell tool also offers "allow always" and "reject always". The session remembers
 that choice for the exact command string in the same working directory and
 applies it without asking again, until the session ends, the process exits or

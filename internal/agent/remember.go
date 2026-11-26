@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -48,11 +49,11 @@ func (s *Session) canRemember() (ok bool, gen uint64) {
 
 // remember stores a decision answered under roots generation gen; one answered
 // before a root change is dropped, as ADR 0029 clears decisions with the roots.
-func (s *Session) remember(command string, allow bool, gen uint64) {
+func (s *Session) remember(ctx context.Context, command string, allow bool, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := s.rememberKey(command)
-	if gen != s.rootsGen {
+	if ctx.Err() != nil || gen != s.rootsGen {
 		return
 	}
 	if _, replacing := s.shellDecisions[key]; !replacing && len(s.shellDecisions) >= maxRemembered {

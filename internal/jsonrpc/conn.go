@@ -53,15 +53,34 @@ type Conn struct {
 
 	maxLine int // inbound line bound; a field so tests can shrink it
 
-	queue      chan []byte
+	ordinary   outputQueue
+	cancels    outputQueue
+	order      chan *outputQueue // one queue pointer per admitted line, in wire order
 	quit       chan struct{}
-	closeOnce  sync.Once
+	writeErr   error // published by closing writerDone
 	writerDone chan struct{}
 
 	mu       sync.Mutex
 	inflight map[ID]*context.CancelFunc // deferred requests by id; the latest wins a duplicate
-	calls    map[ID]chan *inbound       // our requests awaiting a response
+	calls    map[ID]pendingCall         // our requests awaiting a response
 	lastCall int64
+}
+
+// A slot is acquired before admission and released when the writer takes the
+// line. For a permission cancellation it is reserved before the request, so
+// the cancellation can always be enqueued even if stdout is blocked.
+type outputQueue struct {
+	lines chan []byte
+	slots chan struct{}
+}
+
+func newOutputQueue(capacity int) outputQueue {
+	return outputQueue{lines: make(chan []byte, capacity), slots: make(chan struct{}, capacity)}
+}
+
+type pendingCall struct {
+	done     chan *inbound
+	reserved bool // owns a slot in cancels until response, cancellation, or shutdown
 }
 
 // NewConn starts the writer for out; call Close to flush and stop it.
@@ -71,12 +90,14 @@ func NewConn(in io.Reader, out io.Writer, log *slog.Logger) *Conn {
 		out:        out,
 		log:        log,
 		maxLine:    maxLine,
-		queue:      make(chan []byte, 256),
+		ordinary:   newOutputQueue(256),
+		cancels:    newOutputQueue(256),
 		quit:       make(chan struct{}),
 		writerDone: make(chan struct{}),
 		inflight:   make(map[ID]*context.CancelFunc),
-		calls:      make(map[ID]chan *inbound),
+		calls:      make(map[ID]pendingCall),
 	}
+	c.order = make(chan *outputQueue, cap(c.ordinary.lines)+cap(c.cancels.lines))
 	go c.writeLoop()
 	return c
 }
@@ -86,52 +107,46 @@ func (c *Conn) Notify(method string, params any) error {
 	return c.send(notification{JSONRPC: Version, Method: method, Params: params})
 }
 
-// Call sends a request to the peer and decodes the response's result into
-// result. It blocks, so it must not be called from a Handler: the response
-// arrives through the read loop the handler would be holding up. It returns
-// the peer's *Error, ctx's error, or ErrClosed.
-func (c *Conn) Call(ctx context.Context, method string, params, result any) error {
-	return c.callPeer(ctx, method, params, result, false)
-}
-
-// CallCancellable works like Call, but also abandons a blocked enqueue when ctx
-// ends and sends a best-effort $/cancel_request for an enqueued pending request.
-// Cancellation never waits for output queue space; a delivered response wins.
-func (c *Conn) CallCancellable(ctx context.Context, method string, params, result any) error {
+// CallPermission reserves room for wire cancellation before sending a permission
+// request. If ctx ends while awaiting the response, it queues $/cancel_request
+// before returning. Only call from a worker: responses arrive on the read loop.
+func (c *Conn) CallPermission(ctx context.Context, method string, params, result any) error {
 	return c.callPeer(ctx, method, params, result, true)
 }
 
-func (c *Conn) callPeer(ctx context.Context, method string, params, result any, cancellable bool) error {
+// CallCancellable sends a request with best-effort cancellation, used for
+// forms. Both call methods abandon admission if ctx ends before enqueue.
+func (c *Conn) CallCancellable(ctx context.Context, method string, params, result any) error {
+	return c.callPeer(ctx, method, params, result, false)
+}
+
+func (c *Conn) callPeer(ctx context.Context, method string, params, result any, reserve bool) error {
+	if reserve {
+		if err := c.acquireSlot(ctx, &c.cancels); err != nil {
+			return err
+		}
+	}
 	c.mu.Lock()
 	c.lastCall++
 	id := ID(strconv.FormatInt(c.lastCall, 10))
-	done := make(chan *inbound, 1)
-	c.calls[id] = done
 	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		delete(c.calls, id)
-		c.mu.Unlock()
-	}()
-
-	// Permissions retain Call's enqueue semantics; only opt-in requests can
-	// abandon an enqueue before there is anything for the peer to cancel.
-	sendCtx := context.Background()
-	if cancellable {
-		sendCtx = ctx
-	}
-	if err := c.sendContext(sendCtx, request{JSONRPC: Version, ID: id, Method: method, Params: params}); err != nil {
+	call := pendingCall{done: make(chan *inbound, 1), reserved: reserve}
+	if err := c.sendOrdinary(ctx, request{JSONRPC: Version, ID: id, Method: method, Params: params}, id, call); err != nil {
+		if reserve {
+			<-c.cancels.slots
+		}
 		return err
 	}
 	var msg *inbound
 	select {
-	case msg = <-done:
+	case msg = <-call.done:
 	case <-ctx.Done():
-		if !cancellable || c.cancelCall(id) {
+		if c.cancelCall(id) {
 			return ctx.Err()
 		}
-		msg = <-done // deliver claimed the call and buffered its response
-	case <-c.quit:
+		msg = <-call.done // delivery or shutdown already claimed the waiter
+	}
+	if msg == nil {
 		return ErrClosed
 	}
 	if msg.failed() {
@@ -152,48 +167,58 @@ func (c *Conn) callPeer(ctx context.Context, method string, params, result any, 
 func (c *Conn) cancelCall(id ID) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.calls[id] == nil {
+	call, ok := c.calls[id]
+	if !ok {
 		return false
 	}
 	delete(c.calls, id)
-	select {
-	case <-c.quit:
-		return true
-	default:
+	queue := &c.cancels
+	if !call.reserved {
+		queue = &c.ordinary
+		select {
+		case queue.slots <- struct{}{}:
+		default:
+			return true // form cancellation never waits for space
+		}
 	}
 	// Locally generated numeric IDs and this fixed payload always marshal.
 	b, _ := Marshal(notification{JSONRPC: Version, Method: CancelRequestMethod, Params: struct {
 		RequestID ID `json:"requestId"`
 	}{id}})
-	select {
-	case c.queue <- b:
-	case <-c.quit:
-	default: // peer cancellation is best effort, even with a blocked writer
-	}
+	c.enqueueLocked(queue, b)
 	return true
 }
 
-// deliver hands a response to the Call awaiting it. Responses nobody awaits,
+// deliver hands a response to the call awaiting it. Responses nobody awaits,
 // such as late answers to abandoned calls, are dropped.
 func (c *Conn) deliver(msg *inbound) {
 	var id ID
 	_ = json.Unmarshal(msg.ID, &id)
 	c.mu.Lock()
-	done := c.calls[id]
-	delete(c.calls, id)
-	if done != nil {
-		done <- msg // buffered before cancellation can observe the removed waiter
+	call, ok := c.calls[id]
+	if ok {
+		c.completeLocked(id, call, msg)
 	}
 	c.mu.Unlock()
-	if done == nil {
+	if !ok {
 		c.log.Debug("ignoring response to no pending request", "id", string(msg.ID))
-		return
 	}
 }
 
+// completeLocked releases a waiter's reservation and publishes its response
+// (nil on shutdown) before cancellation can observe its removal.
+func (c *Conn) completeLocked(id ID, call pendingCall, msg *inbound) {
+	delete(c.calls, id)
+	if call.reserved {
+		<-c.cancels.slots
+	}
+	call.done <- msg
+}
+
 // Serve reads and dispatches messages until the input ends (returning nil),
-// reading fails, or ctx is done. Contexts of pending requests are cancelled
-// on return.
+// the connection closes, reading fails, or ctx is done. Contexts of pending
+// requests are cancelled on return. Transport shutdown interrupts a closable
+// input so the line reader can exit even when the peer keeps stdin open.
 func (c *Conn) Serve(ctx context.Context, methods Methods) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -204,6 +229,12 @@ func (c *Conn) Serve(ctx context.Context, methods Methods) error {
 
 	for {
 		select {
+		case <-c.quit:
+			cancel() // release a line already waiting for dispatch
+			if input, ok := c.in.(io.ReadCloser); ok {
+				_ = input.Close() // release a line still waiting for input
+			}
+			return ErrClosed
 		case line, ok := <-lines:
 			if !ok {
 				return <-readErr
@@ -215,12 +246,12 @@ func (c *Conn) Serve(ctx context.Context, methods Methods) error {
 	}
 }
 
-// Close flushes queued messages and stops the writer. Sending afterwards
-// fails with ErrClosed.
+// Close flushes queued messages, stops the writer and returns its first write
+// error, if any. Sending afterwards fails with ErrClosed.
 func (c *Conn) Close() error {
-	c.closeOnce.Do(func() { close(c.quit) })
+	c.stop()
 	<-c.writerDone
-	return nil
+	return c.writeErr
 }
 
 // maxLine bounds one inbound line. Image prompts at the ADR 0010 maximum
@@ -424,10 +455,23 @@ func (c *Conn) respond(r *response) {
 }
 
 func (c *Conn) send(v any) error {
-	return c.sendContext(context.Background(), v)
+	return c.sendOrdinary(context.Background(), v, "", pendingCall{})
 }
 
-func (c *Conn) sendContext(ctx context.Context, v any) error {
+// acquireSlot waits outside mu. sendOrdinary rechecks cancellation and closure
+// at admission because select may choose a slot when both are ready.
+func (c *Conn) acquireSlot(ctx context.Context, q *outputQueue) error {
+	select {
+	case q.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.quit:
+		return ErrClosed
+	}
+}
+
+func (c *Conn) sendOrdinary(ctx context.Context, v any, id ID, call pendingCall) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -435,42 +479,69 @@ func (c *Conn) sendContext(ctx context.Context, v any) error {
 	if err != nil {
 		return fmt.Errorf("jsonrpc: encode message: %w", err)
 	}
+	if err := c.acquireSlot(ctx, &c.ordinary); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	select {
 	case <-c.quit:
+		<-c.ordinary.slots
 		return ErrClosed
 	default:
 	}
+	if err := ctx.Err(); err != nil {
+		<-c.ordinary.slots
+		return err
+	}
+	if id != "" {
+		c.calls[id] = call
+	}
+	c.enqueueLocked(&c.ordinary, b)
+	return nil
+}
+
+// enqueueLocked is the single ordering point. The caller owns a slot in q,
+// and order has room for one pointer per slot across both physical FIFOs.
+func (c *Conn) enqueueLocked(q *outputQueue, b []byte) {
+	q.lines <- b
+	c.order <- q
+}
+
+// stop seals admission and releases all response waiters. Producers waiting
+// for capacity observe quit; the writer owns slots for already queued lines.
+func (c *Conn) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	select {
-	case c.queue <- b:
-		return nil
 	case <-c.quit:
-		return ErrClosed
-	case <-ctx.Done():
-		return ctx.Err()
+		return
+	default:
+	}
+	close(c.quit)
+	close(c.order)
+	for id, call := range c.calls {
+		c.completeLocked(id, call, nil)
 	}
 }
 
 func (c *Conn) writeLoop() {
 	defer close(c.writerDone)
-	for {
-		select {
-		case b := <-c.queue:
-			c.write(b)
-		case <-c.quit:
-			for {
-				select {
-				case b := <-c.queue:
-					c.write(b)
-				default:
-					return
-				}
-			}
+	for q := range c.order {
+		b := <-q.lines
+		<-q.slots
+		if c.writeErr != nil {
+			continue // discard remaining queued lines and release their slots
 		}
-	}
-}
-
-func (c *Conn) write(b []byte) {
-	if _, err := c.out.Write(append(b, '\n')); err != nil {
-		c.log.Error("write failed", "err", err)
+		b = append(b, '\n')
+		n, err := c.out.Write(b)
+		if err == nil && n != len(b) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			c.writeErr = err
+			c.stop()
+			c.log.Error("write failed", "err", err)
+		}
 	}
 }

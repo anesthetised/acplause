@@ -55,7 +55,7 @@ Where each edge comes from:
 | `mcp.server.mu` (`mcp/catalog.go`) | The server's `tools` | `server.refresh` revokes stale definitions under it, and `Tool.Call`'s admit check runs under it: the dispatch linearization point. A call is either admitted for the definition it was bound to or refused |
 | `mcp.peer.mu` (`mcp/client.go`) | `next`, `calls`, `failure` | `peer.complete` publishes a response before unlocking, so a later failure cannot overtake a received reply |
 | `mcp.httpTransport.mu` (`mcp/http.go`) | `version`, `sessionID`, `closed`; `jobs.Add` happens under it | `Close` waits for every admitted HTTP job |
-| `jsonrpc.Conn.mu` (`jsonrpc/conn.go`) | `inflight`, `calls`, `lastCall` | Matching responses and `$/cancel_request` to requests. `Conn.deliver` and `Conn.cancelCall` race under it, so a delivered response wins |
+| `jsonrpc.Conn.mu` (`jsonrpc/conn.go`) | `inflight`, `calls`, `lastCall`, output admission and closure | Registers an outgoing waiter at enqueue. Delivery, cancellation and shutdown claim it exactly once |
 | `jsonrpc.Reply.mu` (`jsonrpc/reply.go`) | `settled`, the stored result and the delivery binding | Only the first settlement counts, whether from work, the handler's return or a panic |
 | catalog cache mutex (`catalog.go`: `cacheCatalog`) | The loaded catalog, its age, the load in flight | At most one load runs; callers wait on its channel outside the lock |
 | `calibration.mu` (`calibration.go`) | Per-model byte/token ratios | Shared by every session of the process |
@@ -78,7 +78,7 @@ Not lock-guarded, by ownership instead:
 
 | Must not hold | Across | How the code avoids it |
 | --- | --- | --- |
-| any agent lock | `Conn.Call`, `Conn.CallCancellable` | `Session.requestPermission` and `Session.askUser` set state, release `Session.mu`, then call |
+| any agent lock | `Conn.CallPermission`, `Conn.CallCancellable` | `Session.requestPermission` and `Session.askUser` set state, release `Session.mu`, then call |
 | `Session.mu` | store I/O | `Session.flush` saves after unlocking; `Session.claimTurn` unlocks around `Store.Save` while `flushMu` keeps saves ordered |
 | `Session.mu` | MCP `Prepare`, `Change.Discard`, `Manager.Close`, `Manager.Recover` | `Session.Resume` prepares before locking and defers `Discard`; `Change.Commit` under the lock only swaps pointers. `Session.loseLocked` closes MCP on a goroutine |
 | `Session.mu` | `tools.New`, `Toolbox.Close`, `AGENTS.md` reads, model requests | `Session.Resume`, `Session.releaseToolbox`, `Session.refreshInstructions` and `Session.converse` do this work unlocked |
@@ -90,9 +90,31 @@ Not lock-guarded, by ownership instead:
 
 Live updates are the deliberate exception: `Session.send` notifies under
 `Session.mu`, so a resume snapshot and live state cannot reorder.
-`Conn.Notify` blocks only when the 256-entry output queue is full, and the
-writer goroutine takes no lock, so a slow client applies backpressure but
-cannot deadlock the agent.
+`Conn.Notify` applies backpressure when the 256 ordinary slots are occupied.
+The writer needs no agent lock.
+
+### Permission cancellation and stdout
+
+Each connection has two physical payload FIFOs. Before ordinary admission,
+`Conn.CallPermission` reserves one of 256 slots in the cancellation FIFO.
+Both capacity waits run on the worker without transport or session locks.
+Under `Conn.mu`, ordinary admission rechecks the context and connection,
+registers the waiter, queues the request, and appends its FIFO pointer to
+the writer's order channel. Every enqueue records one pointer there. Its
+capacity is the sum of both FIFO capacities, so a producer with a slot
+can always publish the line and its order under the lock.
+
+Delivery removes the waiter and releases its reservation. If cancellation
+claims the waiter first, it queues the original request ID in the reserved
+slot before returning. The writer releases that slot when it dequeues the
+notification. A form uses a free ordinary slot when available. The worker
+checks cancellation again before tool execution and under `Session.mu`
+before storing a remembered decision.
+
+Transport shutdown seals both FIFOs, releases pending calls and wakes
+capacity waiters. The sole writer drains lines in order. After a failed
+write it discards remaining lines and releases their slots.
+[ADR 0034](adr/0034-permission-request-cancellation.md)
 
 ## Goroutines
 
@@ -101,8 +123,8 @@ Per connection:
 | Goroutine | Started by | Ends |
 | --- | --- | --- |
 | Read loop: handlers in arrival order | `Conn.Serve`, on `main`'s goroutine | input ends or the signal context is cancelled |
-| Line reader | `Conn.Serve` → `readLines` | input ends, or at its next line after `Serve` returns |
-| Writer, the only stdout writer | `jsonrpc.NewConn` → `Conn.writeLoop` | `Conn.Close`, after flushing the queue |
+| Line reader | `Conn.Serve` → `readLines` | input ends, transport shutdown interrupts a closable input, or at its next line after `Serve` returns |
+| Writer, the only stdout writer | `jsonrpc.NewConn` → `Conn.writeLoop` | `Conn.Close`, after flushing both FIFOs, or on write failure |
 | Catalog load | `agent.New` (`go a.catalog()`), then one per load or stale reload in `cacheCatalog` | the load finishes (bounded by `catalogTimeout`) |
 | Lease renewal | `agent.New` → `Agent.renewLeases` | `Agent.ctx` is cancelled |
 | Selection save, chained in request order | `Agent.rememberSelection` | its save finishes |
@@ -150,7 +172,7 @@ when it is answered, on `$/cancel_request`, or when `Serve` returns.
 | `session/new` | the goroutine in `Agent.newSession` |
 | `session/list` | the job in `Agent.listSessions` |
 | `session/resume` | the operation goroutine (`Agent.resumeSession`) |
-| `session/close`, `session/delete` | the operation goroutine, or the close handler when there is no active session or earlier work to wait for. Terminal cleanup runs even if the reply was already rejected as cancelled |
+| `session/close`, `session/delete` | the operation goroutine, or the close handler when there is no active session or earlier work to wait for. Close settles after cleanup even when cancelled. Delete may reject a cancelled waiter early and still runs terminal cleanup |
 | `session/prompt`, before submission | the handler when the session is unknown or lost; otherwise `Agent.startOperation`, when the prompt waited behind setup and was cancelled, setup failed, or the session is gone |
 | `session/prompt`, after submission | the `Session`: `Session.submit` (in-memory recorded key, closed, lost, no model), `Session.resolveRecorded` (stored owner check), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
 | any handler that panics or a method that does not exist | `Conn` itself |
@@ -204,7 +226,7 @@ pending resume publishes afterwards.
   tail and adds it to `Agent.jobs`. The operation's context also ends with
   `Agent.ctx`.
 - `Agent.startOperation` waits on a goroutine for `previous.done`. If its own
-  context ends first, it rejects the reply as cancelled and still waits for
+  context ends first, operations other than close reject the reply as cancelled and still wait for
   its predecessor, so cancellation cannot let a later operation overtake
   setup. Closing `done`, under `Agent.mu`, publishes `err` and removes the
   operation if it is still the tail.
@@ -225,7 +247,8 @@ pending resume publishes afterwards.
   behind pending terminal cleanup waits for that cleanup without cancelling
   it. `Agent.terminalSession` catches a session that a cancelled resume
   published late, closes it and releases the lease. `delete` also removes
-  the record.
+  the record. A cancelled close returns `-32800` after its predecessor, active
+  worker and lease release finish.
 - `session/set_config_option` refuses a mode change while any operation is
   pending or a prompt is queued or running. It reads pending setup under
   `Agent.mu`, then checks the queue and state under `Session.mu` without
