@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
+	"fmt"
 	"unicode/utf8"
 
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -18,8 +19,8 @@ const (
 )
 
 // ContentBlock is an ACP content block. Blocks decoded from the wire keep
-// their exact JSON, so echoing a user's prompt back preserves unknown types
-// and fields; the parsed fields cover what the agent reads.
+// their exact JSON for echo and replay. The parsed fields cover what the
+// agent reads. PromptRequest validates new submissions separately.
 type ContentBlock struct {
 	Type     string
 	Text     string // text
@@ -74,19 +75,28 @@ func (b ContentBlock) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements json.Unmarshaler.
 func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 	var discriminator struct {
-		Type string `json:"type"`
+		Type string `json:"type,case:strict"`
 	}
 	if err := json.Unmarshal(data, &discriminator); err != nil {
 		return err
 	}
 	if discriminator.Type == "" {
-		return errors.New("content block type is required")
+		// Historical content used case-insensitive decoding. Keep it readable;
+		// prompt validation still requires a canonical discriminator.
+		var legacy struct{ Type string }
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return err
+		}
+		if legacy.Type == "" {
+			return errors.New("content block type is required")
+		}
+		discriminator.Type = legacy.Type
 	}
 	parsed := ContentBlock{Type: discriminator.Type}
 	switch discriminator.Type {
 	case ContentText:
 		var fields struct {
-			Text string `json:"text"`
+			Text string `json:"text,case:strict"`
 		}
 		if err := json.Unmarshal(data, &fields); err != nil {
 			return err
@@ -94,8 +104,8 @@ func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 		parsed.Text = fields.Text
 	case ContentResourceLink:
 		var fields struct {
-			URI  string `json:"uri"`
-			Name string `json:"name"`
+			URI  string `json:"uri,case:strict"`
+			Name string `json:"name,case:strict"`
 		}
 		if err := json.Unmarshal(data, &fields); err != nil {
 			return err
@@ -103,8 +113,8 @@ func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 		parsed.URI, parsed.Name = fields.URI, fields.Name
 	case ContentImage:
 		var fields struct {
-			Data     string `json:"data"`
-			MimeType string `json:"mimeType"`
+			Data     string `json:"data,case:strict"`
+			MimeType string `json:"mimeType,case:strict"`
 		}
 		if err := json.Unmarshal(data, &fields); err != nil {
 			return err
@@ -112,20 +122,54 @@ func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 		parsed.Data, parsed.MimeType = fields.Data, fields.MimeType
 	case ContentResource:
 		var fields struct {
-			Resource json.RawMessage `json:"resource"`
+			Resource json.RawMessage `json:"resource,case:strict"`
 		}
 		if err := json.Unmarshal(data, &fields); err != nil {
 			return err
 		}
 		if fields.Resource != nil {
-			if err := json.Unmarshal(fields.Resource, &parsed.Resource); err != nil {
+			var resource *embeddedResourceFields
+			if err := json.Unmarshal(fields.Resource, &resource); err != nil {
 				return err
+			}
+			if resource != nil {
+				var text *string
+				if err := decodeOptionalString(resource.Text, &text); err != nil {
+					var blob *string
+					if decodeOptionalString(resource.Blob, &blob) != nil || blob == nil {
+						return err
+					}
+					text = nil
+				}
+				parsed.Resource = &Resource{Text: text}
+				if resource.URI != nil {
+					parsed.Resource.URI = *resource.URI
+				}
+				if resource.MimeType != nil {
+					parsed.Resource.MimeType = *resource.MimeType
+				}
 			}
 		}
 	}
 	parsed.raw = append(json.RawMessage(nil), data...)
 	*b = parsed
 	return nil
+}
+
+// embeddedResourceFields keeps the two payload alternatives separate. A
+// property belonging only to the other alternative is opaque.
+type embeddedResourceFields struct {
+	URI      *string         `json:"uri,case:strict"`
+	MimeType *string         `json:"mimeType,case:strict"`
+	Text     json.RawMessage `json:"text,case:strict"`
+	Blob     json.RawMessage `json:"blob,case:strict"`
+}
+
+func decodeOptionalString(raw json.RawMessage, into **string) error {
+	if raw == nil {
+		return nil
+	}
+	return json.Unmarshal(raw, into)
 }
 
 // IdempotencyKey identifies one prompt within a session. The zero value is unkeyed.
@@ -155,11 +199,19 @@ type PromptRequest struct {
 
 // Validate implements jsonrpc's params validation.
 func (r PromptRequest) Validate() error {
-	var prompt error
 	if r.Prompt == nil {
-		prompt = errors.New("prompt is required")
+		return errors.Join(requireSessionID(r.SessionID), errors.New("prompt is required"))
 	}
-	return errors.Join(requireSessionID(r.SessionID), prompt)
+	if err := requireSessionID(r.SessionID); err != nil {
+		return err
+	}
+	// Beta.4 permits accepting an empty array. Keep the existing behavior.
+	for i, b := range r.Prompt {
+		if err := b.validatePrompt(); err != nil {
+			return fmt.Errorf("prompt[%d]: %w", i, err)
+		}
+	}
+	return nil
 }
 
 // PromptResponse acknowledges insertion of the user message.
