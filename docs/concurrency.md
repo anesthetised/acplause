@@ -22,7 +22,7 @@ together. A lock may be skipped, but never taken after a later one.
 5. `mcp.Manager.mu`
 6. `mcp.server.mu` | `mcp.peer.mu`
 7. `jsonrpc.Reply.mu`
-8. `jsonrpc.Conn.mu` | the batch collector's mutex in `Conn.handleBatch`
+8. `jsonrpc.Conn.mu`
 
 Leaves, never held while another lock is taken: the catalog cache mutex in
 `cacheCatalog`, `calibration.mu`, `mcp.httpTransport.mu`, and outside these packages
@@ -101,7 +101,6 @@ Per connection:
 | Read loop: handlers in arrival order | `Conn.Serve`, on `main`'s goroutine | input ends or the signal context is cancelled |
 | Line reader | `Conn.Serve` → `readLines` | input ends, or at its next line after `Serve` returns |
 | Writer, the only stdout writer | `jsonrpc.NewConn` → `Conn.writeLoop` | `Conn.Close`, after flushing the queue |
-| Batch response collector | `Conn.handleBatch`, one per batch | every request in the batch is answered |
 | Catalog load | `agent.New` (`go a.catalog()`), then one per load or stale reload in `cacheCatalog` | the load finishes (bounded by `catalogTimeout`) |
 | Lease renewal | `agent.New` → `Agent.renewLeases` | `Agent.ctx` is cancelled |
 | Selection save, chained in request order | `Agent.rememberSelection` | its save finishes |
@@ -165,8 +164,8 @@ ownership-checked `Store.Save`; its successful commit is the boundary. Without
 a store, or after a save failure that is not a loss, the in-memory fallback
 crosses it too. Before the boundary, `insert` rejects: `errSessionLost`, `-32800`
 Request cancelled, invalid images or an unusable model. After it, `insert`
-resolves `messageId` under `Session.mu` before sending `user_message`, so for
-a single request the response precedes the update. The turn's context
+resolves `messageId` under `Session.mu` before sending `user_message`, so the
+response precedes the update on stdout. The turn's context
 derives from `Session.ctx`, not from the request, so answering the request
 does not stop the turn. `Session.runTurn` then sends exactly one idle
 `state_update` under `Session.mu`, `cancelled` whenever the turn's context

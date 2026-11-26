@@ -6,13 +6,11 @@ at commit `840484ff`. See the [schema pin](../../testdata/schema/v2/VERSION)
 and the beta.4 audit below. The [T3 smoke record](t3-first-class-smoke.md)
 tracks actual client rendering.
 
-The e2e harness (`e2e/`) validates each individual message the agent writes
-against the schema. The reader unwraps batch arrays before validation, so
-these checks do not detect a prohibited array on stdout.
-[#220](https://github.com/anesthetised/acplause/issues/220) covers validation
-of complete output lines. The test references point to relevant files. The
-matrix was first compiled on 2026-10-22 from the schema's `x-method` values,
-`SessionUpdate` variants and the Go types in `internal/acp`.
+The e2e harness (`e2e/`) validates each complete stdout line against the
+pinned root schema, then checks the response, error or method parameters
+against their specific definitions. The test references point to relevant
+files. The matrix was first compiled on 2026-10-22 from the schema's
+`x-method` values, `SessionUpdate` variants and the Go types in `internal/acp`.
 
 Legend: **Covered** = implemented and tested; **Deferred #N** = not
 implemented, parked by the maintainer (needs a design decision first);
@@ -37,7 +35,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | `elicitation/complete` | agent→client | Deferred #140 | no non-auth producer |
 | `$/cancel_request` | both | Covered | `internal/jsonrpc/cancellable_test.go`, `internal/jsonrpc/conn_test.go` |
 | `auth/login`, `auth/logout` | client→agent | Excluded | ADR 0023 |
-| JSON-RPC batch rejection | inbound | Gap [#220](https://github.com/anesthetised/acplause/issues/220) | `internal/jsonrpc/conn.go` still dispatches batches |
+| [JSON-RPC batch rejection][beta-batches] | inbound | Covered | `internal/jsonrpc/conn_test.go`, `e2e/protocol_test.go`, `e2e/prompt_response_order_test.go` |
 
 ## `session/update` variants
 
@@ -133,11 +131,6 @@ capability here. [Upstream schema changelog][beta-changelog]
   and the live-update cut point, including empty replay. Its tests should also
   exercise slow resume setup while live updates and client requests are pending.
   [Replay completion][beta-replay]
-- **Batch rejection.** A JSON array must receive one `-32600` error with
-  `id: null`. [The transport](../../internal/jsonrpc/conn.go) dispatches nonempty
-  batches, and [the e2e reader](../../e2e/agent_test.go) unwraps response arrays
-  before schema validation. [#220](https://github.com/anesthetised/acplause/issues/220)
-  covers raw envelopes and confirms that batch entries never run. [No batches][beta-batches]
 - **Permission cancellation.** Session cancel and close must cancel the
   pending permission requests they stop. [The permission handler](../../internal/agent/turn.go)
   uses `Call`, which abandons the wait without sending `$/cancel_request`.

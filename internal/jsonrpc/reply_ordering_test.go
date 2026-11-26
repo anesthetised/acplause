@@ -56,54 +56,44 @@ func TestIssue54EarlyReplyPrecedesNotification(t *testing.T) {
 }
 
 func TestIssue54SettlementWinsOverHandlerCompletion(t *testing.T) {
-	for _, batch := range []bool{false, true} {
-		for _, reject := range []bool{false, true} {
-			for _, completion := range []string{"return", "error", "panic"} {
-				name := "resolve/"
-				want := `{"jsonrpc":"2.0","id":1,"result":"first"}`
-				if reject {
-					name = "reject/"
-					want = `{"jsonrpc":"2.0","id":1,"error":{"code":-32800,"message":"first"}}`
-				}
-				if batch {
-					name = "batch/" + name
-					want = "[" + want + "]"
-				}
-				t.Run(name+completion, func(t *testing.T) {
-					p := newPeer(t, Methods{
-						"first": func(ctx context.Context, _ json.RawMessage) (any, error) {
-							reply := NewReply(ctx)
-							if reject {
-								reply.Reject(NewError(-32800, "first"))
-							} else {
-								reply.Resolve("first")
-							}
-							switch completion {
-							case "error":
-								return nil, errors.New("later error")
-							case "panic":
-								panic("later panic")
-							default:
-								return "later return", nil
-							}
-						},
-						"echo": echo,
-					})
-					request := `{"jsonrpc":"2.0","id":1,"method":"first"}`
-					if batch {
-						request = "[" + request + "]"
-					}
-					p.send(request)
-					p.expect(want)
-					p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":"next"}`)
-					p.expect(`{"jsonrpc":"2.0","id":2,"result":"next"}`)
-					p.conn.mu.Lock()
-					defer p.conn.mu.Unlock()
-					if len(p.conn.inflight) != 0 {
-						t.Fatal("completed request retained for cancellation")
-					}
-				})
+	for _, reject := range []bool{false, true} {
+		for _, completion := range []string{"return", "error", "panic"} {
+			name := "resolve/"
+			want := `{"jsonrpc":"2.0","id":1,"result":"first"}`
+			if reject {
+				name = "reject/"
+				want = `{"jsonrpc":"2.0","id":1,"error":{"code":-32800,"message":"first"}}`
 			}
+			t.Run(name+completion, func(t *testing.T) {
+				p := newPeer(t, Methods{
+					"first": func(ctx context.Context, _ json.RawMessage) (any, error) {
+						reply := NewReply(ctx)
+						if reject {
+							reply.Reject(NewError(-32800, "first"))
+						} else {
+							reply.Resolve("first")
+						}
+						switch completion {
+						case "error":
+							return nil, errors.New("later error")
+						case "panic":
+							panic("later panic")
+						default:
+							return "later return", nil
+						}
+					},
+					"echo": echo,
+				})
+				p.send(`{"jsonrpc":"2.0","id":1,"method":"first"}`)
+				p.expect(want)
+				p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":"next"}`)
+				p.expect(`{"jsonrpc":"2.0","id":2,"result":"next"}`)
+				p.conn.mu.Lock()
+				defer p.conn.mu.Unlock()
+				if len(p.conn.inflight) != 0 {
+					t.Fatal("completed request retained for cancellation")
+				}
+			})
 		}
 	}
 }
@@ -223,55 +213,6 @@ func TestIssue54PendingReplyAllowsUnrelatedOutput(t *testing.T) {
 	p.expect(`{"jsonrpc":"2.0","id":1,"result":"finished"}`)
 }
 
-func TestIssue54BatchAdmitsCancellationBeforeOneResponseArray(t *testing.T) {
-	p := newPeer(t, Methods{
-		"now": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			reply := NewReply(ctx)
-			reply.Resolve("immediate")
-			return reply, nil
-		},
-		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			reply := NewReply(ctx)
-			context.AfterFunc(ctx, func() { reply.Reject(NewError(-32800, "cancelled")) })
-			return reply, nil
-		},
-		"echo": echo,
-	})
-	p.send(`[{"jsonrpc":"2.0","id":1,"method":"now"},{"jsonrpc":"2.0","id":2,"method":"wait"},{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":2}}]`)
-	var responses []struct {
-		ID     int    `json:"id"`
-		Result string `json:"result"`
-		Error  *Error `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(p.recv()), &responses); err != nil {
-		t.Fatal(err)
-	}
-	if len(responses) != 2 {
-		t.Fatalf("batch = %+v; want exactly two responses in one array", responses)
-	}
-	seen := make(map[int]bool)
-	for _, response := range responses {
-		if seen[response.ID] {
-			t.Fatalf("duplicate batch response = %+v", response)
-		}
-		seen[response.ID] = true
-		switch response.ID {
-		case 1:
-			if response.Result != "immediate" || response.Error != nil {
-				t.Fatalf("synchronous reply in batch = %+v", response)
-			}
-		case 2:
-			if response.Error == nil || response.Error.Code != -32800 {
-				t.Fatalf("cancelled reply in batch = %+v", response)
-			}
-		default:
-			t.Fatalf("unexpected batch response = %+v", response)
-		}
-	}
-	p.send(`{"jsonrpc":"2.0","id":3,"method":"echo","params":"still serving"}`)
-	p.expect(`{"jsonrpc":"2.0","id":3,"result":"still serving"}`)
-}
-
 func TestIssue54ServeExitCancelsPendingReply(t *testing.T) {
 	p := newPeer(t, Methods{
 		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
@@ -291,25 +232,6 @@ func TestIssue54ServeExitCancelsPendingReply(t *testing.T) {
 	if err := p.conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestIssue54BatchNotificationCanPrecedeResponseArray(t *testing.T) {
-	var conn *Conn
-	p := newPeer(t, Methods{
-		"early": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			reply := NewReply(ctx)
-			reply.Resolve("first")
-			if err := conn.Notify("session/update", map[string]string{"after": "settlement"}); err != nil {
-				t.Error(err)
-			}
-			return reply, nil
-		},
-		"echo": echo,
-	})
-	conn = p.conn
-	p.send(`[{"jsonrpc":"2.0","id":1,"method":"early"},{"jsonrpc":"2.0","id":2,"method":"echo","params":"second"}]`)
-	p.expect(`{"jsonrpc":"2.0","method":"session/update","params":{"after":"settlement"}}`)
-	p.expect(`[{"jsonrpc":"2.0","id":1,"result":"first"},{"jsonrpc":"2.0","id":2,"result":"second"}]`)
 }
 
 func TestIssue54ReplyPreservesBackpressureAndClose(t *testing.T) {

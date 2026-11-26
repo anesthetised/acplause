@@ -22,30 +22,20 @@ func TestIssue54PromptResponsePrecedesUserMessage(t *testing.T) {
 	}
 }
 
-func TestIssue54BatchPromptKeepsSingleResponseArray(t *testing.T) {
+func TestArrayPromptDoesNotStartATurn(t *testing.T) {
 	t.Parallel()
 	model := newMockLLM(t)
 	model.enqueue(reply("done"))
 	a, sid, _ := started(t, model)
-	a.mu.Lock()
-	a.methods[`"issue54-prompt"`] = "session/prompt"
-	a.methods[`"issue54-initialize"`] = "initialize"
-	a.mu.Unlock()
-	a.write([]any{
-		map[string]any{"jsonrpc": "2.0", "id": "issue54-prompt", "method": "session/prompt", "params": map[string]any{
-			"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "batch prompt"}},
-		}},
-		map[string]any{"jsonrpc": "2.0", "id": "issue54-initialize", "method": "initialize", "params": map[string]any{
-			"protocolVersion": 2, "info": map[string]any{"name": "e2e", "version": "1"},
-		}},
-	})
-	messageID, prompt := a.accepted(`"issue54-prompt"`)
-	initialized := a.response(`"issue54-initialize"`)
-	if !prompt.batch || !initialized.batch || prompt.seq != initialized.seq || initialized.Error != nil {
-		t.Fatalf("batch split or failed: prompt=%+v initialize=%+v", prompt, initialized)
+	a.write([]any{map[string]any{"jsonrpc": "2.0", "id": "array-prompt", "method": "session/prompt", "params": map[string]any{
+		"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "embedded"}},
+	}}})
+	if m := a.response("null"); m.Error == nil || m.Error.Code != -32600 {
+		t.Fatalf("array prompt response: %+v", m)
 	}
+	messageID, _ := a.accepted(a.prompt(sid, "standalone"))
 	user := find(t, a.untilIdle(sid), "user_message")
-	if user.MessageID != messageID {
-		t.Fatalf("batch acknowledged %q, user_message echoed %q", messageID, user.MessageID)
+	if user.MessageID != messageID || user.text() != "standalone" || model.requestCount() != 1 {
+		t.Fatalf("first turn echoed %q (%s), want standalone (%s) with one model request; got %d requests", user.text(), user.MessageID, messageID, model.requestCount())
 	}
 }

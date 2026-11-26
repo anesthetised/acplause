@@ -284,84 +284,46 @@ func (c *Conn) handleLine(ctx context.Context, methods Methods, line []byte) {
 		return
 	}
 	if line[0] == '[' {
-		c.handleBatch(ctx, methods, line)
+		c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "ACP does not support JSON-RPC batches")))
 		return
 	}
-	c.dispatch(ctx, methods, line, c.respond)
+	c.dispatch(ctx, methods, line)
 }
 
-// handleBatch admits every entry in order, then writes one response array
-// once all requests in the batch are answered. All-notification batches get
-// no response.
-func (c *Conn) handleBatch(ctx context.Context, methods Methods, line []byte) {
-	var entries []json.RawMessage
-	if err := json.Unmarshal(line, &entries); err != nil || len(entries) == 0 {
-		c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid batch")))
-		return
-	}
-
-	var (
-		mu        sync.Mutex
-		responses []*response
-		pending   sync.WaitGroup
-	)
-	collect := func(r *response) {
-		mu.Lock()
-		responses = append(responses, r)
-		mu.Unlock()
-		pending.Done()
-	}
-	for _, entry := range entries {
-		pending.Add(1)
-		if !c.dispatch(ctx, methods, entry, collect) {
-			pending.Done()
-		}
-	}
-	go func() {
-		pending.Wait()
-		if len(responses) > 0 {
-			c.sendOrLog(responses)
-		}
-	}()
-}
-
-// dispatch handles one message and reports whether respond will be called
-// for it, now or later.
-func (c *Conn) dispatch(ctx context.Context, methods Methods, raw []byte, respond func(*response)) bool {
+func (c *Conn) dispatch(ctx context.Context, methods Methods, raw []byte) {
 	var msg inbound
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid request: %v", err)))
-		return true
+		c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid request: %v", err)))
+		return
 	}
 	if msg.isResponse() {
 		c.deliver(&msg)
-		return false
+		return
 	}
 
 	var id ID
 	if msg.ID != nil {
 		if err := json.Unmarshal(msg.ID, &id); err != nil {
-			respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid request: %v", err)))
-			return true
+			c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid request: %v", err)))
+			return
 		}
 	}
 	if msg.JSONRPC != Version || msg.Method == "" {
-		respond(errorResponse(id, NewError(CodeInvalidRequest, "invalid request: want jsonrpc %q and a method", Version)))
-		return true
+		c.respond(errorResponse(id, NewError(CodeInvalidRequest, "invalid request: want jsonrpc %q and a method", Version)))
+		return
 	}
 
 	if msg.ID == nil {
 		c.notify(ctx, methods, msg.Method, msg.Params)
-		return false
+		return
 	}
-	c.call(ctx, methods, id, msg.Method, msg.Params, respond)
-	return true
+	c.call(ctx, methods, id, msg.Method, msg.Params)
 }
 
-func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, params json.RawMessage, respond func(*response)) {
+func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, params json.RawMessage) {
 	handler, ok := methods[method]
 	if !ok {
-		respond(errorResponse(id, NewError(CodeMethodNotFound, "method not found: %s", method)))
+		c.respond(errorResponse(id, NewError(CodeMethodNotFound, "method not found: %s", method)))
 		return
 	}
 
@@ -371,7 +333,7 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 	reply.bind(func(result any, err error) {
 		c.untrack(id, tracked)
 		cancel()
-		respond(newResponse(id, result, err))
+		c.respond(newResponse(id, result, err))
 	})
 	ctx = context.WithValue(ctx, replyContextKey{}, reply)
 	result, err := c.invoke(ctx, method, handler, params)
@@ -450,10 +412,8 @@ func (c *Conn) untrack(id ID, tracked *context.CancelFunc) {
 	}
 }
 
-func (c *Conn) respond(r *response) { c.sendOrLog(r) }
-
-func (c *Conn) sendOrLog(v any) {
-	if err := c.send(v); err != nil {
+func (c *Conn) respond(r *response) {
+	if err := c.send(r); err != nil {
 		c.log.Warn("dropping outgoing message", "err", err)
 	}
 }
