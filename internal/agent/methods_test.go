@@ -240,6 +240,15 @@ func (c *acpClient) fails(method string, params any, code int) *jsonrpc.Error {
 	return r.Error
 }
 
+// sessionNotFound checks the requested ID in the JSON-RPC error data.
+func (c *acpClient) sessionNotFound(method string, params map[string]any) {
+	c.t.Helper()
+	err := c.fails(method, params, acp.CodeResourceNotFound)
+	if data, ok := err.Data.(map[string]any); !ok || data["sessionId"] != params["sessionId"] {
+		c.t.Fatalf("%s: error data = %#v, want sessionId %q", method, err.Data, params["sessionId"])
+	}
+}
+
 func (c *acpClient) notify(method string, params any) {
 	c.write(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 }
@@ -343,7 +352,7 @@ func TestSessionConfigOptions(t *testing.T) {
 	c.fails(acp.MethodSessionSetConfig, set(configModel, "no-tools"), jsonrpc.CodeInvalidParams)
 	c.fails(acp.MethodSessionSetConfig, set("temperature", "1"), jsonrpc.CodeInvalidParams)
 	c.fails(acp.MethodSessionSetConfig, map[string]any{"sessionId": sid, "configId": configModel, "type": "boolean", "value": true}, jsonrpc.CodeInvalidParams)
-	c.fails(acp.MethodSessionSetConfig, map[string]any{"sessionId": "missing", "configId": configModel, "type": acp.ConfigValueID, "value": "m"}, acp.CodeResourceNotFound)
+	c.sessionNotFound(acp.MethodSessionSetConfig, map[string]any{"sessionId": "Missing<&-字", "configId": configModel, "type": acp.ConfigValueID, "value": "m"})
 
 	// A new session starts with the last choice, effort included.
 	var res acp.NewSessionResponse
@@ -418,7 +427,7 @@ func TestPromptOverProtocol(t *testing.T) {
 	cwd := t.TempDir()
 	sid := c.newSession(cwd)
 
-	c.fails(acp.MethodSessionPrompt, map[string]any{"sessionId": "missing", "prompt": []any{map[string]any{"type": "text", "text": "hi"}}}, acp.CodeResourceNotFound)
+	c.sessionNotFound(acp.MethodSessionPrompt, map[string]any{"sessionId": "missing", "prompt": []any{map[string]any{"type": "text", "text": "hi"}}})
 
 	c.fails(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "hi"}}}, jsonrpc.CodeInvalidParams)
 
@@ -542,11 +551,14 @@ func TestSessionListResumeCloseDelete(t *testing.T) {
 	c.untilIdle(sid)
 	c.fails(acp.MethodSessionResume, resume(cwd, map[string]any{"type": "_later"}), jsonrpc.CodeInvalidParams)
 	c.fails(acp.MethodSessionResume, resume(t.TempDir(), nil), jsonrpc.CodeInvalidParams)
-	c.fails(acp.MethodSessionResume, map[string]any{"sessionId": "missing", "cwd": cwd, "mcpServers": []any{}}, acp.CodeResourceNotFound)
+	c.sessionNotFound(acp.MethodSessionResume, map[string]any{"sessionId": "missing", "cwd": cwd, "mcpServers": []any{}})
 
 	c.ok(acp.MethodSessionClose, map[string]any{"sessionId": sid}, nil)
-	c.fails(acp.MethodSessionClose, map[string]any{"sessionId": sid}, acp.CodeResourceNotFound)
-	c.fails(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "hi"}}}, acp.CodeResourceNotFound)
+	c.ok(acp.MethodSessionClose, map[string]any{"sessionId": sid}, nil)
+	c.ok(acp.MethodSessionClose, map[string]any{"sessionId": "missing"}, nil)
+	c.ok(acp.MethodSessionDelete, map[string]any{"sessionId": "missing"}, nil)
+	c.sessionNotFound(acp.MethodSessionSetConfig, map[string]any{"sessionId": sid, "configId": configModel, "type": acp.ConfigValueID, "value": "m"})
+	c.sessionNotFound(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "hi"}}})
 	c.fails(acp.MethodSessionResume, resume(t.TempDir(), nil), jsonrpc.CodeInvalidParams)
 
 	// Resuming a closed session loads it from the store and replays it.
@@ -560,11 +572,12 @@ func TestSessionListResumeCloseDelete(t *testing.T) {
 	c.untilIdle(sid)
 
 	c.ok(acp.MethodSessionDelete, map[string]any{"sessionId": sid}, nil)
+	c.ok(acp.MethodSessionDelete, map[string]any{"sessionId": sid}, nil)
 	c.ok(acp.MethodSessionList, map[string]any{}, &list)
 	if len(list.Sessions) != 0 {
 		t.Fatalf("deleted session listed: %+v", list)
 	}
-	c.fails(acp.MethodSessionResume, resume(cwd, nil), acp.CodeResourceNotFound)
+	c.sessionNotFound(acp.MethodSessionResume, resume(cwd, nil))
 }
 
 func TestListSessionsPages(t *testing.T) {
@@ -595,6 +608,8 @@ func TestResumeTakesOverFromAnotherProcess(t *testing.T) {
 
 	b := startAgent(t, dir, modelB, nil)
 	b.initialize()
+	b.sessionNotFound(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []acp.ContentBlock{acp.Text("before resume")}})
+	b.ok(acp.MethodSessionClose, map[string]any{"sessionId": sid}, nil)
 	b.ok(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{}}, nil)
 	b.untilIdle(sid)
 	b.selectModel(sid, "m") // A may not have saved its selection yet

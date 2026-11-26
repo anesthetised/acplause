@@ -355,7 +355,7 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 		}
 		return s.Submit(ctx, req.Prompt), nil
 	}
-	op := a.reserveOperation(ctx, req.SessionID, false)
+	op := a.reserveOperation(ctx, req.SessionID, false, false)
 	op.prompt = true
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		// A prompt depends on the requested setup, not on whether an earlier
@@ -429,7 +429,7 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
 		return nil, acp.ErrInvalidParams("unsupported replayFrom type %q", req.ReplayFrom.Type)
 	}
-	op := a.reserveOperation(ctx, req.SessionID, false)
+	op := a.reserveOperation(ctx, req.SessionID, false, false)
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s, err := a.resume(ctx, req)
 		if err != nil {
@@ -575,29 +575,30 @@ func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.L
 func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (any, error) {
 	a.mu.Lock()
 	s := a.sessions[req.SessionID]
-	// Only pending setup can open an absent session. A close/delete retained
-	// until deferred cleanup (or prompts queued after it) cannot reopen it.
-	setup := a.operations[req.SessionID]
-	for setup != nil && setup.prompt {
-		setup = setup.previous
+	// Only pending setup can open an absent session. A close behind terminal
+	// cleanup must wait for it without cancelling it (in particular, a delete
+	// still needs its request context to remove the stored record).
+	previous := a.operations[req.SessionID]
+	for previous != nil && previous.prompt {
+		previous = previous.previous
 	}
-	pending := setup != nil && !setup.terminal
-	if pending {
+	if previous != nil {
 		select {
-		case <-setup.done:
-			pending = false
+		case <-previous.done:
+			previous = nil
 		default:
 		}
 	}
 	delete(a.sessions, req.SessionID)
 	a.mu.Unlock()
-	if s == nil && !pending {
-		return nil, acp.ErrSessionNotFound(req.SessionID)
+	if s == nil && previous == nil {
+		return acp.CloseSessionResponse{}, nil
 	}
 	if s != nil {
 		s.Cancel()
 	}
-	op := a.reserveOperation(ctx, req.SessionID, true)
+	interrupt := s != nil || (previous != nil && !previous.terminal)
+	op := a.reserveOperation(ctx, req.SessionID, true, interrupt)
 	a.startOperation(req.SessionID, op, func(context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
@@ -621,7 +622,7 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 	if s != nil {
 		s.Cancel()
 	}
-	op := a.reserveOperation(ctx, req.SessionID, true)
+	op := a.reserveOperation(ctx, req.SessionID, true, true)
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {

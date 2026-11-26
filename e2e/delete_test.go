@@ -23,7 +23,7 @@ func TestDeleteSession(t *testing.T) {
 		resp := a.ok("session/delete", map[string]any{"sessionId": sid}, nil)
 		assertJSON(t, resp.Result, `{}`)
 		a.ok("session/delete", map[string]any{"sessionId": sid}, nil)
-		a.fails("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, -32002)
+		a.sessionNotFound("session/resume", map[string]any{"sessionId": sid, "cwd": cwd})
 		var list listResult
 		a.ok("session/list", map[string]any{}, &list)
 		if len(list.Sessions) != 0 {

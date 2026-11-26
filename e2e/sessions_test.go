@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -66,13 +67,20 @@ func TestListResumeAndClose(t *testing.T) {
 		t.Fatalf("resume without replay: %+v, %+v", resp.Error, snapshot)
 	}
 
-	a.fails("session/resume", map[string]any{"sessionId": "nope", "cwd": cwd}, -32002)
+	const missing = "Missing<&-字"
+	a.sessionNotFound("session/resume", map[string]any{"sessionId": missing, "cwd": cwd})
+	prompt := []any{map[string]string{"type": "text", "text": "Hello."}}
+	a.sessionNotFound("session/prompt", map[string]any{"sessionId": missing, "prompt": prompt})
+	a.sessionNotFound("session/set_config_option", map[string]any{"sessionId": missing, "configId": "model", "type": "id", "value": "test/model"})
+	a.ok("session/close", map[string]any{"sessionId": missing}, nil)
+	a.fails("session/close", map[string]any{}, -32602)
 	a.fails("session/resume", map[string]any{"sessionId": sid, "cwd": "/elsewhere"}, -32602)
 	a.fails("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "_checkpoint"}}, -32602)
 
 	a.ok("session/close", map[string]any{"sessionId": sid}, nil)
-	a.fails("session/close", map[string]any{"sessionId": sid}, -32002)
-	a.fails("session/prompt", map[string]any{"sessionId": sid, "prompt": []any{}}, -32002)
+	a.ok("session/close", map[string]any{"sessionId": sid}, nil)
+	a.sessionNotFound("session/prompt", map[string]any{"sessionId": sid, "prompt": prompt})
+	a.sessionNotFound("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": "test/model"})
 	// Closing frees the active session; it stays stored and listed until
 	// deleted, and can be resumed again.
 	var after listResult
@@ -88,6 +96,17 @@ func TestListResumeAndClose(t *testing.T) {
 	// Finish the turn: stopping the agent mid-request fails the mock LLM.
 	if answer := joinChunks(a.untilIdle(sid), "agent_message_chunk"); answer.text != "Still Paris." {
 		t.Fatalf("resumed turn: %+v", answer)
+	}
+}
+
+func (a *agent) sessionNotFound(method string, params map[string]any) {
+	a.t.Helper()
+	err := a.fails(method, params, -32002)
+	var data struct {
+		SessionID string `json:"sessionId"`
+	}
+	if decodeErr := json.Unmarshal(err.Data, &data); decodeErr != nil || data.SessionID != params["sessionId"] {
+		a.t.Fatalf("%s: error data = %s (decode error: %v), want sessionId %q", method, err.Data, decodeErr, params["sessionId"])
 	}
 }
 

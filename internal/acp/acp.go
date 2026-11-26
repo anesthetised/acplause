@@ -43,9 +43,11 @@ func ErrRequestCancelled() *jsonrpc.Error {
 	return &jsonrpc.Error{Code: CodeRequestCancelled, Message: "Request cancelled"}
 }
 
-// ErrSessionNotFound answers a request naming an unknown session.
+// ErrSessionNotFound identifies the requested session when it is unknown or inactive.
 func ErrSessionNotFound(id string) *jsonrpc.Error {
-	return jsonrpc.NewError(CodeResourceNotFound, "session not found: %s", id)
+	err := jsonrpc.NewError(CodeResourceNotFound, "session not found: %s", id)
+	err.Data = map[string]any{"sessionId": id}
+	return err
 }
 
 // ErrUnsupportedProtocolVersion rejects initialize for a version below 2.
