@@ -146,6 +146,8 @@ func TestPromptKeyExactCharacters(t *testing.T) {
 		"": "", `,"idempotencyKey":null`: "", `,"idempotencyKey":" \u0000 "`: " \x00 ",
 		`,"idempotencyKey":"\ud83d\udc4b"`: "👋", `,"idempotencyKey":"\uFFFD"`: "�",
 		`,"idempotencyKey":"e\u0301"`: "e\u0301", `,"idempotencyKey":"é"`: "é",
+		`,"idempotencyKey":"real","IdempotencyKey":null`:       "real",
+		`,"IdempotencyKey":"ignored"`:                          "",
 		`,"idempotencyKey":"` + strings.Repeat("👋", 255) + `"`: strings.Repeat("👋", 255),
 	} {
 		var req PromptRequest

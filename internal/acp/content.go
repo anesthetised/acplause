@@ -150,7 +150,7 @@ func (k *IdempotencyKey) UnmarshalJSON(data []byte) error {
 type PromptRequest struct {
 	SessionID      string         `json:"sessionId"`
 	Prompt         []ContentBlock `json:"prompt"`
-	IdempotencyKey IdempotencyKey `json:"idempotencyKey,omitempty"`
+	IdempotencyKey IdempotencyKey `json:"idempotencyKey,omitempty,case:strict"`
 }
 
 // Validate implements jsonrpc's params validation.
