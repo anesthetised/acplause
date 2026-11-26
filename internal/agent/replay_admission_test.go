@@ -352,6 +352,7 @@ func TestLiveUpdateRechecksGateAtEnqueue(t *testing.T) {
 }
 
 func TestDecliningReplayWithFullOutputKeepsReading(t *testing.T) {
+	cwd := t.TempDir()
 	synctest.Test(t, func(t *testing.T) {
 		in, peer := io.Pipe()
 		release := make(chan struct{})
@@ -371,7 +372,17 @@ func TestDecliningReplayWithFullOutputKeepsReading(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := fmt.Fprintln(peer, `{"jsonrpc":"2.0","id":1,"method":"session/resume","params":{"sessionId":"s","cwd":"/","replayFrom":{"type":"start"}}}`); err != nil {
+		req := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  acp.MethodSessionResume,
+			"params": map[string]any{
+				"sessionId":  "s",
+				"cwd":        cwd,
+				"replayFrom": map[string]string{"type": "start"},
+			},
+		}
+		if err := json.NewEncoder(peer).Encode(req); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := fmt.Fprintln(peer, `{"jsonrpc":"2.0","method":"seen"}`); err != nil {
