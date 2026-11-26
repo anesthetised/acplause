@@ -113,7 +113,7 @@ func TestReplayDoesNotHoldTheSessionLock(t *testing.T) {
 	if _, ok := (<-out).(acp.UserMessage); !ok {
 		t.Fatal("replay lost the user message")
 	}
-	expectReplayComplete(t, out)
+	expectReplayCompleteAndInfo(t, out)
 	if u := (<-out).(acp.StateUpdate); u.StopReason != "" {
 		t.Fatalf("replay state: %+v", u)
 	}
@@ -125,10 +125,14 @@ func TestReplayDoesNotHoldTheSessionLock(t *testing.T) {
 	}
 }
 
-func expectReplayComplete(t *testing.T, out recorder) {
+func expectReplayCompleteAndInfo(t *testing.T, out recorder) {
 	t.Helper()
 	if u := <-out; u != (acp.ReplayComplete{}) {
 		t.Fatalf("got %T, want replay_complete", u)
+	}
+	u := <-out
+	if info, ok := u.(acp.SessionInfoUpdate); !ok || info.UpdatedAt == "" {
+		t.Fatalf("got %+v, want session_info_update with timestamp", u)
 	}
 }
 
@@ -170,7 +174,7 @@ func TestReplayFromReceiptThroughAcquire(t *testing.T) {
 			switch outcome {
 			case "success":
 				gate.release <- nil
-				want = []string{"user_message", "replay_complete", "before cut", "during acquire", "state_update"}
+				want = []string{"user_message", "replay_complete", "before cut", "during acquire", "session_info_update", "state_update"}
 			case "failure":
 				gate.release <- errors.New("acquire failed")
 			case "cancel":
@@ -305,19 +309,20 @@ func TestIncompleteReplayHasNoMarker(t *testing.T) {
 				t.Fatal("incomplete replay succeeded")
 			}
 			for len(out) > 0 {
-				if u := <-out; u == (acp.ReplayComplete{}) {
-					t.Fatal("incomplete replay sent a marker")
+				switch u := (<-out).(type) {
+				case acp.ReplayComplete, acp.SessionInfoUpdate, acp.StateUpdate:
+					t.Fatalf("incomplete replay sent %T", u)
 				}
 			}
 			s.deps.out = out
 			if err := s.Resume(t.Context(), nil, nil, true); err != nil {
 				t.Fatal(err)
 			}
-			if len(out) != 3 {
-				t.Fatalf("retry sent %d updates, want history, marker and state", len(out))
+			if len(out) != 4 {
+				t.Fatalf("retry sent %d updates, want history, marker, metadata and state", len(out))
 			}
 			<-out
-			expectReplayComplete(t, out)
+			expectReplayCompleteAndInfo(t, out)
 			if state, ok := (<-out).(acp.StateUpdate); !ok || state.State != acp.StateRunning {
 				t.Fatalf("retry state: %+v", state)
 			}
@@ -637,12 +642,12 @@ func TestCancelledRetakeStillOwesRetiringToolAndIdle(t *testing.T) {
 	c.fails(acp.MethodSessionResume, params, 1001)
 	unblock()
 
-	// Only lease cleanup remains. Both old completions must reach the wire
-	// before close succeeds, and the next cursor can already be admitted.
+	// Only lease cleanup remains. The old turn's live updates must reach the
+	// wire before close succeeds, and the next cursor can already be admitted.
 	issue50Wait(t, lease.entered)
 	updates := c.untilIdle(id)
-	if len(updates) != 2 || updates[0].Update.Kind != "tool_call_update" ||
-		updates[0].Update.Status != "cancelled" || updates[1].Update.StopReason != "cancelled" {
+	if len(updates) != 3 || updates[0].Update.Kind != "tool_call_update" || updates[0].Update.Status != "cancelled" ||
+		updates[1].Update.Kind != "session_info_update" || updates[2].Update.StopReason != "cancelled" {
 		t.Fatalf("retiring turn before close: %+v", updates)
 	}
 	select {
@@ -772,11 +777,11 @@ func TestRetakeDrainsRetiringTurn(t *testing.T) {
 					got = append(got, u.Kind)
 				}
 			}
-			want := []string{"idle cancelled", "idle"}
+			want := []string{"idle cancelled", "session_info_update", "idle"}
 			if tc.closeDuring {
 				want = []string{"idle cancelled"}
 			} else if tc.replay {
-				want = []string{"user_message", "replay_complete", "idle cancelled", "idle"}
+				want = []string{"user_message", "replay_complete", "idle cancelled", "session_info_update", "idle"}
 			}
 			if !slices.Equal(got, want) {
 				t.Fatalf("updates before close = %q, want %q", got, want)

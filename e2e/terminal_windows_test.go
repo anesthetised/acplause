@@ -74,9 +74,9 @@ func TestCancelDuringPowerShell(t *testing.T) {
 	child := windowsChildHandle(t, filepath.Join(cwd, "child.pid"))
 	a.notify("session/cancel", map[string]any{"sessionId": sid})
 	updates := a.untilIdle(sid)
-	want := []string{"tool_call_update cancelled", "state_update idle cancelled"}
+	want := []string{"tool_call_update cancelled", "session_info_update", "state_update idle cancelled"}
 	got := kinds(updates)
-	if len(got) < 2 || !slices.Equal(got[len(got)-2:], want) || len(filter(updates, "tool_call_update")) != 1 {
+	if len(got) < len(want) || !slices.Equal(got[len(got)-len(want):], want) || len(filter(updates, "tool_call_update")) != 1 {
 		t.Fatalf("updates after cancel: %v", got)
 	}
 	if state, err := windows.WaitForSingleObject(child, 5000); err != nil || state != windows.WAIT_OBJECT_0 {

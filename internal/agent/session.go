@@ -344,7 +344,7 @@ func (s *Session) close() {
 }
 
 // Resume reattaches the client: it replaces the additional directories,
-// optionally replays the history, and reports the current state.
+// optionally replays the history, and reports current metadata and state.
 func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPServer, replay bool) error {
 	var r *historyReplay
 	if replay {
@@ -363,8 +363,8 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 	return err
 }
 
-// syncResume captures state in the same stream as live changes, so a newer
-// transition cannot be overwritten while the history is being delivered.
+// syncResume captures metadata and state in the same stream as live changes,
+// so newer values cannot be overwritten while history is being delivered.
 func (s *Session) syncResume(ctx context.Context, dirs []string, servers []acp.MCPServer, r *historyReplay, owed *outputObligation) error {
 	if r != nil && r.session != s {
 		r.snapshot(s)
@@ -375,9 +375,12 @@ func (s *Session) syncResume(ctx context.Context, dirs []string, servers []acp.M
 	if r == nil {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if err := s.live(ctx, sessionInfoPatch(s.title, s.updatedAt), nil); err != nil {
+			return err
+		}
 		return s.live(ctx, s.state, owed)
 	}
-	if err := r.stageState(s); err != nil {
+	if err := r.stageCurrent(s); err != nil {
 		return err
 	}
 	return r.write(ctx)
@@ -672,18 +675,15 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	s.transcript = append(s.transcript, msg)
 	s.planID = "" // A rejected or merely queued prompt must not reset the plan.
 	s.dirty[len(s.transcript)-1] = true
-	first := s.title == ""
-	if first {
-		s.title = title(sub.prompt)
+	var newTitle string
+	if s.title == "" {
+		newTitle = title(sub.prompt)
+		s.title = newTitle
 	}
 	s.updatedAt = updated
 	sub.reply.Resolve(acp.PromptResponse{MessageID: msg.MessageID})
 	s.send(msg)
-	if first {
-		// Not in the transcript: replay is conversation history, and
-		// session/list already reports the title.
-		s.send(acp.SessionInfoUpdate{Title: s.title, UpdatedAt: s.updatedAt.UTC().Format(time.RFC3339Nano)})
-	}
+	s.send(sessionInfoPatch(newTitle, s.updatedAt))
 	s.state = acp.StateUpdate{State: acp.StateRunning}
 	s.send(s.state)
 	return true
@@ -720,6 +720,12 @@ func (s *Session) appendHistory(m llm.Message) {
 	defer s.mu.Unlock()
 	s.history = append(s.history, m)
 	s.updatedAt = time.Now()
+	s.send(sessionInfoPatch("", s.updatedAt))
+}
+
+// sessionInfoPatch keeps live and resumed timestamps in the same format as session/list.
+func sessionInfoPatch(title string, updatedAt time.Time) acp.SessionInfoUpdate {
+	return acp.SessionInfoUpdate{Title: title, UpdatedAt: updatedAt.UTC().Format(time.RFC3339Nano)}
 }
 
 // newID returns a random UUIDv4.

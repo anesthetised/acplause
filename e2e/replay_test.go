@@ -74,7 +74,8 @@ func TestResumeReplaysStreamingMessages(t *testing.T) {
 		}
 	}
 	if markers != 1 || !slices.Equal(kinds(replay), []string{"user_message", "agent_thought", "agent_message"}) ||
-		len(live) == 0 || live[len(live)-1].State != "running" {
+		len(live) < 2 || live[len(live)-1].State != "running" || !live[len(live)-2].is("session_info_update") ||
+		live[len(live)-2].Title != "answer" || live[len(live)-2].UpdatedAt == "" {
 		t.Fatalf("resume boundary: history %v, markers %d, live %v", kinds(replay), markers, kinds(live))
 	}
 	thoughts, answers := filter(replay, "agent_thought"), filter(replay, "agent_message")
@@ -108,16 +109,16 @@ func TestReplayBoundaryForEmptyHistory(t *testing.T) {
 			t.Fatalf("resume updates = %v before response %d, want %v", kinds(updates), resp.seq, want)
 		}
 	}
-	check("state_update idle") // also catches a marker leaked from session/new
+	check("session_info_update", "state_update idle") // also catches a marker leaked from session/new
 	params["replayFrom"] = nil
-	check("state_update idle")
+	check("session_info_update", "state_update idle")
 	for _, bad := range []any{"start", map[string]any{}, map[string]any{"type": "_unknown"}} {
 		params["replayFrom"] = bad
 		a.fails("session/resume", params, -32602)
 	}
 	params["replayFrom"] = map[string]any{"type": "start"}
 	for range 2 {
-		check("replay_complete", "state_update idle")
+		check("replay_complete", "session_info_update", "state_update idle")
 	}
 }
 
@@ -144,7 +145,7 @@ func TestColdPromptDuringReplaySetup(t *testing.T) {
 					t.Fatal(r.Error)
 				}
 			}
-			if got := kinds(a.untilIdle(sid)); !slices.Equal(got, []string{"replay_complete", "state_update idle"}) {
+			if got := kinds(a.untilIdle(sid)); !slices.Equal(got, []string{"replay_complete", "session_info_update", "state_update idle"}) {
 				t.Fatalf("cold replay: %v", got)
 			}
 		})
@@ -236,7 +237,8 @@ func TestReplayOverflowPreservesLiveStream(t *testing.T) {
 	})
 	a, sid, cwd := started(t, llm)
 	a.accepted(a.prompt(sid, "stream"))
-	a.updateWhere(sid, func(u update) bool { return u.is("agent_message_chunk") })
+	for !a.nextUpdate(sid).is("agent_message_chunk") {
+	}
 	resume, _ := gatedReplay(t, a, sid, cwd)
 	params := map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}}
 	a.fails("session/resume", params, 1001)
@@ -246,7 +248,8 @@ func TestReplayOverflowPreservesLiveStream(t *testing.T) {
 		t.Fatalf("overflow response: %+v", rejected)
 	}
 	var got strings.Builder
-	for _, u := range a.untilIdle(sid) {
+	updates := a.untilIdle(sid)
+	for _, u := range updates {
 		if u.is("replay_complete") {
 			t.Fatal("incomplete replay sent marker")
 		}
@@ -259,6 +262,9 @@ func TestReplayOverflowPreservesLiveStream(t *testing.T) {
 	}
 	if got.String() != want.String() {
 		t.Fatalf("overflow lost or reordered live chunks: %q", got.String())
+	}
+	if info := filter(updates, "session_info_update"); len(info) != 1 || info[0].Title != "" || info[0].UpdatedAt == "" || info[0].seq <= rejected.seq {
+		t.Fatalf("live metadata after replay overflow: %+v", info)
 	}
 	a.ok("session/resume", params, nil)
 	retry := a.untilIdle(sid)
@@ -310,11 +316,11 @@ func TestRetakeOrdersCancelledIdleAfterReplayMarker(t *testing.T) {
 		updates = append(updates, decodeUpdate(t, m))
 	}
 	got := kinds(updates)
-	want := []string{"user_message", "tool_call_update failed", "replay_complete", "tool_call_update cancelled", "state_update idle cancelled", "state_update idle"}
+	want := []string{"user_message", "tool_call_update failed", "replay_complete", "tool_call_update cancelled", "state_update idle cancelled", "session_info_update", "state_update idle"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("updates before resume response = %v", got)
 	}
-	if cancel := a.cancellation(permission); cancel.seq >= updates[len(updates)-2].seq {
+	if cancel := a.cancellation(permission); cancel.seq >= updates[len(updates)-3].seq {
 		t.Fatal("permission cancellation followed the retiring turn's idle")
 	}
 	a.ok("session/close", map[string]any{"sessionId": sid}, nil)

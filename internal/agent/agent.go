@@ -495,12 +495,13 @@ func (a *Agent) listSessions(ctx context.Context, req acp.ListSessionsRequest) (
 		}
 		resp := acp.ListSessionsResponse{Sessions: []acp.SessionInfo{}}
 		for _, sess := range sessions {
+			info := sessionInfoPatch(sess.Title, sess.UpdatedAt)
 			resp.Sessions = append(resp.Sessions, acp.SessionInfo{
 				SessionID:             sess.ID,
 				Cwd:                   sess.Cwd,
 				AdditionalDirectories: sess.Dirs,
-				Title:                 sess.Title,
-				UpdatedAt:             sess.UpdatedAt.UTC().Format(time.RFC3339Nano),
+				Title:                 info.Title,
+				UpdatedAt:             info.UpdatedAt,
 			})
 		}
 		if more {

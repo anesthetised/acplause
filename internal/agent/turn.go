@@ -235,6 +235,7 @@ func (s *Session) commitToolOutcome(outcome toolOutcome) {
 	}
 	s.history = append(s.history, outcome.message)
 	s.updatedAt = time.Now()
+	s.send(sessionInfoPatch("", s.updatedAt))
 	s.mu.Unlock()
 	if outcome.final.ToolCallID != "" {
 		s.flush()

@@ -83,6 +83,7 @@ func (s *Session) updatePlan(ctx context.Context, entries []acp.PlanEntry) (stri
 	s.dirty[i] = true
 	s.updatedAt = time.Now()
 	s.send(u)
+	s.send(sessionInfoPatch("", s.updatedAt))
 	return s.planID, nil
 }
 

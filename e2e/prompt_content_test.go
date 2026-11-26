@@ -27,7 +27,7 @@ func TestPromptContentAdmissionAndReplay(t *testing.T) {
 	} {
 		a.fails("session/prompt", params(`[{"type":"text","text":"reject the whole prompt"},`+block+`]`), -32602)
 	}
-	if got := resume(a); len(got) != 2 || !got[0].is("replay_complete") {
+	if got := resume(a); len(got) != 3 || !got[0].is("replay_complete") || !got[1].is("session_info_update") || got[1].Title != "" {
 		t.Fatalf("rejected prompts emitted updates or entered replay: %v", kinds(got))
 	}
 	if got := llm.requestCount(); got != 0 {

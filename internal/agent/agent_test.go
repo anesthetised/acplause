@@ -89,7 +89,11 @@ func TestTurnRunsToolsAndKeepsHistoryValid(t *testing.T) {
 	for _, u := range out.untilIdle(t) {
 		kinds = append(kinds, fmt.Sprintf("%T", u))
 	}
-	want := []string{"acp.UserMessage", "acp.SessionInfoUpdate", "acp.StateUpdate", "acp.ToolCallUpdate", "acp.ToolCallUpdate", "acp.AgentMessageChunk", "acp.StateUpdate"}
+	want := []string{
+		"acp.UserMessage", "acp.SessionInfoUpdate", "acp.StateUpdate", "acp.SessionInfoUpdate",
+		"acp.ToolCallUpdate", "acp.ToolCallUpdate", "acp.SessionInfoUpdate",
+		"acp.AgentMessageChunk", "acp.SessionInfoUpdate", "acp.StateUpdate",
+	}
 	if !slices.Equal(kinds, want) {
 		t.Fatalf("got %v, want %v", kinds, want)
 	}

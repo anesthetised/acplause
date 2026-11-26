@@ -137,7 +137,7 @@ func TestColdResumeReplacesUnavailableModel(t *testing.T) {
 	var resumed newSessionResult
 	c.ok("session/resume", params, &resumed)
 	replay := c.untilIdle(sid)
-	if !slices.Equal(kinds(replay), []string{"user_message", "agent_message", "replay_complete", "state_update idle"}) || replay[0].text() != "saved question" || replay[1].text() != "saved answer" {
+	if !slices.Equal(kinds(replay), []string{"user_message", "agent_message", "replay_complete", "session_info_update", "state_update idle"}) || replay[0].text() != "saved question" || replay[1].text() != "saved answer" {
 		t.Fatalf("restore replay: %v", replay)
 	}
 	if configByID(t, resumed.ConfigOptions, "model").CurrentValue != "test/replacement" || configByID(t, resumed.ConfigOptions, "reasoning_effort").CurrentValue != "default" {

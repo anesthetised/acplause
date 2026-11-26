@@ -39,9 +39,20 @@ func TestSaveFailureNotice(t *testing.T) {
 	if len(notices) != 1 || notices[0].Title == "" || notices[0].Severity != "warning" || notices[0].Description == "" || strings.Contains(notices[0].Description, "private storage detail") {
 		t.Fatalf("notices: %+v", notices)
 	}
+	info := filter(updates, "session_info_update")
+	if len(info) != 2 || info[0].Title != "first failure" || info[1].UpdatedAt == "" {
+		t.Fatalf("in-memory metadata after save failure: %+v", info)
+	}
+	var list listResult
+	a.ok("session/list", map[string]any{"cwd": cwd}, &list)
+	if len(list.Sessions) != 1 || list.Sessions[0].Title != "" || list.Sessions[0].UpdatedAt == info[1].UpdatedAt {
+		t.Fatalf("list included unsaved metadata: %+v", list)
+	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
-	if replay := a.untilIdle(sid); len(filter(replay, "notice")) != 0 {
-		t.Fatalf("notice replayed: %v", kinds(replay))
+	replay := a.untilIdle(sid)
+	current := filter(replay, "session_info_update")
+	if len(filter(replay, "notice")) != 0 || len(current) != 1 || current[0].Title != info[0].Title || current[0].UpdatedAt != info[1].UpdatedAt {
+		t.Fatalf("in-memory resume after save failure: %v, metadata %+v", kinds(replay), current)
 	}
 	exec("DROP TRIGGER fail_save")
 	a.accepted(a.prompt(sid, "recovered"))
@@ -85,10 +96,13 @@ func TestSessionsSurviveRestart(t *testing.T) {
 	var resumed struct {
 		ConfigOptions []configOption `json:"configOptions"`
 	}
-	second.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, &resumed)
+	resp := second.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, &resumed)
 	replay := second.untilIdle(sid)
-	if got := kinds(replay); !slices.Equal(got, []string{"user_message", "agent_message", "replay_complete", "state_update idle"}) || replay[1].text() != "Paris." {
+	if got := kinds(replay); !slices.Equal(got, []string{"user_message", "agent_message", "replay_complete", "session_info_update", "state_update idle"}) || replay[1].text() != "Paris." || replay[4].seq >= resp.seq {
 		t.Fatalf("replay after restart: %v", got)
+	}
+	if info := replay[3]; info.Title != list.Sessions[0].Title || info.UpdatedAt != list.Sessions[0].UpdatedAt {
+		t.Fatalf("restored metadata %+v differs from list %+v", info, list.Sessions[0])
 	}
 	if resumed.ConfigOptions[0].CurrentValue != "test/model" {
 		t.Fatalf("model after restart: %+v", resumed.ConfigOptions)
@@ -117,8 +131,8 @@ func TestIdleSessionIsTakenOver(t *testing.T) {
 	b := start(t, llm, withDataDir(dir))
 	b.initialize()
 	b.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
-	if snapshot := b.nextUpdate(sid); snapshot.State != "idle" {
-		t.Fatalf("resume snapshot: %+v", snapshot)
+	if current := kinds(b.untilIdle(sid)); !slices.Equal(current, []string{"session_info_update", "state_update idle"}) {
+		t.Fatalf("resume snapshots: %v", current)
 	}
 
 	// The first window learns it lost the session when it next prompts.
@@ -173,7 +187,7 @@ func TestContendedPromptCanBeCancelled(t *testing.T) {
 		t.Fatalf("cancelled prompt: %+v", resp)
 	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
-	if replay := a.untilIdle(sid); len(replay) != 2 || !replay[0].is("replay_complete") {
+	if replay := a.untilIdle(sid); !slices.Equal(kinds(replay), []string{"replay_complete", "session_info_update", "state_update idle"}) {
 		t.Fatalf("cancelled prompt was inserted: %v", kinds(replay))
 	}
 }

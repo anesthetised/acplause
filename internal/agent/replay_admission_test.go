@@ -42,7 +42,8 @@ func TestCursorArmsBeforeAgentLookup(t *testing.T) {
 		t.Fatal(r.Error)
 	}
 	got := c.untilIdle(id)
-	if len(got) != 3 || got[0].Update.Kind != "replay_complete" || got[1].Update.Title != "while lookup waits" {
+	if len(got) != 4 || got[0].Update.Kind != "replay_complete" || got[1].Update.Title != "while lookup waits" ||
+		got[2].Update.Kind != "session_info_update" {
 		t.Fatalf("receipt order: %+v", got)
 	}
 }
@@ -177,13 +178,16 @@ func TestOverflowFencesBlockedHistoryAdmission(t *testing.T) {
 			s.transcript = append(s.transcript, acp.AgentMessage{MessageID: "history"})
 		}
 		r := beginTestReplay(t, s)
-		if err := r.stageState(s); err != nil {
+		if err := r.stageCurrent(s); err != nil {
 			t.Fatal(err)
 		}
 		history := make(chan error, 1)
 		go func() { history <- r.write(r.ctx) }()
 		synctest.Wait() // partial history fills ordinary capacity
-		for i := range maxReplayFrames {
+		const updatedAt = "2026-11-27T00:00:00Z"
+		s.send(acp.SessionInfoUpdate{UpdatedAt: updatedAt})
+		const notices = maxReplayFrames - 2 // Two snapshots and one live patch already held.
+		for i := range notices {
 			s.send(acp.Notice{Severity: "info", Title: fmt.Sprint(i)})
 		}
 		if err := <-history; err == nil {
@@ -199,7 +203,7 @@ func TestOverflowFencesBlockedHistoryAdmission(t *testing.T) {
 		if err := conn.Close(); err != nil {
 			t.Fatal(err)
 		}
-		seenError := false
+		seenError, seenInfo := false, false
 		var titles []string
 		for line := range strings.Lines(out.String()) {
 			var msg struct {
@@ -224,16 +228,21 @@ func TestOverflowFencesBlockedHistoryAdmission(t *testing.T) {
 					t.Fatal("live update before error")
 				}
 				titles = append(titles, msg.Params.Update.Title)
+			case msg.Params.Update.Kind == "session_info_update":
+				if !seenError || seenInfo || len(titles) != 0 || msg.Params.Update.UpdatedAt != updatedAt {
+					t.Fatalf("aborted replay metadata out of order or synthetic: %s", line)
+				}
+				seenInfo = true
 			default:
 				t.Fatalf("unexpected frame: %s", line)
 			}
 		}
 		var want []string
-		for i := range maxReplayFrames {
+		for i := range notices {
 			want = append(want, fmt.Sprint(i))
 		}
-		if !slices.Equal(titles, append(want, "later")) {
-			t.Fatalf("overflow order %v", titles)
+		if !seenInfo || !slices.Equal(titles, append(want, "later")) {
+			t.Fatalf("overflow order %v, live metadata delivered %t", titles, seenInfo)
 		}
 	})
 }

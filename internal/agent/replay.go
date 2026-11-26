@@ -263,24 +263,35 @@ func (r *historyReplay) snapshot(s *Session) {
 	r.streams.mu.Unlock()
 }
 
-// stageState captures the current state at its position among live updates.
-// Failure omits this synthetic update. A stale worker cannot hold it in a
+// stageCurrent captures metadata and state at one position among live updates.
+// Failure drops both snapshots. A stale worker cannot stage them in a
 // replacement cursor's stream.
-func (r *historyReplay) stageState(s *Session) error {
+func (r *historyReplay) stageCurrent(s *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, err := s.frame(s.state)
-	if err != nil {
-		return err
+	var events [2]liveUpdate
+	for i, u := range [...]acp.Update{sessionInfoPatch(s.title, s.updatedAt), s.state} {
+		e, err := s.frame(u)
+		if err != nil {
+			return err
+		}
+		e.snapshot = true
+		events[i] = e
 	}
-	e.snapshot = true
 	rs := r.streams
 	rs.mu.Lock()
 	if err := r.err; err != nil {
 		rs.mu.Unlock()
 		return err
 	}
-	deliver, err := r.holdLocked(e)
+	var deliver func() error
+	var err error
+	for _, e := range events {
+		deliver, err = r.holdLocked(e)
+		if r.err != nil {
+			break
+		}
+	}
 	failure := r.err
 	rs.mu.Unlock()
 	if deliver != nil {
@@ -426,7 +437,7 @@ func (r *historyReplay) finishLocked(first, trigger liveUpdate) (func() error, e
 	}
 	delete(rs.active, r.id)
 	close(r.done)
-	// Covered history patches and abandoned synthetic state were dropped.
+	// Covered history patches and abandoned snapshots were dropped.
 	rs.frames -= len(r.pending) - frames
 	rs.bytes -= r.bytes - bytes
 	r.pending = nil

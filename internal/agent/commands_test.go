@@ -147,7 +147,9 @@ func TestCompactCommandRejectsExtraContentBeforeInsertion(t *testing.T) {
 		}
 	}
 	c.ok(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
-	if got := c.untilIdle(sid); len(got) != 2 || got[0].Update.Kind != "replay_complete" || len(model) != 1 {
+	if got := c.untilIdle(sid); len(got) != 3 || got[0].Update.Kind != "replay_complete" ||
+		got[1].Update.Kind != "session_info_update" || got[1].Update.Title != "" ||
+		got[2].Update.Kind != "state_update" || len(model) != 1 {
 		t.Fatalf("rejected commands affected the session: %+v", got)
 	}
 	if r := c.await(c.promptWithKey(sid, "command", "ordinary prompt")); r.Error != nil {
@@ -319,7 +321,7 @@ func TestCompactCommandOverProtocolPersistsContextAndReplay(t *testing.T) {
 	for _, n := range replay {
 		kinds = append(kinds, n.Update.Kind)
 	}
-	if !slices.Equal(kinds, []string{"user_message", "agent_message", "user_message", "compaction_update", "agent_message", "replay_complete", "state_update"}) {
+	if !slices.Equal(kinds, []string{"user_message", "agent_message", "user_message", "compaction_update", "agent_message", "replay_complete", "session_info_update", "state_update"}) {
 		t.Fatalf("replay: %v", kinds)
 	}
 	var completed acp.CompactionUpdate

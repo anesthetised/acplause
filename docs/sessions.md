@@ -18,10 +18,13 @@ quota. See [ADR 0004](adr/0004-sqlite-storage.md).
 
 ## Session metadata and prompt acceptance
 
-A session is titled after the first line of its first prompt. The title is
-sent once, as a `session_info_update`, when that prompt is accepted, and is
-returned by `session/list`. It is not replayed on resume: replay is
-conversation history, and the title is metadata that `session/list` reports.
+A session is titled after the first line of its first prompt. When the
+title is set, `session_info_update` reports it with the activity timestamp.
+Later activity updates the timestamp when a prompt is accepted, a model
+response or tool outcome completes, or a plan is published. `session/list`
+reports the stored title and timestamp. Resume reports current metadata
+immediately before the current state, after the replay marker when history
+was requested.
 
 Send one JSON-RPC object per line and match replies by ID. A client can send
 the next prompt or cancellation while a reply is pending. An accepted prompt's

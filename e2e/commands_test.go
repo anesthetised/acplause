@@ -107,7 +107,7 @@ func TestCompactCommandForcesAndPersistsFullReplay(t *testing.T) {
 	b.initialize()
 	b.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
 	replay := b.untilIdle(sid)
-	want := []string{"user_message", "tool_call_update completed", "agent_message", "user_message", "compaction_update", "agent_message", "replay_complete", "state_update idle"}
+	want := []string{"user_message", "tool_call_update completed", "agent_message", "user_message", "compaction_update", "agent_message", "replay_complete", "session_info_update", "state_update idle"}
 	if !slices.Equal(kinds(replay), want) || replay[0].text() != "old request" || replay[2].text() != strings.Repeat("old answer ", 30) || replay[3].MessageID != id || string(replay[3].Content) != blocks || replay[4].CompactionID != compactions[1].CompactionID || replay[4].Status != "completed" {
 		t.Fatalf("full replay changed: %v", kinds(replay))
 	}

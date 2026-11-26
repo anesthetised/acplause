@@ -70,11 +70,11 @@ func TestUnsupportedSystemPromptOnNewAndColdResume(t *testing.T) {
 		"replayFrom": map[string]string{"type": "start"}, "systemPrompt": nil,
 	}, nil)
 	updates := a.untilIdle(sid)
-	if got := kinds(updates); !slices.Equal(got, []string{"replay_complete", "state_update idle"}) || updates[len(updates)-1].seq >= resume.seq {
+	if got := kinds(updates); !slices.Equal(got, []string{"replay_complete", "session_info_update", "state_update idle"}) || updates[len(updates)-1].seq >= resume.seq {
 		t.Fatalf("cold replay with null systemPrompt: %v", got)
 	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
-	if got := kinds(a.untilIdle(sid)); !slices.Equal(got, []string{"state_update idle"}) {
+	if got := kinds(a.untilIdle(sid)); !slices.Equal(got, []string{"session_info_update", "state_update idle"}) {
 		t.Fatalf("resume with omitted systemPrompt: %v", got)
 	}
 	a.stop()

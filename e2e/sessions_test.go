@@ -42,29 +42,34 @@ func TestListResumeAndClose(t *testing.T) {
 		t.Fatalf("session/list by cwd: %+v", filtered)
 	}
 
-	// resume with replay: history with the original ids, then a state
-	// snapshot, then the response.
+	// Resume with replay sends history, then current metadata and state.
 	resp := a.call("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}})
 	if resp.Error != nil {
 		t.Fatalf("resume: %+v", resp.Error)
 	}
 	replay := a.untilIdle(sid)
-	want := []string{"user_message", "agent_message", "replay_complete", "state_update idle end_turn"}
+	want := []string{"user_message", "agent_message", "replay_complete", "session_info_update", "state_update idle end_turn"}
 	if got := kinds(replay); !slices.Equal(got, want) {
 		t.Fatalf("replay: %v", got)
 	}
 	if replay[0].MessageID != messageID || replay[1].MessageID != answerID || replay[1].text() != "Paris." {
 		t.Fatalf("replayed messages: %+v", replay[:2])
 	}
+	if info := replay[3]; info.Title != filtered.Sessions[0].Title || info.UpdatedAt != filtered.Sessions[0].UpdatedAt {
+		t.Fatalf("resume metadata %+v differs from list %+v", info, filtered.Sessions[0])
+	}
 	if last := replay[len(replay)-1]; last.seq > resp.seq {
 		t.Fatal("the resume response must follow the state snapshot")
 	}
 
-	// resume without replay still synchronises state.
+	// Resume without replay also synchronises metadata and state.
 	resp = a.call("session/resume", map[string]any{"sessionId": other, "cwd": a.cwdOf(other, all)})
-	snapshot := a.nextUpdate(other)
-	if resp.Error != nil || !snapshot.is("state_update") || snapshot.State != "idle" || snapshot.StopReason != "" || snapshot.seq > resp.seq {
-		t.Fatalf("resume without replay: %+v, %+v", resp.Error, snapshot)
+	current := a.untilIdle(other)
+	if resp.Error != nil || !slices.Equal(kinds(current), []string{"session_info_update", "state_update idle"}) || current[1].seq > resp.seq {
+		t.Fatalf("resume without replay: %+v, %v", resp.Error, kinds(current))
+	}
+	if info := current[0]; info.Title != "" || info.UpdatedAt == "" || info.UpdatedAt != all.Sessions[1].UpdatedAt {
+		t.Fatalf("untitled session metadata: %+v", info)
 	}
 
 	const missing = "Missing<&-字"
@@ -88,9 +93,13 @@ func TestListResumeAndClose(t *testing.T) {
 	if len(after.Sessions) != 2 {
 		t.Fatalf("session/list after close: %+v", after)
 	}
-	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
-	if snapshot := a.nextUpdate(sid); !snapshot.is("state_update") || snapshot.State != "idle" {
-		t.Fatalf("resume after close: %+v", snapshot)
+	resp = a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
+	current = a.untilIdle(sid)
+	if !slices.Equal(kinds(current), []string{"session_info_update", "state_update idle"}) || current[1].seq > resp.seq {
+		t.Fatalf("resume after close: %v", kinds(current))
+	}
+	if info := current[0]; info.Title != filtered.Sessions[0].Title || info.UpdatedAt != filtered.Sessions[0].UpdatedAt {
+		t.Fatalf("restored metadata %+v differs from list %+v", info, filtered.Sessions[0])
 	}
 	a.accepted(a.prompt(sid, "again"))
 	// Finish the turn: stopping the agent mid-request fails the mock LLM.
@@ -263,23 +272,66 @@ func values(o configOption) []string {
 	return vs
 }
 
-func TestSessionInfoUpdateReportsTheTitleOnce(t *testing.T) {
+func TestSessionInfoUpdateFollowsActivity(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(reply("one"), reply("two"))
-	a, sid, _ := started(t, llm)
+	release := make(chan struct{})
+	llm.enqueue(func(s *stream) {
+		select {
+		case <-release:
+		case <-s.r.Context().Done():
+			return
+		}
+		s.toolCall(0, "plan", "update_plan", `{"entries":[{"content":"Answer","priority":"medium","status":"completed"}]}`)
+		s.finish("tool_calls")
+	}, reply("one"), reply("two"))
+	a, sid, cwd := started(t, llm)
+	checkList := func(patch update) {
+		t.Helper()
+		var list listResult
+		a.ok("session/list", map[string]any{"cwd": cwd}, &list)
+		if len(list.Sessions) != 1 || list.Sessions[0].SessionID != sid ||
+			list.Sessions[0].Title != "First question" || list.Sessions[0].UpdatedAt != patch.UpdatedAt {
+			t.Fatalf("list %+v differs from metadata patch %+v", list, patch)
+		}
+	}
+	var last time.Time
+	checkPatch := func(patch update, title string) {
+		t.Helper()
+		at, err := time.Parse(time.RFC3339Nano, patch.UpdatedAt)
+		if patch.Title != title || err != nil || patch.UpdatedAt != at.UTC().Format(time.RFC3339Nano) || at.Before(last) {
+			t.Fatalf("metadata patch %+v after %v, want title %q and ordered UTC timestamp", patch, last, title)
+		}
+		last = at
+	}
 
 	a.accepted(a.prompt(sid, "First question\nwith detail"))
-	first := filter(a.untilIdle(sid), "session_info_update")
-	if len(first) != 1 || first[0].Title != "First question" {
-		t.Fatalf("first turn: %+v", first)
+	first := a.updateWhere(sid, func(u update) bool { return u.is("session_info_update") })
+	checkPatch(first, "First question")
+	checkList(first) // The insertion save committed before the prompt response.
+	close(release)
+	turn := a.untilIdle(sid)
+	var activity []string
+	for i, u := range turn {
+		if u.is("session_info_update") {
+			checkPatch(u, "")
+			if i == 0 {
+				t.Fatal("timestamp patch preceded its activity")
+			}
+			activity = append(activity, turn[i-1].String())
+		}
 	}
-	if _, err := time.Parse(time.RFC3339Nano, first[0].UpdatedAt); err != nil {
-		t.Fatalf("updatedAt %q: %v", first[0].UpdatedAt, err)
+	want := []string{"usage_update", "plan_update", "tool_call_update completed", "usage_update"}
+	if !slices.Equal(activity, want) {
+		t.Fatalf("timestamp patches followed %v, want %v", activity, want)
 	}
 
 	a.accepted(a.prompt(sid, "Second question"))
-	if second := filter(a.untilIdle(sid), "session_info_update"); len(second) != 0 {
-		t.Fatalf("later prompt changed the title: %+v", second)
+	second := filter(a.untilIdle(sid), "session_info_update")
+	if len(second) != 2 {
+		t.Fatalf("later prompt metadata: %+v", second)
 	}
+	checkPatch(second[0], "")
+	checkPatch(second[1], "")
+	checkList(second[1]) // Model output was saved before the turn became idle.
 }

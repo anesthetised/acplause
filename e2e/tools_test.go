@@ -27,8 +27,8 @@ func TestToolLoop(t *testing.T) {
 	updates := a.untilIdle(sid)
 	want := []string{
 		"user_message", "session_info_update", "state_update running",
-		"usage_update", "tool_call_update in_progress", "tool_call_update completed",
-		"agent_message_chunk", "usage_update", "state_update idle end_turn",
+		"usage_update", "session_info_update", "tool_call_update in_progress", "tool_call_update completed", "session_info_update",
+		"agent_message_chunk", "usage_update", "session_info_update", "state_update idle end_turn",
 	}
 	if got := kinds(updates); !slices.Equal(got, want) {
 		t.Fatalf("updates:\n got %v\nwant %v", got, want)

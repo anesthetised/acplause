@@ -118,7 +118,7 @@ func TestPlanSnapshotsPersistAcrossRestart(t *testing.T) {
 			t.Fatalf("replayed entry %d changed: %s, want %s", i, after, before)
 		}
 	}
-	expectReplayComplete(t, out)
+	expectReplayCompleteAndInfo(t, out)
 	if state := (<-out).(acp.StateUpdate); state.State != acp.StateIdle {
 		t.Fatalf("restart state: %+v", state)
 	}
@@ -209,7 +209,7 @@ func TestPlanResumePrecedesCompetingLiveUpdate(t *testing.T) {
 	if u := (<-out).(acp.PlanUpdate); u.Plan.Entries[0].Content != "before" {
 		t.Fatalf("replay snapshot: %+v", u)
 	}
-	expectReplayComplete(t, out)
+	expectReplayCompleteAndInfo(t, out)
 	if _, ok := (<-out).(acp.StateUpdate); !ok {
 		t.Fatal("live plan overtook resume state")
 	}
@@ -332,8 +332,8 @@ func TestPlanSnapshotsReplaceAtFirstPosition(t *testing.T) {
 			t.Fatalf("replacement plan: %q, %v", got, err)
 		}
 	}
-	if len(out) != notifications+2 {
-		t.Fatal("identical replacement did not publish a new event")
+	if len(out) != notifications+4 {
+		t.Fatal("identical replacement did not publish plan and metadata updates")
 	}
 	got := s.transcript[1].(acp.PlanUpdate)
 	if len(s.transcript) != 3 || got.Plan.PlanID != id || !reflect.DeepEqual(got.Plan.Entries, entries) || len(s.history) != 2 {

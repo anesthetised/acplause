@@ -188,10 +188,10 @@ configured values. Tests cover both setup methods and credential handling.
   when a setter changes the advertised configuration. [Config changes][beta-config]
 - **Session info.** Resume should send a current `session_info_update` even
   without replay, and active sessions should get updates when metadata
-  changes. [The session](../../internal/agent/session.go) sends state on
-  resume and only reports info when assigning the first title. Test that a
-  reconnect receives the current title and update time before the response.
-  [State synchronization][beta-sync] · [Session listing][beta-list]
+  changes. Both resume paths now report metadata immediately before current
+  state, after the replay marker when requested. Live activity sends timestamp
+  patches using the same values as `session/list` after a save.
+  [Stdio tests](../../e2e/sessions_test.go) · [State synchronization][beta-sync] · [Session listing][beta-list]
 - **Cancelled plans.** Agents should send `plan_removed` when a plan is
   cancelled or abandoned. [Item plans](../../internal/agent/plan.go) are stored
   as replay snapshots, with no removal in [turn finalization](../../internal/agent/session.go).

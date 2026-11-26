@@ -72,6 +72,7 @@ type notification struct {
 		StopReason string          `json:"stopReason"`
 		Status     string          `json:"status"`
 		Title      string          `json:"title"`
+		UpdatedAt  string          `json:"updatedAt"`
 		Error      *jsonrpc.Error  `json:"error"`
 		Raw        json.RawMessage `json:"-"`
 	} `json:"update"`
@@ -581,11 +582,17 @@ func TestSessionListResumeCloseDelete(t *testing.T) {
 	c.selectModel(sid, "m")
 	model.reply("hi there", llm.FinishStop, nil)
 	c.await(c.prompt(sid, "greet me"))
-	c.untilIdle(sid)
+	turn := c.untilIdle(sid)
+	first, last := turn[1].Update, turn[len(turn)-2].Update
+	if first.Kind != "session_info_update" || first.Title != "greet me" || first.UpdatedAt == "" ||
+		last.Kind != "session_info_update" || strings.Contains(string(last.Raw), `"title":`) || last.UpdatedAt == "" {
+		t.Fatalf("live metadata: first %+v, last %+v", first, last)
+	}
 
 	var list acp.ListSessionsResponse
 	c.ok(acp.MethodSessionList, map[string]any{"cwd": cwd}, &list)
-	if len(list.Sessions) != 1 || list.Sessions[0].SessionID != sid || list.Sessions[0].Title == "" || list.NextCursor != "" {
+	if len(list.Sessions) != 1 || list.Sessions[0].SessionID != sid || list.Sessions[0].Title != first.Title ||
+		list.Sessions[0].UpdatedAt != last.UpdatedAt || list.NextCursor != "" {
 		t.Fatalf("list: %+v", list)
 	}
 	c.fails(acp.MethodSessionList, map[string]any{"cursor": "!"}, jsonrpc.CodeInvalidParams)
@@ -599,7 +606,11 @@ func TestSessionListResumeCloseDelete(t *testing.T) {
 	}
 	// Resuming an open session keeps it.
 	c.ok(acp.MethodSessionResume, resume(cwd, nil), nil)
-	c.untilIdle(sid)
+	current := c.untilIdle(sid)
+	if len(current) != 2 || current[0].Update.Kind != "session_info_update" ||
+		current[0].Update.Title != first.Title || current[0].Update.UpdatedAt != last.UpdatedAt {
+		t.Fatalf("warm resume metadata: %+v", current)
+	}
 	c.fails(acp.MethodSessionResume, resume(cwd, map[string]any{"type": "_later"}), jsonrpc.CodeInvalidParams)
 	c.fails(acp.MethodSessionResume, resume(t.TempDir(), nil), jsonrpc.CodeInvalidParams)
 	c.sessionNotFound(acp.MethodSessionResume, map[string]any{"sessionId": "missing", "cwd": cwd, "mcpServers": []any{}})
@@ -615,7 +626,9 @@ func TestSessionListResumeCloseDelete(t *testing.T) {
 	// Resuming a closed session loads it from the store and replays it.
 	c.ok(acp.MethodSessionResume, resume(cwd, map[string]any{"type": acp.ReplayFromStart}), nil)
 	replayed := c.untilIdle(sid)
-	if !hasKind(replayed, "user_message") || !hasKind(replayed, "agent_message") {
+	if len(replayed) != 5 || replayed[0].Update.Kind != "user_message" || replayed[1].Update.Kind != "agent_message" ||
+		replayed[2].Update.Kind != "replay_complete" || replayed[3].Update.Kind != "session_info_update" ||
+		replayed[3].Update.Title != first.Title || replayed[3].Update.UpdatedAt != last.UpdatedAt {
 		t.Fatalf("replay: %+v", replayed)
 	}
 	model.reply("again", llm.FinishStop, nil)
