@@ -109,6 +109,7 @@ func TestErrorsForMalformedInput(t *testing.T) {
 		name, line, want string
 	}{
 		{"parse error", `{"jsonrpc":`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}`},
+		{"malformed array", `[{"jsonrpc":"2.0"},]`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}`},
 		{"not an object", `42`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request: json: cannot unmarshal number into Go value of type jsonrpc.inbound"}}`},
 		{"bad id", `{"jsonrpc":"2.0","id":{},"method":"echo"}`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request: id must be a string, a number or null"}}`},
 		{"wrong version", `{"jsonrpc":"1.0","id":1,"method":"echo"}`, `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request: want jsonrpc \"2.0\" and a method"}}`},
@@ -186,16 +187,23 @@ func TestReplySettledBeforeHandlerReturns(t *testing.T) {
 }
 
 func TestCancelRequestCancelsDeferredRequestContext(t *testing.T) {
+	admitted := make(chan context.Context, 1)
 	p := newPeer(t, Methods{
 		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			admitted <- ctx
 			reply := NewReply(ctx)
 			context.AfterFunc(ctx, func() { reply.Reject(NewError(-32800, "Request cancelled")) })
 			return reply, nil
 		},
 	})
 	p.send(`{"jsonrpc":"2.0","id":"w","method":"wait"}`)
-	p.expectSilence()
-	p.send(`{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":"w"}}`)
+	const cancel = `{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":"w"}}`
+	p.send("[" + cancel + "]")
+	p.expect(rejectedArray)
+	if err := (<-admitted).Err(); err != nil {
+		t.Fatalf("embedded cancellation reached the request: %v", err)
+	}
+	p.send(cancel)
 	p.expect(`{"jsonrpc":"2.0","id":"w","error":{"code":-32800,"message":"Request cancelled"}}`)
 }
 
@@ -228,47 +236,28 @@ func (v validated) Validate() error {
 	return nil
 }
 
-func TestBatch(t *testing.T) {
-	release := make(chan struct{})
-	p := newPeer(t, Methods{
-		"echo": echo,
-		"slow": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			reply := NewReply(ctx)
-			go func() { <-release; reply.Resolve("slow") }()
-			return reply, nil
-		},
-	})
+const rejectedArray = `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"ACP does not support JSON-RPC batches"}}`
 
-	t.Run("mixed", func(t *testing.T) {
-		p.t = t
-		p.send(`[{"jsonrpc":"2.0","id":1,"method":"slow"},{"jsonrpc":"2.0","method":"echo"},1,{"jsonrpc":"2.0","id":2,"method":"echo","params":[2]}]`)
-		p.expectSilence()
-		close(release)
-		var got []map[string]any
-		if err := json.Unmarshal([]byte(p.recv()), &got); err != nil {
-			t.Fatal(err)
-		}
-		byID := map[any]map[string]any{}
-		for _, r := range got {
-			byID[r["id"]] = r
-		}
-		if len(got) != 3 || byID[1.0]["result"] != "slow" || byID[nil]["error"] == nil {
-			t.Fatalf("unexpected batch response: %v", got)
-		}
-		if !reflect.DeepEqual(byID[2.0]["result"], []any{2.0}) {
-			t.Fatalf("unexpected echo result: %v", byID[2.0])
-		}
-	})
-	t.Run("empty", func(t *testing.T) {
-		p.t = t
-		p.send(`[]`)
-		p.expect(`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid batch"}}`)
-	})
-	t.Run("notifications only", func(t *testing.T) {
-		p.t = t
-		p.send(`[{"jsonrpc":"2.0","method":"echo"},{"jsonrpc":"2.0","method":"echo"}]`)
-		p.expectSilence()
-	})
+func TestRejectsArraysBeforeDispatch(t *testing.T) {
+	calls := 0
+	p := newPeer(t, Methods{"count": func(context.Context, json.RawMessage) (any, error) {
+		calls++
+		return calls, nil
+	}})
+	const notice = `{"jsonrpc":"2.0","method":"count"}`
+	const request = `{"jsonrpc":"2.0","id":7,"method":"count"}`
+	for _, line := range []string{
+		`[]`,
+		`  [` + request + `]`,
+		`[` + notice + `,` + notice + `]`,
+		`[` + notice + `,42,` + request + `]`,
+	} {
+		p.send(line)
+		p.expect(rejectedArray)
+	}
+	// The standalone request also counts any silently dispatched members.
+	p.send(request)
+	p.expect(`{"jsonrpc":"2.0","id":7,"result":1}`)
 }
 
 func TestMarshalKeepsHTMLCharacters(t *testing.T) {
@@ -322,9 +311,12 @@ func TestCallRoutesResponsesByID(t *testing.T) {
 		}
 		ids = append(ids, string(req.ID))
 	}
-	// Answer out of order, one in a batch, plus a response nobody awaits.
+	// An embedded response cannot claim a pending call.
+	p.send(`[{"jsonrpc":"2.0","id":` + ids[0] + `,"result":{"n":99}}]`)
+	p.expect(rejectedArray)
+	// Answer out of order, plus a response nobody awaits.
 	p.send(`{"jsonrpc":"2.0","id":999,"result":{"n":0}}`)
-	p.send(`[{"jsonrpc":"2.0","id":` + ids[1] + `,"error":{"code":-32603,"message":"no"}}]`)
+	p.send(`{"jsonrpc":"2.0","id":` + ids[1] + `,"error":{"code":-32603,"message":"no"}}`)
 	p.send(`{"jsonrpc":"2.0","id":` + ids[0] + `,"result":{"n":7}}`)
 	var got []outcome
 	for range 2 {
