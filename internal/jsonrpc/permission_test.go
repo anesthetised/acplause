@@ -71,6 +71,34 @@ func TestPermissionCancelWithFullOrdinaryQueue(t *testing.T) {
 	})
 }
 
+// The reader has handled session/cancel and is delivering the very next line
+// before the permission worker acquires the connection lock.
+func TestPermissionCancelledBeforeResponseDelivery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, out, release := heldConn(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := permissionCall(ctx, c, "ask")
+		synctest.Wait()
+		answer := &inbound{ID: []byte("1"), Result: []byte("{}")}
+		c.mu.Lock()
+		cancel()
+		c.completeLocked("1", c.calls["1"], answer)
+		c.mu.Unlock()
+		c.deliver(answer) // a duplicate response cannot consume the slot again
+		expectCallError(t, done, context.Canceled)
+		release()
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 2 || len(c.cancels.slots) != 0 {
+			t.Fatalf("wire lines %q, remaining reservations %d", lines, len(c.cancels.slots))
+		}
+		assertJSON(t, lines[1], `{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":1}}`)
+	})
+}
+
 func TestPermissionReservationLimitAndResponseWins(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c, out, release := heldConn(t)
