@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
+	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
 	"github.com/anesthetised/acplause/internal/store"
 )
@@ -356,5 +359,187 @@ func TestCursorCannotHoldFinalUpdatesOwedByClose(t *testing.T) {
 	c.ok(acp.MethodSessionResume, params, nil)
 	if updates := c.untilIdle(id); !hasKind(updates, "replay_complete") {
 		t.Fatalf("replay after close: %+v", updates)
+	}
+}
+
+func TestRetakeDrainsRetiringTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name                             string
+		replay, closeDuring, renewedLoss bool
+	}{
+		{name: "cursorless"},
+		{name: "replay", replay: true},
+		{name: "close during replay", replay: true, closeDuring: true},
+		{name: "renewal retiring worker", replay: true, renewedLoss: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			model := fakeModel(func(ctx context.Context, _ llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
+				close(started)
+				<-ctx.Done()
+				close(cancelled)
+				<-release
+				return nil, ctx.Err()
+			})
+			c := startAgent(t, t.TempDir(), model, nil)
+			c.initialize()
+			cwd := t.TempDir()
+			id := c.newSession(cwd)
+			c.selectModel(id, "m")
+			if r := c.await(c.prompt(id, "running")); r.Error != nil {
+				t.Fatal(r.Error)
+			}
+			issue50Wait(t, started)
+			c.waitFor(id, func(n notification) bool { return n.Update.State == "running" })
+			// The next acquisition observes discontinuous ownership even though
+			// the old model request is still returning from cancellation.
+			if err := c.agent.cfg.Store.Release(t.Context(), id); err != nil {
+				t.Fatal(err)
+			}
+			if tc.renewedLoss {
+				c.agent.renew()
+			}
+			params := map[string]any{"sessionId": id, "cwd": cwd}
+			if tc.replay {
+				params["replayFrom"] = map[string]string{"type": "start"}
+			}
+			resume := c.send(acp.MethodSessionResume, params)
+			issue50Wait(t, cancelled)
+			var closing <-chan rpcResponse
+			if tc.closeDuring {
+				closing = c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
+			}
+			c.initialize() // The reader remains available during the drain.
+			renewed := make(chan struct{})
+			go func() { c.agent.renew(); close(renewed) }()
+			issue50Wait(t, renewed)
+			select {
+			case r := <-resume:
+				t.Fatalf("resume overtook retiring worker: %+v", r)
+			case r := <-closing:
+				t.Fatalf("close overtook retiring worker: %+v", r)
+			case <-time.After(50 * time.Millisecond):
+			}
+			unblock()
+			resp := c.await(resume)
+			if tc.closeDuring {
+				if resp.Error == nil || resp.Error.Code != -32800 {
+					t.Fatalf("interrupted resume: %+v", resp)
+				}
+			} else if resp.Error != nil {
+				t.Fatal(resp.Error)
+			}
+			if closing == nil {
+				if err := c.agent.cfg.Store.CheckOwner(t.Context(), id); err != nil {
+					t.Fatalf("replacement lease: %v", err)
+				}
+				closing = c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
+			}
+			if r := c.await(closing); r.Error != nil {
+				t.Fatal(r.Error)
+			}
+			var got []string
+			for len(c.updates) > 0 {
+				u := (<-c.updates).Update
+				if u.State != "" {
+					got = append(got, strings.TrimSpace(u.State+" "+u.StopReason))
+				} else {
+					got = append(got, u.Kind)
+				}
+			}
+			want := []string{"idle cancelled", "idle"}
+			if tc.closeDuring {
+				want = []string{"idle cancelled"}
+			} else if tc.replay {
+				want = []string{"user_message", "replay_complete", "idle cancelled", "idle"}
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("updates before close = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestLostGenerationRejectsPromptDuringAcquire(t *testing.T) {
+	gate := &gatedAcquireStore{entered: make(chan struct{}, 1), release: make(chan error)}
+	defer close(gate.release)
+	c := startAgent(t, t.TempDir(), nil, nil, func(st Store) Store { gate.Store = issue50Store{st}; return gate })
+	c.initialize()
+	cwd := t.TempDir()
+	id := c.newSession(cwd)
+	if err := c.agent.cfg.Store.Release(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := c.agent.session(id)
+	s.flush() // A real failed owner check leaves the stale Session cached.
+	if !s.isLost() {
+		t.Fatal("stale save did not observe loss")
+	}
+	prompt := map[string]any{"sessionId": id, "prompt": []any{}, "idempotencyKey": "k"}
+	if e := c.fails(acp.MethodSessionPrompt, prompt, -32603); e.Message != store.ErrLost.Error() {
+		t.Fatal(e)
+	}
+	resume := c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd})
+	issue50Wait(t, gate.entered)
+	c.sessionNotFound(acp.MethodSessionPrompt, prompt)
+	gate.release <- nil
+	if r := c.await(resume); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+}
+
+func TestFailedReplayHistoryWriteDiscardsQueuedActivation(t *testing.T) {
+	model := make(scriptedModel, 1)
+	model.reply("recorded answer", llm.FinishStop, nil)
+	var replaying atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	failure := errors.New("history frame write failed")
+	var attempted [][]byte // read only after joining the connection writer
+	c := startAgentWithOutput(t, t.TempDir(), model, nil, func(w io.Writer) io.Writer {
+		return replayTestWriter(func(line []byte) (int, error) {
+			if replaying.Load() {
+				attempted = append(attempted, bytes.Clone(line))
+				if bytes.Contains(line, []byte(`"sessionUpdate":"agent_message"`)) {
+					close(entered)
+					<-release
+					return 0, failure
+				}
+			}
+			return w.Write(line)
+		})
+	})
+	c.initialize()
+	cwd := t.TempDir()
+	id := c.newSession(cwd)
+	c.selectModel(id, "m")
+	if r := c.await(c.prompt(id, "recorded prompt")); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	c.untilIdle(id)
+	c.ok(acp.MethodSessionClose, map[string]any{"sessionId": id}, nil)
+	replaying.Store(true)
+	c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}})
+	issue50Wait(t, entered)
+	c.agent.jobs.Wait() // Marker, state, and cold success are queued behind the failed frame.
+	c.agent.mu.Lock()
+	s := c.agent.sessions[id]
+	c.agent.mu.Unlock()
+	if s == nil || s.activation.Load() != activationPending {
+		t.Fatal("expected pending activation behind replay frames")
+	}
+	unblock()
+	if err := c.agent.deps.out.(*jsonrpc.Conn).Close(); !errors.Is(err, failure) {
+		t.Fatalf("writer error = %v", err)
+	}
+	if len(attempted) != 2 || !bytes.Contains(attempted[0], []byte(`"sessionUpdate":"user_message"`)) ||
+		!bytes.Contains(attempted[1], []byte(`"sessionUpdate":"agent_message"`)) {
+		t.Fatalf("replay write attempts = %q", attempted)
+	}
+	if s.activation.Load() != activationPending {
+		t.Fatal("discarded success activated the session")
 	}
 }

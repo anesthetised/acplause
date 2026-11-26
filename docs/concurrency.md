@@ -84,7 +84,7 @@ Not lock-guarded, by ownership instead:
 | `Session.mu` | `tools.New`, `Toolbox.Close`, `AGENTS.md` reads, model requests | `Session.configureResume`, `Session.releaseToolbox`, `Session.refreshInstructions` and `Session.converse` do this work unlocked |
 | `Agent.mu` | waiting for `Session.mu`, which a live update holds across `Conn.Notify` | `Agent.setConfigOption` reads pending setup under `Agent.mu`, releases it, then admits the change under `Session.mu` (see [Session operations](#session-operations)) |
 | `Session.mu` | writing a replay snapshot | `historyReplay.write` writes outside the lock; `Session.send` defers live updates meanwhile (see [Resume](#resume)) |
-| `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` and `Agent.acquire` start it with `go` |
+| `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` starts cleanup on a goroutine. `Agent.open` joins cleanup after `Agent.acquire` releases both locks |
 | `Agent.ownershipMu` | MCP setup, the catalog load, `restoreSession` | `Agent.open` takes the lock only in `Agent.acquire`, then waits for the catalog (up to `catalogTimeout` when none has loaded) and restores the private session; `Agent.resume` runs `Session.configureResume` before `Agent.publishRestored`. A slow provider or server cannot delay lease renewal |
 | `Manager.mu` | connecting or closing a server | `Manager.Prepare` and `Manager.Recover` connect unlocked; `Manager.closeResource` closes before locking |
 
@@ -135,7 +135,7 @@ Per connection:
 | Selection save, chained in request order | `Agent.rememberSelection` | its save finishes |
 | `session/new`, `session/list` work | `Agent.newSession`, `Agent.listSessions`; tracked by `Agent.jobs` | reply settled |
 | One per `sessionOperation` | `Agent.startOperation`; tracked by `Agent.jobs` | its work and `done` |
-| Session closers | `Agent.Shutdown`, `Agent.dropLocked`, `Agent.acquire` | `Session.Close` returns |
+| Session closers | `Agent.Shutdown`, `Agent.dropLocked` | `Session.Close` returns |
 
 Per session:
 
@@ -179,8 +179,8 @@ when it is answered, on `$/cancel_request`, or when `Serve` returns.
 | `session/list` | the job in `Agent.listSessions` |
 | `session/resume` | the operation goroutine (`Agent.resumeSession`) |
 | `session/close`, `session/delete` | the operation goroutine, or the close handler when there is no active session or earlier work to wait for. Close settles after cleanup even when cancelled. Delete may reject a cancelled waiter early and still runs terminal cleanup |
-| `session/prompt`, before submission | the handler when the session is unknown or lost; otherwise `Agent.startOperation`, when the prompt waited behind setup and was cancelled, setup failed, or the session is gone |
-| `session/prompt`, after submission | the `Session`: `Session.submit` (in-memory recorded key, closed, lost, no model), `Session.resolveRecorded` (stored owner check), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
+| `session/prompt`, before submission | the handler when the session is unknown or lost; otherwise `Agent.startOperation`, when a prompt waiting on setup was cancelled or its generation is gone |
+| `session/prompt`, after submission | the `Session`: `Session.submit` (in-memory recorded key, closed, lost, failed setup, no model), `Session.resolveRecorded` (stored owner check), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
 | any handler that panics or a method that does not exist | `Conn` itself |
 
 `session/cancel` is a notification. `Agent.cancelWaitingPrompts` only cancels
@@ -243,10 +243,10 @@ pending resume publishes afterwards.
 - **Prompt.** A cold resume cannot admit prompts until its successful response,
   including after its replay marker. On an active session, with nothing pending, `Agent.prompt` submits straight to the
   session queue. Otherwise it joins the chain marked `prompt` and, once
-  predecessors finish, takes the error of the nearest non-prompt
-  predecessor: failed setup rejects the prompt before insertion, while an
-  earlier cancelled prompt does not. Then it submits with the request's
-  reply, which the session owns from then on.
+  predecessors finish, submits to the same active session with the result of
+  the nearest non-prompt predecessor. The session checks retained keys
+  against ownership even if setup failed. A setup failure rejects new
+  insertions. An earlier prompt cancellation applies only to that prompt.
 - **Resume.** The reader reserves a cursor replay before starting any
   background work. A cursor received while an earlier resume or terminal
   operation still owes session updates receives an invalid-request error.
@@ -305,8 +305,11 @@ catalog and restoring happen after both are released.
   events. It omits the marker if history delivery did not finish. A later
   failure, such as losing ownership during cold publication, can follow a
   successfully delivered marker.
-- **Otherwise** the old session is marked lost, which cancels its turn,
-  removed from the map and closed on a goroutine. A new session is restored
+- **Discontinuous ownership.** Acquisition marks the old session lost, cancels
+  its turn and removes it from the map. The resume worker joins its cleanup outside the
+  agent and session locks before queuing replacement state. With a cursor,
+  buffered completion updates from the retiring turn follow the marker, including its
+  final idle. The replacement state follows them. A new session is restored
   from the store, repairing a turn its last process left unfinished. It stays
   private until `Agent.publishRestored` saves it under `ownershipMu` and
   publishes it under `Agent.mu` for lease tracking, unless the request was
@@ -324,14 +327,17 @@ catalog and restoring happen after both are released.
 Loss is detected at these points:
 
 - `Agent.renew`, every `store.LeaseRenewal`, under `ownershipMu`. For each
-  lost ID, `Agent.dropLocked` removes the session, records it in `lost` so
-  later requests fail with `errSessionLost`, and cancels the operation chain
+  lost ID, `Agent.dropLocked` revokes activation, records the loss under
+  `Agent.mu`, and cancels the operation chain
   captured at the check. A resume reserved after the check is left alone so it
   can restore the session. It then marks the session lost, drains `flushMu`
-  and closes it on a goroutine.
+  and closes it on a goroutine. A concurrent resume, close or shutdown can
+  still find and join that cleanup until the final update is queued.
 - `Session.flush`, `Session.claimTurn`, or a recorded retry receiving
   `store.ErrLost`, under `flushMu` and `Session.mu`. `Session.loseLocked`
-  marks the session lost. It stays in the map until the next renewal drops it.
+  atomically revokes activation, even while the session remains cached. A
+  prompt received during cold resume gets `-32002` with its session ID.
+  With no pending operation it receives the ownership error.
 - `Agent.acquire`, when the live session was not continuously owned.
 
 `Session.loseLocked` sets `lost`, cancels `Session.ctx` and closes MCP servers
@@ -358,7 +364,7 @@ queued prompts are withdrawn and waiting operations rejected. `Shutdown`:
    waits for the worker, so a running turn's final idle `cancelled` update is
    queued before `Conn.Close` flushes the writer. The turn's last
    `Session.flush` saves without cancellation;
-5. waits for `Agent.jobs`: `session/new`, `session/list` and session
-   operations.
+5. waits for `Agent.jobs`: `session/new`, `session/list`, session operations
+   and cleanup started by lease renewal.
 
 The store closes after `Shutdown` returns.

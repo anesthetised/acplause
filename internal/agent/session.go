@@ -81,6 +81,7 @@ type Session struct {
 	claimed       bool            // a prompt left the queue and its turn has not ended
 	stopTurn      context.CancelFunc
 	rejections    sync.WaitGroup // queued replies detached under mu, settled before Close returns
+	closeOnce     sync.Once      // renewal, resume and close can join the same retiring generation
 	closed        bool
 
 	// Private lookup and persistence indexes for inserted user messages, guarded by mu.
@@ -107,6 +108,7 @@ const (
 	activationActive uint32 = iota // new sessions and continuously owned live sessions
 	activationPending
 	activationDetached
+	activationLost
 )
 
 // activate is the successful cold response's writer callback. A close or
@@ -165,7 +167,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 // cancelled first, through ctx or session/cancel.
 func (s *Session) Submit(ctx context.Context, prompt []acp.ContentBlock) *jsonrpc.Reply {
 	reply := jsonrpc.NewReply(ctx)
-	s.submit(&submission{ctx: ctx, prompt: prompt, reply: reply})
+	s.submit(&submission{ctx: ctx, prompt: prompt, reply: reply}, nil)
 	return reply
 }
 
@@ -177,7 +179,7 @@ func (sub *submission) cancelled() bool {
 	return ok && g.cancelled()
 }
 
-func (s *Session) submit(sub *submission) {
+func (s *Session) submit(sub *submission, setupErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -194,6 +196,10 @@ func (s *Session) submit(sub *submission) {
 		} else {
 			s.saves.Go(func() { s.resolveRecorded(sub.reply, id) })
 		}
+		return
+	}
+	if setupErr != nil {
+		sub.reply.Reject(setupErr)
 		return
 	}
 	if sub.cancelled() {
@@ -250,6 +256,10 @@ func (s *Session) rejectQueuedLocked(queued []*submission) {
 // Close cancels all work, waits for the final updates of a running turn and
 // releases the session's resources.
 func (s *Session) Close() {
+	s.closeOnce.Do(s.close)
+}
+
+func (s *Session) close() {
 	s.detachActivation()
 	s.mu.Lock()
 	s.closed = true

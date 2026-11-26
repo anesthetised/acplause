@@ -156,9 +156,13 @@ func (a *Agent) renew() {
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
 	a.mu.Lock()
-	ids := slices.Collect(maps.Keys(a.sessions))
-	pending := make(map[string]*sessionOperation, len(ids))
-	for _, id := range ids {
+	ids := make([]string, 0, len(a.sessions))
+	pending := make(map[string]*sessionOperation, len(a.sessions))
+	for id := range a.sessions {
+		if a.lost[id] {
+			continue // renewal already retired this generation
+		}
+		ids = append(ids, id)
 		pending[id] = a.operations[id]
 	}
 	a.mu.Unlock()
@@ -180,7 +184,11 @@ func (a *Agent) renew() {
 // cancelling its reservation would prevent it from restoring the session.
 func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 	a.mu.Lock()
-	s := a.detachSessionLocked(id)
+	s := a.sessions[id]
+	if s != nil {
+		s.activation.Store(activationLost)
+		a.jobs.Add(1)
+	}
 	a.prompts.detach(id)
 	for op := pending; op != nil; op = op.previous {
 		op.cancel()
@@ -190,11 +198,20 @@ func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 	if s != nil {
 		a.cfg.Log.Info("session taken over by another process", "session", id)
 		s.markLost()
-		// The map no longer exposes s to open. Drain its old write before
-		// releasing ownershipMu, or reacquisition could revive that write's
-		// process owner ID even though the detached session is marked lost.
+		// A terminal handler can detach s before acquire sees it. Fence any
+		// store write already in flight before releasing ownershipMu (ADR 0004).
 		s.flushMu.Lock()
-		go s.Close()
+		// Keep the lost generation reachable until its final updates are queued.
+		// Resume and close can join this cleanup without holding an agent lock.
+		go func() {
+			defer a.jobs.Done()
+			s.Close()
+			a.mu.Lock()
+			if a.sessions[id] == s {
+				a.detachSessionLocked(id)
+			}
+			a.mu.Unlock()
+		}()
 		s.flushMu.Unlock()
 	}
 }
@@ -355,8 +372,12 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 	s := a.sessions[req.SessionID]
 	// Admission belongs to the activation visible at receipt. Register the
 	// key under the same fence as detachment on close or ownership loss.
-	if s == nil || s.activation.Load() != activationActive || (previous != nil && previous.terminal) {
-		lost := a.lost[req.SessionID] && previous == nil
+	activation := activationDetached
+	if s != nil {
+		activation = s.activation.Load()
+	}
+	if activation != activationActive || (previous != nil && previous.terminal) {
+		lost := previous == nil && (activation == activationLost || a.lost[req.SessionID])
 		a.mu.Unlock()
 		if lost {
 			return nil, errSessionLost()
@@ -373,7 +394,7 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 	}
 	a.mu.Unlock()
 	if previous == nil {
-		s.submit(sub)
+		s.submit(sub, nil)
 		return reply, nil
 	}
 	op := a.reserveOperation(sub.ctx, req.SessionID, false, false)
@@ -385,11 +406,10 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 		// prompt was cancelled. Failed setup must reject before insertion.
 		// The predecessor observed at receipt may have finished while the
 		// group was registered. Its result still applies to this prompt.
+		var setupErr error
 		for setup := previous; setup != nil; setup = setup.previous {
 			if !setup.prompt {
-				if setup.err != nil {
-					return setup.err
-				}
+				setupErr = setup.err
 				break
 			}
 		}
@@ -400,7 +420,7 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 		if current != s {
 			return errSessionLost()
 		}
-		s.submit(sub)
+		s.submit(sub, setupErr)
 		return nil
 	})
 	return reply, nil
@@ -561,9 +581,14 @@ func (a *Agent) publishRestored(ctx context.Context, s *Session) error {
 // provider for catalogTimeout, which must not delay lease renewal; the session
 // stays private until publishRestored, so nothing else can observe it meanwhile.
 func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Session, bool, error) {
-	live, l, err := a.acquire(ctx, id, cwd)
-	if live != nil || err != nil {
-		return live, false, err
+	cached, l, err := a.acquire(ctx, id, cwd)
+	if l == nil || err != nil {
+		return cached, false, err
+	}
+	if cached != nil {
+		// Join the retiring worker outside all locks, before synchronizing
+		// replacement state. Its process-owned lease is now ours to keep.
+		cached.Close()
 	}
 	c, err := a.catalog()
 	if err != nil {
@@ -579,11 +604,11 @@ func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Sessi
 	return s, true, nil
 }
 
-// acquire takes the session's lease and returns either the continuously owned
-// live session or the stored record to restore. Old saves must finish before
-// ownership can return to this process, or their process-owner check could
-// overwrite the new history; a live session that lost ownership is marked lost
-// while its flushMu still fences queued flushes and prompt insertions.
+// acquire takes the lease and returns the cached session, if any. A non-nil
+// record requires restoration and draining any cached session. Old saves must
+// finish before ownership can return to this process, or their process-owner
+// check could overwrite the new history. Mark the old session lost while its
+// flushMu still fences queued flushes and insertions.
 func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.Loaded, error) {
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
@@ -627,9 +652,8 @@ func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.L
 		}
 		a.lost[id] = true
 		a.mu.Unlock()
-		go old.Close() // never release the replacement's process-owned lease
 	}
-	return nil, l, nil
+	return old, l, nil
 }
 
 // closeSession cancels the session's work at once, to keep ordering with
@@ -802,8 +826,13 @@ func (a *Agent) rememberSelection(model, effort string) {
 func (a *Agent) session(id string) (*Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if s, ok := a.sessions[id]; ok && s.activation.Load() == activationActive {
-		return s, nil
+	if s := a.sessions[id]; s != nil {
+		switch s.activation.Load() {
+		case activationActive:
+			return s, nil
+		case activationLost:
+			return nil, errSessionLost()
+		}
 	}
 	if a.lost[id] {
 		return nil, errSessionLost()

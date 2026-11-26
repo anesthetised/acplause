@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"slices"
@@ -209,4 +210,56 @@ func TestReplayOrdersNewClientRequests(t *testing.T) {
 			a.untilIdle(sid)
 		})
 	}
+}
+
+func TestRetakeOrdersCancelledIdleAfterReplayMarker(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(callTool("write_file", `{"path":"file","content":"pending"}`))
+	dir := t.TempDir()
+	a, sid, cwd := started(t, llm, withDataDir(dir), askingUser)
+	a.accepted(a.prompt(sid, "retiring turn"))
+	permission := a.permissionRequest()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	// Simulate an expired, different owner. Commit after the reader has
+	// registered replay so the old turn's final idle belongs behind its marker.
+	if _, err := tx.Exec("UPDATE sessions SET owner = 'other', lease_until = 0 WHERE id = ?", sid); err != nil {
+		t.Fatal(err)
+	}
+	resume := a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}})
+	a.initialize()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var updates []update
+	for {
+		m := a.take(func(m *message) bool {
+			return (m.seq > permission.seq && m.Method == "session/update" && sessionOf(m) == sid) || (m.Method == "" && string(m.ID) == resume)
+		})
+		if m.Method == "" {
+			if m.Error != nil {
+				t.Fatal(m.Error)
+			}
+			break
+		}
+		updates = append(updates, decodeUpdate(t, m))
+	}
+	got := kinds(updates)
+	want := []string{"user_message", "tool_call_update failed", "replay_complete", "tool_call_update cancelled", "state_update idle cancelled", "state_update idle"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("updates before resume response = %v", got)
+	}
+	if cancel := a.cancellation(permission); cancel.seq >= updates[len(updates)-2].seq {
+		t.Fatal("permission cancellation followed the retiring turn's idle")
+	}
+	a.ok("session/close", map[string]any{"sessionId": sid}, nil)
 }

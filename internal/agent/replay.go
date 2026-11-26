@@ -99,6 +99,23 @@ func inHistory(u acp.Update) bool {
 	return false
 }
 
+// finalUpdate identifies completions still owed by the retiring worker.
+// Its intermediate history patches may describe a different conversation
+// than the authoritative transcript loaded by the replacement.
+func finalUpdate(u acp.Update) bool {
+	switch u := u.(type) {
+	case acp.StateUpdate:
+		return u.State == acp.StateIdle && u.StopReason != ""
+	case acp.ToolCallUpdate:
+		return u.Status == acp.ToolCancelled || u.Status == acp.ToolFailed || u.Status == acp.ToolCompleted
+	case acp.TerminalUpdate:
+		return u.ExitStatus != nil
+	case acp.CompactionUpdate:
+		return u.Status == acp.CompactionCancelled || u.Status == acp.CompactionFailed || u.Status == acp.CompactionCompleted
+	}
+	return false
+}
+
 // finish drains in delivery order before reopening direct sends. After an
 // error, even patches that would have been covered by the cut are owed live.
 func (r *historyReplay) finish(complete bool) (firstErr error) {
@@ -116,9 +133,14 @@ func (r *historyReplay) finish(complete bool) (firstErr error) {
 		}
 		rs.mu.Unlock()
 		for _, event := range batch {
-			deliver := !event.snapshot
-			if complete {
-				deliver = event.session == r.session && (index >= r.cut || !inHistory(event.update))
+			var deliver bool
+			switch {
+			case !complete:
+				deliver = !event.snapshot
+			case event.session == r.session:
+				deliver = index >= r.cut || !inHistory(event.update)
+			default:
+				deliver = finalUpdate(event.update)
 			}
 			if deliver {
 				if err := event.session.notify(event.update); err != nil && firstErr == nil {

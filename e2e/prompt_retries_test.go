@@ -2,9 +2,15 @@ package e2e
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // Discard the first process and its unread prompt response. The only ID the
@@ -98,6 +104,32 @@ func TestPromptRetryAfterLostResponseAndCompaction(t *testing.T) {
 	if got := llm.requestCount(); got != 3 {
 		t.Fatalf("ownership checks issued another model request: %d", got)
 	}
+	// Hold SQLite acquisition pending after b confirmed its cached
+	// generation lost ownership. The prompt error must arrive before commit.
+	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("UPDATE sessions SET title = title WHERE id = ?", sid); err != nil {
+		t.Fatal(err)
+	}
+	resume := b.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd})
+	b.sessionNotFound("session/prompt", params(sid, "before reacquisition"))
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if r := b.response(resume); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	if got, _ := b.accepted(b.request("session/prompt", params(sid, "after reacquisition"))); got != original {
+		t.Fatalf("restored ID = %q, want %q", got, original)
+	}
 }
 
 func TestKeyedCancellationBeforeAndAfterSettlement(t *testing.T) {
@@ -140,5 +172,47 @@ func TestKeyedCancellationBeforeAndAfterSettlement(t *testing.T) {
 	echoes := filter(updates, "user_message")
 	if len(echoes) != 1 || echoes[0].MessageID != one || updates[len(updates)-1].StopReason != "end_turn" || llm.requestCount() != 2 {
 		t.Fatalf("settled turn after cancellation: %v, model calls %d", kinds(updates), llm.requestCount())
+	}
+}
+
+func TestRetainedRetrySurvivesFailedReconfiguration(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(reply("done"))
+	a, sid, cwd := started(t, llm)
+	prompt := func(key string) string {
+		return a.request("session/prompt", map[string]any{"sessionId": sid, "prompt": []any{map[string]string{"type": "text", "text": "ask"}}, "idempotencyKey": key})
+	}
+	original, _ := a.accepted(prompt("retained"))
+	a.untilIdle(sid)
+	entered, release := make(chan struct{}), make(chan struct{})
+	started := sync.OnceFunc(func() { close(entered) })
+	unblock := sync.OnceFunc(func() { close(release) })
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer peer.Close()
+	defer unblock()
+	resume := a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{map[string]string{"type": "http", "name": "unavailable", "url": peer.URL}}})
+	select {
+	case <-entered:
+	case <-time.After(timeout):
+		t.Fatal("MCP setup did not start")
+	}
+	retry, fresh := prompt("retained"), prompt("new")
+	a.initialize()
+	unblock()
+	for _, id := range []string{resume, fresh} {
+		if r := a.response(id); r.Error == nil || r.Error.Code != -32602 {
+			t.Fatalf("request %s: %+v", id, r)
+		}
+	}
+	if got, _ := a.accepted(retry); got != original || llm.requestCount() != 1 {
+		t.Fatalf("retained retry = %q, want %q; model calls = %d", got, original, llm.requestCount())
 	}
 }
