@@ -55,7 +55,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | `plan_update` | Covered | `internal/acp/plan_test.go`, `e2e/mode_test.go` |
 | [`plan_removed`][beta-plan] | Covered for unfinished plans on explicit cancellation (ADR 0041) | `e2e/plan_test.go`, `e2e/plan_unix_test.go`, `internal/agent/plan_test.go` |
 | `available_commands_update` | Deferred #146 | the command list is static (ADR 0015) |
-| `config_option_update` | Gap (beta.4 audit) | client-initiated changes return config in the response |
+| `config_option_update` | Covered for client setters | [Ordered complete snapshots](../../e2e/config_updates_test.go); agent-initiated catalog changes remain in #144 |
 | `session_info_update` | Covered | `e2e/sessions_test.go` |
 | `replay_complete` | Covered | `e2e/replay_test.go`, `internal/agent/resume_setup_test.go` |
 | `usage_update` | Covered | `e2e/usage_test.go` |
@@ -184,9 +184,10 @@ configured values. Tests cover both setup methods and credential handling.
   it with one working and one failing peer. [MCP servers][beta-mcp]
 - **Configuration.** The spec recommends broadcasting the complete config when
   it changes, including client-initiated changes. [Set config](../../internal/agent/agent.go)
-  currently returns the response. [#144](https://github.com/anesthetised/acplause/issues/144)
-  tracks sending the same complete list in a notification before the response
-  when a setter changes the advertised configuration. [Config changes][beta-config]
+  now sends the complete list in a notification before the matching response
+  when a setter changes the advertised configuration. Agent-initiated catalog
+  refresh remains a [#144](https://github.com/anesthetised/acplause/issues/144) follow-up.
+  [ADR 0040](../adr/0040-client-configuration-updates.md) · [Stdio tests](../../e2e/config_updates_test.go) · [Config changes][beta-config]
 - **Session info.** Resume should send a current `session_info_update` even
   without replay, and active sessions should get updates when metadata
   changes. Both resume paths now report metadata immediately before current

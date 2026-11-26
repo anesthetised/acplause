@@ -76,6 +76,12 @@ func (r *Reply) ErrorLine(err error) func() ([]byte, error) {
 	return func() ([]byte, error) { return Marshal(response) }
 }
 
+// ResultLine encodes a successful response to be enqueued with preceding
+// notifications. Call Delivered once the response has entered the queue.
+func (r *Reply) ResultLine(result any) ([]byte, error) {
+	return Marshal(newResponse(r.id, result, nil))
+}
+
 type sentResponse struct{}
 
 // Delivered settles a request whose response already entered a reserved slot.

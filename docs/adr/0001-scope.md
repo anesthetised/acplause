@@ -29,7 +29,8 @@ it in tests.
    `[cwd, ...additionalDirectories]` is the sandbox for file tools.
 7. **`session/list` paginates.** `cursor` is an opaque token; `nextCursor` is
    present only when another page exists; an invalid cursor is `-32602`.
-8. **No `config_option_update` for client-initiated changes.** The
+8. **No `config_option_update` for client-initiated changes** (superseded by
+   [ADR 0040](0040-client-configuration-updates.md)). The original
    `session/set_config_option` response already carries the complete option
    list, including dependent changes (e.g. `reasoning_effort` appearing when
    the model supports reasoning). The notification is reserved for changes the

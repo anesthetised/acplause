@@ -31,6 +31,11 @@ func (c *Conn) SendLine(ctx context.Context, line []byte, changed <-chan struct{
 	return c.sendFrame(ctx, outputFrame{line: line}, "", pendingCall{}, changed, admit)
 }
 
+// SendLines queues consecutive NDJSON messages in one ordinary slot.
+func (c *Conn) SendLines(ctx context.Context, lines [][]byte, admit Admission) error {
+	return c.sendFrame(ctx, outputFrame{lines: lines}, "", pendingCall{}, nil, admit)
+}
+
 // Reservation owns one ordinary slot until Enqueue transfers it to the writer.
 type Reservation struct{ c *Conn }
 

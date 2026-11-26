@@ -594,8 +594,12 @@ func started(t *testing.T, llm *mockLLM, opts ...option) (*agent, string, string
 	a := start(t, llm, opts...)
 	a.initialize()
 	cwd := t.TempDir()
-	sid := a.newSession(cwd).SessionID
+	session := a.newSession(cwd)
+	sid := session.SessionID
 	a.ok("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": "test/model"}, nil)
+	if configByID(t, session.ConfigOptions, "model").CurrentValue != "test/model" {
+		a.updateWhere(sid, func(u update) bool { return u.is("config_option_update") })
+	}
 	return a, sid, cwd
 }
 

@@ -77,7 +77,7 @@ func TestImagePromptRestartAndModelSwitch(t *testing.T) {
 			dir, cwd := t.TempDir(), t.TempDir()
 			llm := newMockLLM(t, imageModelsJSON)
 			llm.enqueue(reply("seen"), reply("text history"), reply("pixels again"))
-			first := start(t, llm, withDataDir(dir))
+			first := start(t, llm, withDataDir(dir), withEnv("ACPLAUSE_DEFAULT_MODEL=test/plain"))
 			var init struct {
 				Capabilities struct {
 					Session struct{ Prompt map[string]json.RawMessage }
@@ -89,6 +89,7 @@ func TestImagePromptRestartAndModelSwitch(t *testing.T) {
 			}
 			sid := first.newSession(cwd).SessionID
 			setModel(first, sid)
+			first.updateWhere(sid, func(u update) bool { return u.is("config_option_update") })
 			png, jpeg := promptImage(t, "image/png"), promptImage(t, "image/jpeg")
 			blocks := []any{png, jpeg}
 			text, title := "Image prompt", "Image prompt"
@@ -145,6 +146,7 @@ func TestImagePromptRejection(t *testing.T) {
 	a.fails("session/prompt", imageParams(sid, []any{valid}), -32602)
 	for _, model := range []string{"test/unknown", "test/model"} {
 		a.ok("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": model}, nil)
+		a.updateWhere(sid, func(u update) bool { return u.is("config_option_update") })
 		blocks := []any{valid}
 		if model == "test/model" {
 			blocks = []any{map[string]any{"type": "image", "mimeType": "image/png", "data": "!!!"}}
