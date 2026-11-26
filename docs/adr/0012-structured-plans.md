@@ -6,6 +6,9 @@
 - Scope change: No existing decision
 - Baseline: acplause `d9c99f1`; ACP `2.0.0-alpha.9` at `3be9cfc8ea2dfe5a28973b461fd956b4045f24d3`
 
+[ADR 0041](0041-remove-explicitly-cancelled-plans.md) adds removal of unfinished
+plans on explicit session cancellation and amends decisions 1, 2, 4 and 5.
+
 ## Context
 
 T3 already renders ACP plan_update events. acplause only emits narrative progress, so the application's task progress UI cannot show its execution plan.

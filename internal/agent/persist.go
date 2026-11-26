@@ -36,27 +36,32 @@ const interrupted = "acplause exited before this tool call finished."
 
 // entry is a transcript update as stored, with its kind.
 type entry struct {
-	Kind   string          `json:"kind"`
-	Update json.RawMessage `json:"update"`
+	Kind        string          `json:"kind"`
+	Update      json.RawMessage `json:"update"`
+	PlanRemoved bool            `json:"planRemoved,omitempty"`
 }
 
 func encodeEntry(u acp.Update) ([]byte, error) {
-	var kind string
-	switch u.(type) {
+	var e entry
+	switch v := u.(type) {
 	case acp.UserMessage:
-		kind = "user_message"
+		e.Kind = "user_message"
 	case acp.AgentMessage:
-		kind = "agent_message"
+		e.Kind = "agent_message"
 	case acp.AgentThought:
-		kind = "agent_thought"
+		e.Kind = "agent_thought"
 	case acp.CompactionUpdate:
-		kind = "compaction_update"
+		e.Kind = "compaction_update"
 	case acp.ToolCallUpdate:
-		kind = "tool_call_update"
+		e.Kind = "tool_call_update"
 	case acp.PlanUpdate:
-		kind = "plan_update"
+		e.Kind = "plan_update"
+	case acp.PlanRemoved:
+		// Older agents can still read the row and replay an empty snapshot.
+		e.Kind, e.PlanRemoved = "plan_update", true
+		u = acp.PlanUpdate{Plan: acp.PlanItems{Type: "items", PlanID: v.PlanID, Entries: []acp.PlanEntry{}}}
 	case acp.TerminalUpdate:
-		kind = "terminal_update"
+		e.Kind = "terminal_update"
 	default:
 		return nil, fmt.Errorf("cannot store a %T", u)
 	}
@@ -64,7 +69,8 @@ func encodeEntry(u acp.Update) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(entry{Kind: kind, Update: raw})
+	e.Update = raw
+	return json.Marshal(e)
 }
 
 func decodeEntry(data []byte) (acp.Update, error) {
@@ -103,6 +109,12 @@ func decodeEntry(data []byte) (acp.Update, error) {
 		var m acp.PlanUpdate
 		err = json.Unmarshal(e.Update, &m)
 		u = m
+		if err == nil && e.PlanRemoved {
+			if m.Plan.PlanID == "" {
+				return nil, errors.New("stored plan removal is missing a plan ID")
+			}
+			u = acp.PlanRemoved{PlanID: m.Plan.PlanID}
+		}
 	default:
 		return nil, fmt.Errorf("unknown stored update %q", e.Kind)
 	}
@@ -118,8 +130,9 @@ func (s *Session) record() store.Session {
 }
 
 // pending collects what changed since the last save and marks it saved.
+// A replacement goes in the batch without changing the live transcript.
 // Requires s.mu; undo restores the marks if the save fails.
-func (s *Session) pending() (sess store.Session, history, transcript []store.Row, undo func(), err error) {
+func (s *Session) pending(replacement *store.Row) (sess store.Session, history, transcript []store.Row, undo func(), err error) {
 	from, dirty := s.saved, s.dirty
 	for i, m := range s.history[1+s.saved:] { // the system prompt is rebuilt, not stored
 		data, err := json.Marshal(m)
@@ -129,6 +142,9 @@ func (s *Session) pending() (sess store.Session, history, transcript []store.Row
 		history = append(history, store.Row{Seq: from + i, Data: data})
 	}
 	for _, i := range slices.Sorted(maps.Keys(dirty)) {
+		if replacement != nil && replacement.Seq == i {
+			continue
+		}
 		if s.transcript[i] == nil {
 			continue // a message that has not started streaming
 		}
@@ -137,6 +153,9 @@ func (s *Session) pending() (sess store.Session, history, transcript []store.Row
 			return sess, nil, nil, nil, err
 		}
 		transcript = append(transcript, store.Row{Seq: i, Data: data, Key: s.transcriptKeys[i]})
+	}
+	if replacement != nil {
+		transcript = append(transcript, *replacement)
 	}
 	s.saved, s.dirty = len(s.history)-1, map[int]bool{}
 	undo = func() {
@@ -156,32 +175,54 @@ func (s *Session) flush() {
 	s.flushMu.Lock()
 	defer s.flushMu.Unlock()
 	s.mu.Lock()
-	if s.lost {
-		s.mu.Unlock()
-		return
-	}
-	sess, history, transcript, undo, err := s.pending()
-	s.mu.Unlock()
-	if err == nil {
-		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript, nil)
-	}
-	if err == nil {
-		s.mu.Lock()
-		s.saveWarning = false
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.lost {
+		s.savePending(nil)
+	}
+}
+
+// savePending requires flushMu and mu. It releases mu during I/O and
+// reports whether the generation may publish a successfully saved replacement.
+func (s *Session) savePending(replacement *store.Row) bool {
+	sess, history, transcript, undo, err := s.pending(replacement)
+	if err == nil {
+		s.mu.Unlock()
+		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript, nil)
+		s.mu.Lock()
+	}
+	if err == nil {
+		s.saveWarning = false
+		return !s.lost
+	}
 	if errors.Is(err, store.ErrLost) || errors.Is(err, store.ErrKeyConflict) {
 		// Rebuild from the authoritative transcript on the next resume.
 		s.loseLocked()
-		return
+		return false
 	}
 	if undo != nil {
 		undo()
 	}
 	s.warnSave(err)
+	return false
+}
+
+// savePlanRemoval keeps the plan and running state visible while the worker
+// waits for storage. It takes flushMu before reacquiring mu and returns with
+// mu held so the worker can publish the result and idle in the same replay cut.
+func (s *Session) savePlanRemoval(slot int, removal acp.PlanRemoved) bool {
+	if s.deps.store == nil {
+		return true
+	}
+	data, err := encodeEntry(removal)
+	if err != nil {
+		s.warnSave(err)
+		return false
+	}
+	s.mu.Unlock()
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	s.mu.Lock()
+	return !s.lost && s.savePending(&store.Row{Seq: slot, Data: data})
 }
 
 // warnSave reports a failure episode without exposing storage details. Requires
@@ -273,8 +314,11 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 			s.keys[key] = msg.MessageID
 			s.transcriptKeys[i] = key
 		}
-		if plan, ok := u.(acp.PlanUpdate); ok {
+		switch plan := u.(type) {
+		case acp.PlanUpdate:
 			s.planIndex[plan.Plan.PlanID] = len(s.transcript)
+		case acp.PlanRemoved:
+			s.planIndex[plan.PlanID] = len(s.transcript)
 		}
 		s.transcript = append(s.transcript, u)
 	}
@@ -341,7 +385,7 @@ func (s *Session) claimTurn(ctx context.Context, sub *submission, msg acp.UserMe
 	if s.deps.store == nil {
 		return nil
 	}
-	sess, history, transcript, undo, err := s.pending()
+	sess, history, transcript, undo, err := s.pending(nil)
 	if err == nil {
 		var h, t []byte
 		h, err = json.Marshal(user)

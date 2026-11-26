@@ -350,7 +350,7 @@ func (r *historyReplay) write(ctx context.Context) error {
 func inHistory(u acp.Update) bool {
 	switch u.(type) {
 	case acp.UserMessage, acp.AgentMessage, acp.AgentThought, acp.AgentMessageChunk, acp.AgentThoughtChunk,
-		acp.ToolCallUpdate, acp.TerminalUpdate, acp.TerminalOutputChunk, acp.PlanUpdate, acp.CompactionUpdate:
+		acp.ToolCallUpdate, acp.TerminalUpdate, acp.TerminalOutputChunk, acp.PlanUpdate, acp.PlanRemoved, acp.CompactionUpdate:
 		return true
 	}
 	return false

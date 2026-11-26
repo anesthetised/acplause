@@ -87,3 +87,9 @@ prevents startup. A later save failure is logged to stderr and sends a live ACP
 warning notice; work continues from memory, and unsaved changes may be missing
 after a restart. Repeated failures send no additional notice until a save succeeds.
 Notices are not stored or replayed, and clients may ignore them.
+
+Explicit cancellation can remove the active turn's unfinished plan. The
+agent saves the removal before reporting it, so it survives a restart even
+if the process exits before saving the turn's idle state. If the removal
+save fails, the previous plan stays visible and the turn still reports
+cancelled. [ADR 0041](adr/0041-remove-explicitly-cancelled-plans.md)

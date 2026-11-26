@@ -53,6 +53,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | `terminal_update` | Covered | `e2e/terminal_test.go`, `internal/acp/terminal_test.go` |
 | `terminal_output_chunk` | Covered | `e2e/terminal_test.go`, `internal/agent/terminal_test.go` |
 | `plan_update` | Covered | `internal/acp/plan_test.go`, `e2e/mode_test.go` |
+| [`plan_removed`][beta-plan] | Covered for unfinished plans on explicit cancellation (ADR 0041) | `e2e/plan_test.go`, `e2e/plan_unix_test.go`, `internal/agent/plan_test.go` |
 | `available_commands_update` | Deferred #146 | the command list is static (ADR 0015) |
 | `config_option_update` | Gap (beta.4 audit) | client-initiated changes return config in the response |
 | `session_info_update` | Covered | `e2e/sessions_test.go` |
@@ -194,10 +195,11 @@ configured values. Tests cover both setup methods and credential handling.
   patches using the same values as `session/list` after a save.
   [Stdio tests](../../e2e/sessions_test.go) · [State synchronization][beta-sync] · [Session listing][beta-list]
 - **Cancelled plans.** Agents should send `plan_removed` when a plan is
-  cancelled or abandoned. [Item plans](../../internal/agent/plan.go) are stored
-  as replay snapshots, with no removal in [turn finalization](../../internal/agent/session.go).
-  Define when a plan is abandoned and test that replay preserves removals.
-  [Removing plans][beta-plan]
+  cancelled or abandoned. acplause saves the removal of the current unfinished
+  plan on explicit `session/cancel` before publishing it. Replay preserves the
+  removal, including after an abrupt exit. A failed save preserves the plan.
+  [ADR 0041](../adr/0041-remove-explicitly-cancelled-plans.md) · [Removing plans][beta-plan]
+
 
 ## Remaining blockers
 
