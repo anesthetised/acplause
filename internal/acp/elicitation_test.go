@@ -29,10 +29,15 @@ func TestElicitationCapabilityNegotiation(t *testing.T) {
 		{`{"capabilities":{"elicitation":{"form":1}}}`, false},
 		{`{"capabilities":{"elicitation":{"url":{},"_future":{}}}}`, false},
 		{`{"capabilities":{"elicitation":{"form":{}}}}`, true},
+		{`{"capabilities":{"Elicitation":{"form":{}}}}`, false},
+		{`{"capabilities":{"elicitation":{"Form":{}}}}`, false},
+		{`{"capabilities":{"elicitation":{"form":{},"Form":null}}}`, true},
 		{`{"capabilities":{"elicitation":{"form":{"_future":true}},"_future":{}}}`, true},
 	} {
 		t.Run(tt.raw, func(t *testing.T) {
-			var req InitializeRequest
+			var req struct {
+				Capabilities ClientCapabilities `json:"capabilities"`
+			}
 			if err := json.Unmarshal([]byte(tt.raw), &req); err != nil {
 				t.Fatal(err)
 			}
@@ -45,7 +50,9 @@ func TestElicitationCapabilityNegotiation(t *testing.T) {
 }
 
 func TestElicitationCapabilitiesResetOnReuse(t *testing.T) {
-	var req InitializeRequest
+	var req struct {
+		Capabilities ClientCapabilities `json:"capabilities"`
+	}
 	for _, raw := range []string{
 		`{"capabilities":{"elicitation":{"form":{}}}}`,
 		`{"capabilities":{"elicitation":{"form":true}}}`,

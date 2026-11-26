@@ -70,7 +70,7 @@ func TestKeyedRetryCancellationAtCommit(t *testing.T) {
 					cancelID = c.lastID()
 				}
 				c.notify("$/cancel_request", map[string]any{"requestId": cancelID})
-				c.initialize() // Fence the wire notification, without waiting on the save context.
+				c.fenceReader() // Fence the wire notification, without waiting on the save context.
 				select {
 				case <-saving.Done():
 				default:
@@ -450,7 +450,7 @@ func TestRecordedRetryCheckAndClose(t *testing.T) {
 	retry := c.promptWithKey(id, "k", "retry again")
 	issue50Wait(t, gate.entered)
 	closing := c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
-	c.initialize() // The reader passed close with the ownership query still pending.
+	c.fenceReader() // The reader passed close with the ownership query still pending.
 	select {
 	case r := <-closing:
 		t.Fatalf("close passed an admitted lookup: %+v", r)
@@ -491,7 +491,7 @@ func TestRecordedRetryArrivingAfterOwnershipRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := c.promptWithKey(id, "k", "after takeover")
-	c.initialize()
+	c.fenceReader()
 	unblock()
 	if r := c.await(first); r.Error != nil || string(r.Result) != string(original.Result) {
 		t.Fatalf("first retry = %+v, want %+v", r, original)
@@ -526,7 +526,7 @@ func TestRetainedRetryAfterFailedSetup(t *testing.T) {
 	issue50Wait(t, gate.entered)
 	retry := c.promptWithKey(id, "k", "retry")
 	newKey := c.promptWithKey(id, "new", "new work")
-	c.initialize()
+	c.fenceReader()
 	gate.release <- nil
 	if r := c.await(resume); r.Error == nil || r.Error.Code != -32602 {
 		t.Fatalf("setup: %+v", r)

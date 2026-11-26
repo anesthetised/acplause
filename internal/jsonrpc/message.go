@@ -129,6 +129,15 @@ func integerKey(number string) ID {
 	return ID(digits + strings.Repeat("0", int(exp+scale)))
 }
 
+// ParseInteger reads an integral JSON number exactly and checks the signed
+// range for bitSize. Decimal and exponent spellings are accepted.
+func ParseInteger(raw json.RawMessage, bitSize int) (int64, error) {
+	if !json.Valid(raw) {
+		return 0, errors.New("expected an integer")
+	}
+	return strconv.ParseInt(string(integerKey(string(bytes.TrimSpace(raw)))), 10, bitSize)
+}
+
 // inbound is any message read from the peer.
 type inbound struct {
 	JSONRPC json.RawMessage `json:"jsonrpc"`
@@ -160,7 +169,7 @@ func (m *inbound) parseResponse() bool {
 	if !m.failed() || json.Unmarshal(m.Error, &e) != nil || e.Message == nil {
 		return false
 	}
-	code, err := strconv.ParseInt(string(integerKey(string(e.Code))), 10, 32)
+	code, err := ParseInteger(e.Code, 32)
 	if err != nil {
 		return false
 	}
@@ -174,6 +183,17 @@ type resultWithWriteHooks struct {
 	afterWrite  func(error)
 }
 
+type resultWithEnqueueHook struct {
+	result  any
+	enqueue func()
+}
+
+// OnEnqueue runs a nonblocking callback after a successful synchronous
+// response enters the outgoing queue, before the next request is dispatched.
+func OnEnqueue(result any, enqueue func()) any {
+	return resultWithEnqueueHook{result, enqueue}
+}
+
 // OnWrite attaches nonblocking callbacks to a successful response. The writer
 // brackets the frame's own Write, treating a short write or sealed connection
 // as an unsuccessful delivery. Callbacks must not take locks or perform I/O.
@@ -182,12 +202,13 @@ func OnWrite(result any, before func(), after func(error)) any {
 }
 
 type response struct {
-	beforeWrite func()
-	afterWrite  func(error)
-	JSONRPC     string          `json:"jsonrpc"`
-	ID          ID              `json:"id"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       *Error          `json:"error,omitempty"`
+	afterEnqueue func()
+	beforeWrite  func()
+	afterWrite   func(error)
+	JSONRPC      string          `json:"jsonrpc"`
+	ID           ID              `json:"id"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        *Error          `json:"error,omitempty"`
 }
 
 func newResponse(id ID, result any, err error) *response {
@@ -196,14 +217,18 @@ func newResponse(id ID, result any, err error) *response {
 	}
 	var beforeWrite func()
 	var afterWrite func(error)
-	if r, ok := result.(resultWithWriteHooks); ok {
+	var afterEnqueue func()
+	switch r := result.(type) {
+	case resultWithWriteHooks:
 		result, beforeWrite, afterWrite = r.result, r.beforeWrite, r.afterWrite
+	case resultWithEnqueueHook:
+		result, afterEnqueue = r.result, r.enqueue
 	}
 	raw, err := Marshal(result)
 	if err != nil {
 		return errorResponse(id, NewError(CodeInternalError, "encode result: %v", err))
 	}
-	return &response{JSONRPC: Version, ID: id, Result: raw, beforeWrite: beforeWrite, afterWrite: afterWrite}
+	return &response{JSONRPC: Version, ID: id, Result: raw, beforeWrite: beforeWrite, afterWrite: afterWrite, afterEnqueue: afterEnqueue}
 }
 
 func errorResponse(id ID, err *Error) *response {

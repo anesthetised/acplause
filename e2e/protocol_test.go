@@ -8,18 +8,18 @@ import (
 func TestInitialize(t *testing.T) {
 	t.Parallel()
 	a := start(t, newMockLLM(t))
-	info := map[string]any{"name": "e2e", "version": "1"}
-
-	// Session methods need initialize first.
+	// All requests need initialize first.
 	a.fails("session/new", map[string]any{"cwd": t.TempDir()}, -32600)
+	a.fails("_unknown/method", nil, -32600)
 
-	e := a.fails("initialize", map[string]any{"protocolVersion": 1, "info": info}, -32022)
+	e := a.fails("initialize", json.RawMessage(`{"info":true,"protocolVersion":1}`), -32022)
 	assertJSON(t, e.Data, `{"requested":1,"supported":[2]}`)
-	a.fails("initialize", map[string]any{"info": info}, -32602)
-	a.fails("initialize", map[string]any{"protocolVersion": "2", "info": info}, -32602)
+	a.fails("initialize", json.RawMessage(`{"info":true}`), -32602)
+	a.fails("initialize", json.RawMessage(`{"info":true,"protocolVersion":"2"}`), -32602)
+	a.fails("initialize", json.RawMessage(`{"protocolVersion":2,"info":true}`), -32602)
 	a.fails("session/new", map[string]any{"cwd": t.TempDir()}, -32600)
 
-	// A newer client gets v2; unknown fields and _meta are ignored.
+	// A newer client gets v2 even when its version-specific fields are unreadable.
 	var res struct {
 		ProtocolVersion int             `json:"protocolVersion"`
 		Info            map[string]any  `json:"info"`
@@ -27,15 +27,59 @@ func TestInitialize(t *testing.T) {
 		AuthMethods     json.RawMessage `json:"authMethods"`
 	}
 	a.ok("initialize", map[string]any{
-		"protocolVersion": 3,
-		"info":            info,
-		"capabilities":    map[string]any{"_meta": map[string]any{"x.dev/flag": true}, "futureCapability": map[string]any{}},
+		"protocolVersion": json.RawMessage(`3.0`),
+		"info":            []string{"new-format"},
+		"capabilities":    map[string]any{"elicitation": []string{"new-format"}, "_meta": map[string]any{"x.dev/flag": true}, "futureCapability": map[string]any{}},
 		"_meta":           map[string]any{"traceparent": "00-1-2-01"},
 	}, &res)
 	if res.ProtocolVersion != 2 || res.Info["name"] != "acplause" || res.Info["version"] != testVersion || res.AuthMethods != nil {
 		t.Fatalf("unexpected initialize result: %+v", res)
 	}
 	assertJSON(t, res.Capabilities, `{"session":{"mcp":{"stdio":{},"http":{}},"prompt":{"embeddedContext":{},"image":{}},"additionalDirectories":{},"delete":{}}}`)
+	a.fails("initialize", nil, -32600)
+}
+
+func TestInitializeRepeatsUntilAnotherRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		method string
+		code   int
+	}{
+		{"_unknown/method", -32601},
+		{"session/new", -32602},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			t.Parallel()
+			a := start(t, newMockLLM(t))
+			a.notify("session/cancel", map[string]string{"sessionId": "missing"})
+			a.initialize()
+			a.notify("_unknown/notification", nil)
+			a.notify("$/cancel_request", map[string]int{"requestId": 1})
+			a.send(`{"jsonrpc":"2.0","id":null,"method":"session/list","params":{}}`)
+			if got := a.take(func(*message) bool { return true }); string(got.ID) != "null" || got.Error == nil || got.Error.Code != -32600 {
+				t.Fatalf("malformed request returned %+v", got)
+			}
+			a.fails("initialize", json.RawMessage(`{"protocolVersion":1}`), -32022)
+			a.initialize()
+			a.initialize()
+
+			request := a.request(tc.method, nil)
+			repeat := a.request("initialize", nil)
+			for _, want := range []struct {
+				id   string
+				code int
+			}{{request, tc.code}, {repeat, -32600}} {
+				got := a.take(func(*message) bool { return true })
+				if string(got.ID) != want.id || got.Error == nil || got.Error.Code != want.code {
+					t.Fatalf("got %+v, want response %s with code %d", got, want.id, want.code)
+				}
+			}
+			a.ok("session/list", nil, nil)
+			if len(a.pending) != 0 {
+				t.Fatalf("extra output: %s", a.describePending())
+			}
+		})
+	}
 }
 
 func TestJSONRPCErrors(t *testing.T) {

@@ -234,7 +234,7 @@ func TestElicitationCancellationAndLateAnswer(t *testing.T) {
 				}
 			}
 			a.answer(q, map[string]any{"action": "accept", "content": json.RawMessage(typedQuestionAnswers)})
-			a.initializeForms()
+			a.fails("_test/barrier", nil, -32601)
 			a.expectQuiet(func(m *message) bool {
 				return m.Method == "elicitation/create" || (m.Method == "session/update" && decodeUpdate(t, m).State == "running")
 			})

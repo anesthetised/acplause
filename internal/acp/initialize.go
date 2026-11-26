@@ -2,26 +2,56 @@ package acp
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
+
+	"github.com/anesthetised/acplause/internal/jsonrpc"
 )
 
-// InitializeRequest is the client's initialize params.
-type InitializeRequest struct {
-	Capabilities    ClientCapabilities `json:"capabilities"`
-	ProtocolVersion *int               `json:"protocolVersion"`
-	Info            *Implementation    `json:"info"`
+// DecodeInitializeRequest selects the supported version before interpreting
+// any version-specific fields and returns the client's usable capabilities.
+func DecodeInitializeRequest(params json.RawMessage) (ClientCapabilities, error) {
+	var req struct {
+		ProtocolVersion json.RawMessage `json:"protocolVersion,case:strict"`
+		Info            json.RawMessage `json:"info,case:strict"`
+		Capabilities    json.RawMessage `json:"capabilities,case:strict"`
+	}
+	if err := jsonrpc.DecodeParams(params, &req); err != nil {
+		return ClientCapabilities{}, err
+	}
+	if req.ProtocolVersion == nil || string(req.ProtocolVersion) == "null" {
+		return ClientCapabilities{}, ErrInvalidParams("protocolVersion is required")
+	}
+	version, err := jsonrpc.ParseInteger(req.ProtocolVersion, 32)
+	if err != nil || version < 0 || version > 65535 {
+		return ClientCapabilities{}, ErrInvalidParams("protocolVersion must be an integer between 0 and 65535")
+	}
+	requested := int(version)
+	if requested < ProtocolVersion {
+		return ClientCapabilities{}, ErrUnsupportedProtocolVersion(requested)
+	}
+
+	// acplause does not use client info. Require the v2 shape from v2
+	// clients, and allow newer clients to send a shape we cannot read.
+	if requested == ProtocolVersion {
+		if err := validateInitializeInfo(req.Info); err != nil {
+			return ClientCapabilities{}, err
+		}
+	}
+	var capabilities ClientCapabilities
+	// Capabilities default to unsupported when absent or unreadable.
+	_ = json.Unmarshal(req.Capabilities, &capabilities)
+	return capabilities, nil
 }
 
-// Validate implements jsonrpc's params validation.
-func (r InitializeRequest) Validate() error {
-	switch {
-	case r.ProtocolVersion == nil:
-		return errors.New("protocolVersion is required")
-	case *r.ProtocolVersion < 0 || *r.ProtocolVersion > 65535:
-		return fmt.Errorf("protocolVersion out of range: %d", *r.ProtocolVersion)
-	case r.Info == nil:
-		return errors.New("info is required")
+func validateInitializeInfo(raw json.RawMessage) error {
+	var info struct {
+		Name    *string `json:"name,case:strict"`
+		Version *string `json:"version,case:strict"`
+	}
+	if err := jsonrpc.DecodeParams(raw, &info); err != nil {
+		return err
+	}
+	if info.Name == nil || info.Version == nil {
+		return ErrInvalidParams("info.name and info.version are required")
 	}
 	return nil
 }
@@ -71,7 +101,7 @@ type ClientCapabilities struct {
 // the capabilities group and its optional elicitation capability.
 func (c *ClientCapabilities) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Elicitation json.RawMessage `json:"elicitation"`
+		Elicitation json.RawMessage `json:"elicitation,case:strict"`
 	}
 	*c = ClientCapabilities{}
 	if json.Unmarshal(data, &raw) != nil {
@@ -92,7 +122,7 @@ type ElicitationCapabilities struct {
 // rather than failing the initialization of an otherwise usable client.
 func (c *ElicitationCapabilities) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Form json.RawMessage `json:"form"`
+		Form json.RawMessage `json:"form,case:strict"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
