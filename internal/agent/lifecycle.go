@@ -24,11 +24,11 @@ type sessionOperation struct {
 
 // reserveOperation records ACP arrival order before any off-loop work. An
 // interrupting close/delete cancels predecessors, but still owns terminal cleanup.
-func (a *Agent) reserveOperation(ctx context.Context, id string, interrupt bool) *sessionOperation {
+func (a *Agent) reserveOperation(ctx context.Context, id string, terminal, interrupt bool) *sessionOperation {
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(a.ctx, cancel)
 	context.AfterFunc(ctx, func() { stop() })
-	op := &sessionOperation{ctx: ctx, cancel: cancel, done: make(chan struct{}), reply: jsonrpc.NewReply(ctx), terminal: interrupt}
+	op := &sessionOperation{ctx: ctx, cancel: cancel, done: make(chan struct{}), reply: jsonrpc.NewReply(ctx), terminal: terminal}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	op.previous = a.operations[id]

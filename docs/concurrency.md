@@ -149,7 +149,7 @@ when it is answered, on `$/cancel_request`, or when `Serve` returns.
 | `session/new` | the goroutine in `Agent.newSession` |
 | `session/list` | the job in `Agent.listSessions` |
 | `session/resume` | the operation goroutine (`Agent.resumeSession`) |
-| `session/close`, `session/delete` | the operation goroutine; terminal cleanup runs even if the reply was already rejected as cancelled |
+| `session/close`, `session/delete` | the operation goroutine, or the close handler when there is no active session or earlier work to wait for. Terminal cleanup runs even if the reply was already rejected as cancelled |
 | `session/prompt`, before submission | the handler's return when the session is unknown or lost; otherwise `Agent.startOperation`, when the prompt waited behind setup and was cancelled, setup failed, or the session is gone |
 | `session/prompt`, after submission | the `Session`: `Session.submit` (closed, lost, no model), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
 | any handler that panics or a method that does not exist | `Conn` itself |
@@ -198,14 +198,15 @@ pending resume publishes afterwards.
 - **Resume.** `Agent.resume`: `Agent.open`, `Session.Resume`, then
   `Agent.publishRestored` for a restored session. Replays never overlap,
   because operations on one session are serial.
-- **Close and delete** interrupt: their reservation cancels every
-  predecessor but still waits for each to finish. The handler first removes
-  the session from the map and calls `Session.Cancel`, so later messages see
-  it gone and the running turn stops at once. `close` answers not found
-  unless a session was open or unfinished setup could still open one.
-  `Agent.terminalSession` then catches a session that a cancelled resume
-  published late, closes it and releases the lease; `delete` also removes the
-  record.
+- **Close and delete** interrupt active sessions and pending setup. An
+  interrupting reservation cancels its predecessors and waits for them to
+  finish. The handler first removes the session from the map and calls
+  `Session.Cancel`, so later messages see it gone and the running turn
+  stops at once. Closing an absent or inactive session succeeds. A close
+  behind pending terminal cleanup waits for that cleanup without cancelling
+  it. `Agent.terminalSession` catches a session that a cancelled resume
+  published late, closes it and releases the lease. `delete` also removes
+  the record.
 - `session/set_config_option` refuses a mode change while any operation is
   pending or a prompt is queued or running. It reads pending setup under
   `Agent.mu`, then checks the queue and state under `Session.mu` without

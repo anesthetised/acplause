@@ -144,15 +144,13 @@ capability here. [Upstream schema changelog][beta-changelog]
   [#221](https://github.com/anesthetised/acplause/issues/221) covers cancellation
   on the wire, close ordering and late replies. Add a deadline case for
   permissions abandoned after a timeout. [Cancellation][beta-cancel]
-- **Inactive and missing sessions.** An applicable `-32002` response must
-  carry the requested `data.sessionId`. [The shared error](../../internal/acp/acp.go)
-  puts the ID only in the message. [#222](https://github.com/anesthetised/acplause/issues/222)
-  covers the data field. The protocol also says a session becomes active on a
-  successful resume response and recommends that closing a missing or inactive
-  session succeed. [The agent](../../internal/agent/agent.go) queues prompts
-  behind an in-flight resume even for an inactive session and returns `-32002`
-  for an inactive close. Test those cases explicitly when reviewing #222's
-  stated close/delete behavior. [Unknown sessions][beta-errors] · [Replay completion][beta-replay]
+- **Inactive and missing sessions.** [#222](https://github.com/anesthetised/acplause/issues/222)
+  adds the requested `data.sessionId` to applicable `-32002` responses and
+  makes closing a missing or inactive session succeed. The agent still queues
+  prompts behind an in-flight resume for an inactive session. Beta.4 requires
+  those prompts to receive `-32002` until the resume succeeds. Verify this
+  activation boundary in [#219](https://github.com/anesthetised/acplause/issues/219).
+  [Unknown sessions][beta-errors] · [Replay completion][beta-replay]
 
 ### Other follow-ups
 

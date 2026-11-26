@@ -105,7 +105,7 @@ func TestCancelledNewSessionRemovesUnpublishedRecord(t *testing.T) {
 	}
 }
 
-func TestCloseRejectsOperationsThatCannotOpenSession(t *testing.T) {
+func TestCloseOfAbsentSessionWithEarlierOperations(t *testing.T) {
 	for _, tc := range []struct {
 		name                        string
 		terminal, completed, prompt bool
@@ -127,20 +127,30 @@ func TestCloseRejectsOperationsThatCannotOpenSession(t *testing.T) {
 				tail = &sessionOperation{ctx: ctx, cancel: cancel, prompt: true, previous: previous, done: make(chan struct{})}
 			}
 			a := &Agent{ctx: context.Background(), operations: map[string]*sessionOperation{"closed": tail}}
-			// Keep the operation in the map as response delivery races deferred
-			// cleanup. Neither terminal cleanup nor a queued prompt can reopen it.
-			defer func() {
-				if !tc.completed {
-					close(previous.done)
+			// Simulate a completed setup with deferred cleanup or a pending
+			// terminal operation, possibly followed by an admitted prompt.
+			result, err := a.closeSession(context.Background(), acp.CloseSessionRequest{SessionID: "closed"})
+			predecessorErr := ctx.Err()
+			if !tc.completed {
+				close(previous.done)
+			}
+			if tail != previous {
+				close(tail.done)
+			}
+			a.jobs.Wait()
+			if err != nil || predecessorErr != nil {
+				t.Fatalf("close failed or cancelled preceding work: %v, %v", err, predecessorErr)
+			}
+			if tc.terminal {
+				reply, ok := result.(*jsonrpc.Reply)
+				if !ok {
+					t.Fatalf("close did not wait for terminal cleanup: %T", result)
 				}
-				if tail != previous {
-					close(tail.done)
+				if result, err := settledReply(t, reply); err != nil || string(result) != "{}" {
+					t.Fatalf("deferred close: %s, %+v", result, err)
 				}
-				a.jobs.Wait()
-			}()
-			_, err := a.closeSession(context.Background(), acp.CloseSessionRequest{SessionID: "closed"})
-			if err == nil || jsonrpc.AsError(err).Code != -32002 {
-				t.Fatalf("close of absent session accepted: %v", err)
+			} else if _, ok := result.(acp.CloseSessionResponse); !ok {
+				t.Fatalf("close did not return immediate success: %T", result)
 			}
 		})
 	}

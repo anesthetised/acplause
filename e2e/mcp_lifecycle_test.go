@@ -222,7 +222,7 @@ func TestMCPRequestCancellationDoesNotCancelNextPrompt(t *testing.T) {
 	}
 }
 
-func TestCloseDuringMCPSetupRejectsDuplicateClose(t *testing.T) {
+func TestCloseDuringMCPSetupIsIdempotent(t *testing.T) {
 	t.Parallel()
 	a := start(t, newMockLLM(t))
 	a.initialize()
@@ -235,11 +235,9 @@ func TestCloseDuringMCPSetupRejectsDuplicateClose(t *testing.T) {
 	waitForFile(t, gate+".entered")
 	first := a.request("session/close", map[string]any{"sessionId": sid})
 	duplicate := a.request("session/close", map[string]any{"sessionId": sid})
-	if r := a.response(duplicate); r.Error == nil || r.Error.Code != -32002 {
-		t.Fatalf("duplicate close: result=%s error=%+v", r.Result, r.Error)
-	}
-	if r := a.response(first); r.Error != nil {
-		t.Fatal(r.Error)
+	firstResponse, duplicateResponse := a.response(first), a.response(duplicate)
+	if firstResponse.Error != nil || duplicateResponse.Error != nil || firstResponse.seq >= duplicateResponse.seq {
+		t.Fatalf("close responses out of order or failed: first=%+v duplicate=%+v", firstResponse, duplicateResponse)
 	}
 	if r := a.response(resume); r.Error == nil {
 		t.Fatal("interrupted setup succeeded")

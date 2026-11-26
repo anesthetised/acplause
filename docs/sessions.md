@@ -31,10 +31,11 @@ array after every request in the batch settles; updates may precede that array.
 
 `session/list` includes stored sessions from every process using that data
 directory. `session/resume` restores their conversation history and settings.
-`session/close` cancels work and releases the session in this process; its
-history stays listed and can be resumed. `session/delete` cancels local work
-and removes the session and its stored history. Deleting an unknown or
-already deleted session succeeds. Nothing expires automatically.
+`session/close` cancels work and releases the session in this process. Its
+history stays listed and can be resumed. Closing a missing or inactive session
+succeeds. `session/delete` cancels local work and removes the session and its
+stored history. Deleting an unknown or already deleted session succeeds.
+Nothing expires automatically.
 
 Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call

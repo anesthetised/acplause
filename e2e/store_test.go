@@ -80,6 +80,8 @@ func TestSessionsSurviveRestart(t *testing.T) {
 	if len(list.Sessions) != 1 || list.Sessions[0].SessionID != sid || list.Sessions[0].Title != "Capital of France?" {
 		t.Fatalf("session/list after restart: %+v", list)
 	}
+	second.sessionNotFound("session/prompt", map[string]any{"sessionId": sid, "prompt": []any{map[string]string{"type": "text", "text": "Before resume."}}})
+	second.ok("session/close", map[string]any{"sessionId": sid}, nil)
 	var resumed struct {
 		ConfigOptions []configOption `json:"configOptions"`
 	}
