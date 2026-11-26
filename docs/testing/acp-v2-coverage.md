@@ -149,6 +149,11 @@ its opaque fields in echo and replay. Stored opaque block types remain replayabl
 Empty prompt arrays remain accepted as permitted by beta.4.
 [Stdio coverage](../../e2e/prompt_content_test.go) · [Prompt contents][beta-prompt]
 
+MCP setup rejects unsupported transports and duplicate names before connecting
+peers. The streamable HTTP transport applies its own headers in preference to
+configured values. Tests cover both setup methods and credential handling.
+[ADR 0036](../adr/0036-validate-mcp-transport-at-setup.md) · [Stdio coverage](../../e2e/mcp_setup_validation_test.go) · [MCP servers][beta-mcp]
+
 ### Other follow-ups
 
 - **Initialization.** Before initialization any other request must get
@@ -167,15 +172,10 @@ Empty prompt arrays remain accepted as permitted by beta.4.
   text block. Define and test how argument-free `/compact` should handle
   accompanying content.
   [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
-- **MCP setup.** Agents must reject unsupported transports and duplicate names,
-  and transport-owned HTTP headers use transport values. [MCP validation](../../internal/acp/mcp.go)
-  skips unrecognized transports and rejects transport-owned headers. Add setup
-  tests for unsupported transports and reserved headers. The spec also
-  recommends continuing with the peers that did connect and notifying the user
-  about failures. [New](../../internal/agent/agent.go) and
-  [resume](../../internal/agent/session.go) currently fail setup if a peer cannot
-  connect. Decide how to handle partial success and test it with one working
-  and one failing peer. [MCP servers][beta-mcp]
+- **MCP partial setup.** The spec recommends continuing with the peers that
+  did connect and notifying the user about failures. Both setup paths currently
+  fail if a peer cannot connect. Decide how to handle partial success and test
+  it with one working and one failing peer. [MCP servers][beta-mcp]
 - **Configuration.** The spec recommends broadcasting the complete config when
   it changes, including client-initiated changes. [Set config](../../internal/agent/agent.go)
   only returns the response. Expand the scope of [#144](https://github.com/anesthetised/acplause/issues/144)

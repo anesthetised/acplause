@@ -44,6 +44,12 @@ func (t *httpTransport) request(ctx context.Context, method string, data []byte,
 		return nil, errors.New("invalid MCP HTTP endpoint")
 	}
 	for k, v := range t.cfg.Headers {
+		// The transport owns these headers even when a request omits them.
+		switch http.CanonicalHeaderKey(k) {
+		case "Host", "Content-Length", "Transfer-Encoding", "Connection",
+			"Accept", "Content-Type", "Mcp-Session-Id", "Mcp-Protocol-Version", "Last-Event-Id":
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Accept", "application/json, text/event-stream")
