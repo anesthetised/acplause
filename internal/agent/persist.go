@@ -407,6 +407,7 @@ func (s *Session) markLost() {
 // loseLocked revokes work as soon as any ownership check detects a takeover.
 // Requires s.mu; cleanup must run outside it because transports may wait on I/O.
 func (s *Session) loseLocked() {
+	s.detachActivation()
 	s.lost = true
 	s.cancel()
 	go s.mcp.Close()

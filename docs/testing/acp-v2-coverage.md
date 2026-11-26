@@ -56,7 +56,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | `available_commands_update` | Deferred #146 | the command list is static (ADR 0015) |
 | `config_option_update` | Gap (beta.4 audit) | client-initiated changes return config in the response |
 | `session_info_update` | Covered | `e2e/sessions_test.go` |
-| `replay_complete` | Gap [#219](https://github.com/anesthetised/acplause/issues/219) | `internal/agent/session.go` sends replay without a marker |
+| `replay_complete` | Covered | `e2e/replay_test.go`, `internal/agent/resume_setup_test.go` |
 | `usage_update` | Covered | `e2e/usage_test.go` |
 | `notice` | Covered | `e2e/turn_timeout_test.go`, `e2e/store_test.go` |
 | `compaction_update` | Covered | `e2e/compaction_test.go`, `e2e/commands_test.go` |
@@ -119,29 +119,21 @@ Prompt retries share one insertion and retain the original message ID across
 compaction and restart. Coverage includes validation, pending setup, cancellation
 during commit, and retry after a lost response. [ADR 0033](../adr/0033-prompt-idempotency-keys.md) · [Retrying prompts][beta-retry]
 
+Cursor resumes mark completed history before current-state synchronization and
+live updates. The replay tests cover empty history, streaming through MCP
+setup, client request ordering, and truncated delivery. Cold sessions accept
+prompts after their successful resume response. An earlier prompt receives
+`-32002` with the requested `data.sessionId`, including after the marker.
+[Replay completion][beta-replay] · [Unknown sessions][beta-errors]
+
 ### Tracked follow-ups
 
-- **Replay boundary.** Cursor-based resumes must mark completed history
-  exactly once, before current-state synchronization and live updates.
-  [Resume](../../internal/agent/session.go) appends current state to the
-  transcript snapshot and starts deferring only when the snapshot is ready.
-  [#219](https://github.com/anesthetised/acplause/issues/219) covers the marker
-  and the live-update cut point, including empty replay. Its tests should also
-  exercise slow resume setup while live updates and client requests are pending.
-  [Replay completion][beta-replay]
 - **Permission cancellation.** Session cancel and close must cancel the
   pending permission requests they stop. [The permission handler](../../internal/agent/turn.go)
   uses `Call`, which abandons the wait without sending `$/cancel_request`.
   [#221](https://github.com/anesthetised/acplause/issues/221) covers cancellation
   on the wire, close ordering and late replies. Add a deadline case for
   permissions abandoned after a timeout. [Cancellation][beta-cancel]
-- **Inactive and missing sessions.** [#222](https://github.com/anesthetised/acplause/issues/222)
-  adds the requested `data.sessionId` to applicable `-32002` responses and
-  makes closing a missing or inactive session succeed. The agent still queues
-  prompts behind an in-flight resume for an inactive session. Beta.4 requires
-  those prompts to receive `-32002` until the resume succeeds. Verify this
-  activation boundary in [#219](https://github.com/anesthetised/acplause/issues/219).
-  [Unknown sessions][beta-errors] · [Replay completion][beta-replay]
 
 ### Other follow-ups
 

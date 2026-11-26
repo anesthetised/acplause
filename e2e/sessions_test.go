@@ -49,7 +49,7 @@ func TestListResumeAndClose(t *testing.T) {
 		t.Fatalf("resume: %+v", resp.Error)
 	}
 	replay := a.untilIdle(sid)
-	want := []string{"user_message", "agent_message", "state_update idle end_turn"}
+	want := []string{"user_message", "agent_message", "replay_complete", "state_update idle end_turn"}
 	if got := kinds(replay); !slices.Equal(got, want) {
 		t.Fatalf("replay: %v", got)
 	}

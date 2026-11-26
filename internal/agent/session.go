@@ -27,6 +27,7 @@ const (
 
 // deps is what sessions share with the agent.
 type deps struct {
+	replays         *replayStreams
 	forms           *atomic.Bool // negotiated capabilities belong to this connection, never the store
 	out             Client
 	model           Model
@@ -58,6 +59,7 @@ type Session struct {
 	cancel context.CancelFunc
 	budget *turnBudget // owned only by the worker during one accepted turn; never persisted
 
+	activation    atomic.Uint32 // cold-response delivery may race generation detachment
 	mu            sync.Mutex
 	dirs          []string
 	mcp           *mcp.Manager
@@ -90,12 +92,6 @@ type Session struct {
 	// rootsGen counts root changes, so an "always" answer to a request sent
 	// under older roots is not recorded under the new ones.
 	rootsGen uint64
-	// replaying is set while Resume writes a replay snapshot without holding
-	// mu, so a slow client cannot stall the read loop on the lock; send
-	// defers live updates into deferred until the snapshot is out.
-	replaying bool
-	deferred  []acp.Update
-
 	// Persistence (persist.go). flushMu serialises saves and is taken
 	// before mu.
 	flushMu     sync.Mutex
@@ -104,6 +100,21 @@ type Session struct {
 	dirty       map[int]bool   // transcript entries changed since the last save
 	lost        bool           // another process took the session over
 	saveWarning bool           // suppress repeated notices until a save succeeds
+}
+
+const (
+	activationActive uint32 = iota // new sessions and continuously owned live sessions
+	activationPending
+	activationDetached
+)
+
+// activate is the successful cold response's writer callback. A close or
+// ownership loss that detached this generation makes the callback a no-op.
+func (s *Session) activate() { s.activation.CompareAndSwap(activationPending, activationActive) }
+
+// detachActivation invalidates any success frame still waiting in the writer.
+func (s *Session) detachActivation() {
+	s.activation.CompareAndSwap(activationPending, activationDetached)
 }
 
 // submission is a prompt waiting for insertion.
@@ -121,7 +132,10 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Session{
+	if d.replays == nil {
+		d.replays = new(replayStreams)
+	}
+	s := &Session{
 		id:             newID(),
 		cwd:            cwd,
 		deps:           d,
@@ -140,7 +154,9 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 		keys:           make(map[string]string),
 		transcriptKeys: make(map[int]string),
 		planIndex:      map[string]int{},
-	}, nil
+	}
+	s.deps.out = replayClient{d.out, s}
+	return s, nil
 }
 
 // Submit queues a prompt. The reply resolves with the user message's id
@@ -213,6 +229,7 @@ func (s *Session) Cancel() {
 // Close cancels all work, waits for the final updates of a running turn and
 // releases the session's resources.
 func (s *Session) Close() {
+	s.detachActivation()
 	s.mu.Lock()
 	s.closed = true
 	worker := s.worker
@@ -231,6 +248,41 @@ func (s *Session) Close() {
 // Resume reattaches the client: it replaces the additional directories,
 // optionally replays the history, and reports the current state.
 func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPServer, replay bool) error {
+	var r *historyReplay
+	if replay {
+		r = s.deps.replays.begin(s.id)
+		if r == nil {
+			return acp.ErrInvalidParams("another replay is pending")
+		}
+	}
+	err := s.syncResume(ctx, dirs, servers, r)
+	if r != nil {
+		return errors.Join(err, r.finish(err == nil))
+	}
+	return err
+}
+
+// syncResume captures state in the same stream as live changes, so a newer
+// transition cannot be overwritten while the history is being delivered.
+func (s *Session) syncResume(ctx context.Context, dirs []string, servers []acp.MCPServer, r *historyReplay) error {
+	if r != nil && r.session != s {
+		r.snapshot(s)
+	}
+	if err := s.configureResume(ctx, dirs, servers); err != nil {
+		return acp.ErrInvalidParams("cannot configure session: %v", err)
+	}
+	s.mu.Lock()
+	if r == nil {
+		defer s.mu.Unlock()
+		return s.notify(s.state)
+	}
+	r.streams.hold(liveUpdate{session: s, update: s.state, snapshot: true})
+	s.mu.Unlock()
+	return r.write(ctx)
+}
+
+// configureResume replaces the workspace and MCP configuration transactionally.
+func (s *Session) configureResume(ctx context.Context, dirs []string, servers []acp.MCPServer) error {
 	s.mu.Lock()
 	changed := !slices.Equal(dirs, s.dirs)
 	s.mu.Unlock()
@@ -277,36 +329,11 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 		}
 		s.flushAsync()
 	}
-	var snapshot []acp.Update
-	if replay { // session operations are serialised, so replays never overlap
-		snapshot = append(slices.Clone(s.transcript), s.state)
-		s.replaying = true
-	} else {
-		s.send(s.state)
-	}
 	s.mu.Unlock()
 	if old != nil {
 		s.closeToolbox(old)
 	}
-	if snapshot != nil {
-		s.replay(snapshot)
-	}
 	return nil
-}
-
-// replay writes a resume snapshot outside mu, then whatever send deferred
-// meanwhile, until nothing is left. Transcript entries are replaced, never
-// mutated, so the snapshot is safe to read without the lock.
-func (s *Session) replay(updates []acp.Update) {
-	for len(updates) > 0 {
-		for _, u := range updates {
-			s.notify(u)
-		}
-		s.mu.Lock()
-		updates, s.deferred = s.deferred, nil
-		s.replaying = len(updates) > 0
-		s.mu.Unlock()
-	}
 }
 
 // acquireToolbox pins roots for one worker operation, including a read group,
@@ -569,18 +596,19 @@ func (s *Session) setState(u acp.StateUpdate) {
 // send requires s.mu so replay snapshots and live updates cannot interleave.
 // During a replay it queues u behind the snapshot instead.
 func (s *Session) send(u acp.Update) {
-	if s.replaying {
-		s.deferred = append(s.deferred, u)
+	if s.deps.replays.hold(liveUpdate{session: s, update: u}) {
 		return
 	}
 	s.notify(u)
 }
 
-func (s *Session) notify(u acp.Update) {
+func (s *Session) notify(u acp.Update) error {
 	n := acp.SessionNotification{SessionID: s.id, Update: u}
-	if err := s.deps.out.Notify(acp.MethodSessionUpdate, n); err != nil {
+	err := s.deps.out.Notify(acp.MethodSessionUpdate, n)
+	if err != nil {
 		s.deps.log.Warn("dropping session update", "session", s.id, "err", err)
 	}
+	return err
 }
 
 func (s *Session) appendHistory(m llm.Message) {

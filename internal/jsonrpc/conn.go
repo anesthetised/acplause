@@ -44,6 +44,11 @@ func Handle[P any](fn func(context.Context, P) (any, error)) Handler {
 	}
 }
 
+type outputFrame struct {
+	line        []byte
+	beforeWrite func()
+}
+
 // Conn is a JSON-RPC peer over newline-delimited JSON. All output goes
 // through a single writer goroutine, so messages are never interleaved.
 type Conn struct {
@@ -53,7 +58,7 @@ type Conn struct {
 
 	maxLine int // inbound line bound; a field so tests can shrink it
 
-	queue      chan []byte
+	queue      chan outputFrame
 	quit       chan struct{}
 	closeOnce  sync.Once
 	writerDone chan struct{}
@@ -71,7 +76,7 @@ func NewConn(in io.Reader, out io.Writer, log *slog.Logger) *Conn {
 		out:        out,
 		log:        log,
 		maxLine:    maxLine,
-		queue:      make(chan []byte, 256),
+		queue:      make(chan outputFrame, 256),
 		quit:       make(chan struct{}),
 		writerDone: make(chan struct{}),
 		inflight:   make(map[ID]*context.CancelFunc),
@@ -166,7 +171,7 @@ func (c *Conn) cancelCall(id ID) bool {
 		RequestID ID `json:"requestId"`
 	}{id}})
 	select {
-	case c.queue <- b:
+	case c.queue <- outputFrame{line: b}:
 	case <-c.quit:
 	default: // peer cancellation is best effort, even with a blocked writer
 	}
@@ -435,13 +440,17 @@ func (c *Conn) sendContext(ctx context.Context, v any) error {
 	if err != nil {
 		return fmt.Errorf("jsonrpc: encode message: %w", err)
 	}
+	frame := outputFrame{line: b}
+	if r, ok := v.(*response); ok {
+		frame.beforeWrite = r.beforeWrite
+	}
 	select {
 	case <-c.quit:
 		return ErrClosed
 	default:
 	}
 	select {
-	case c.queue <- b:
+	case c.queue <- frame:
 		return nil
 	case <-c.quit:
 		return ErrClosed
@@ -469,8 +478,12 @@ func (c *Conn) writeLoop() {
 	}
 }
 
-func (c *Conn) write(b []byte) {
-	if _, err := c.out.Write(append(b, '\n')); err != nil {
+func (c *Conn) write(frame outputFrame) {
+	line := append(frame.line, '\n')
+	if frame.beforeWrite != nil {
+		frame.beforeWrite()
+	}
+	if _, err := c.out.Write(line); err != nil {
 		c.log.Error("write failed", "err", err)
 	}
 }

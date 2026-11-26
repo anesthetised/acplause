@@ -112,7 +112,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	}
 	a := &Agent{
 		cfg:        cfg,
-		deps:       deps{forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store, calibration: new(calibration)},
+		deps:       deps{replays: new(replayStreams), forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store, calibration: new(calibration)},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*Session),
@@ -181,8 +181,8 @@ func (a *Agent) renew() {
 // cancelling its reservation would prevent it from restoring the session.
 func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 	a.mu.Lock()
-	s := a.sessions[id]
-	delete(a.sessions, id)
+	s := a.detachSessionLocked(id)
+	a.prompts.detach(id)
 	for op := pending; op != nil; op = op.previous {
 		op.cancel()
 	}
@@ -224,6 +224,9 @@ func (a *Agent) Shutdown() {
 	a.mu.Lock()
 	a.shuttingDown = true
 	sessions := slices.Collect(maps.Values(a.sessions))
+	for _, s := range sessions {
+		s.detachActivation()
+	}
 	clear(a.sessions)
 	a.mu.Unlock()
 
@@ -346,29 +349,31 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 }
 
 func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) {
-	a.mu.Lock()
-	previous := a.operations[req.SessionID]
-	a.mu.Unlock()
-	// A terminal operation has detached the old activation. Until a resume
-	// is reserved, retries have no live session or setup to join.
-	if previous != nil && previous.terminal {
-		return nil, acp.ErrSessionNotFound(req.SessionID)
-	}
 	reply := jsonrpc.NewReply(ctx)
 	sub := &submission{ctx: ctx, prompt: req.Prompt, key: string(req.IdempotencyKey), reply: reply}
+	a.mu.Lock()
+	previous := a.operations[req.SessionID]
+	s := a.sessions[req.SessionID]
+	// Admission belongs to the activation visible at receipt. Register the
+	// key under the same fence as detachment on close or ownership loss.
+	if s == nil || s.activation.Load() != activationActive || (previous != nil && previous.terminal) {
+		lost := a.lost[req.SessionID] && previous == nil
+		a.mu.Unlock()
+		if lost {
+			return nil, errSessionLost()
+		}
+		return nil, acp.ErrSessionNotFound(req.SessionID)
+	}
 	if sub.key != "" {
 		shared, group, first := a.prompts.join(ctx, promptIdentity{req.SessionID, sub.key}, reply)
 		if !first {
+			a.mu.Unlock()
 			return reply, nil
 		}
 		sub.ctx, sub.reply = shared, group
 	}
+	a.mu.Unlock()
 	if previous == nil {
-		s, err := a.session(req.SessionID)
-		if err != nil {
-			sub.reply.Reject(err)
-			return reply, nil
-		}
 		s.submit(sub)
 		return reply, nil
 	}
@@ -389,9 +394,12 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 				break
 			}
 		}
-		s, err := a.session(req.SessionID)
+		current, err := a.session(req.SessionID)
 		if err != nil {
 			return err
+		}
+		if current != s {
+			return errSessionLost()
 		}
 		s.submit(sub)
 		return nil
@@ -450,25 +458,41 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
 		return nil, acp.ErrInvalidParams("unsupported replayFrom type %q", req.ReplayFrom.Type)
 	}
-	op := a.reserveOperation(ctx, req.SessionID, false, false)
-	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
-		s, err := a.resume(ctx, req)
-		if err != nil {
-			return err
+	a.mu.Lock()
+	live := a.sessions[req.SessionID]
+	pending := a.operations[req.SessionID]
+	a.mu.Unlock()
+	var r *historyReplay
+	if replay {
+		// A preceding resume owes its state snapshot. Close and delete can
+		// still owe the cancelled turn’s final updates before their response.
+		for op := pending; op != nil; op = op.previous {
+			if op.syncing.Load() {
+				return nil, jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "session synchronization or cleanup is pending")
+			}
 		}
-		op.reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()})
-		return nil
+		r = a.deps.replays.begin(req.SessionID)
+		if r == nil {
+			return nil, jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "another replay is pending")
+		}
+	}
+	op := a.reserveOperation(ctx, req.SessionID, false, false)
+	op.syncing.Store(true)
+	op.replay = r
+	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		if op.replay != nil && live != nil {
+			op.replay.snapshot(live)
+		}
+		return a.resume(ctx, req, op)
 	})
 	return op.reply, nil
 }
 
-// resume keeps a restored session private until setup succeeds. In particular,
-// a failed MCP connection must not publish or save the requested directories.
-// Live sessions retain Resume's transactional configuration replacement.
-func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest) (s *Session, err error) {
+// resume keeps a restored session private until setup succeeds.
+func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest, op *sessionOperation) (err error) {
 	s, restored, err := a.open(ctx, req.SessionID, req.Cwd, req.AdditionalDirectories)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if restored {
 		defer func() {
@@ -478,13 +502,31 @@ func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest) (s *Se
 			}
 		}()
 	}
-	if err = s.Resume(ctx, req.AdditionalDirectories, req.MCPServers, req.ReplayFrom != nil); err != nil {
-		return s, acp.ErrInvalidParams("cannot configure session: %v", err)
+	if err := s.syncResume(ctx, req.AdditionalDirectories, req.MCPServers, op.replay); err != nil {
+		return err
 	}
+	if r := op.replay; r != nil {
+		err = r.finish(true)
+		op.replay = nil
+		if err != nil {
+			return jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot synchronize session: %v", err)
+		}
+	}
+	var result any = acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()}
 	if restored {
-		err = a.publishRestored(ctx, s)
+		s.activation.Store(activationPending)
+		if err = a.publishRestored(ctx, s); err != nil {
+			return err
+		}
+		result = jsonrpc.BeforeWrite(result, s.activate)
+	} else if ctx.Err() != nil || s.ctx.Err() != nil {
+		if s.isLost() {
+			return errSessionLost()
+		}
+		return acp.ErrRequestCancelled()
 	}
-	return s, err
+	op.resolveSetup(result)
+	return nil
 }
 
 // publishRestored fences publication and the first save against lease renewal.
@@ -581,7 +623,8 @@ func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.L
 		old.markLost()
 		a.mu.Lock()
 		if a.sessions[id] == old {
-			delete(a.sessions, id)
+			a.prompts.detach(id)
+			a.detachSessionLocked(id)
 		}
 		a.lost[id] = true
 		a.mu.Unlock()
@@ -595,7 +638,7 @@ func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.L
 // is released for other processes.
 func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (any, error) {
 	a.mu.Lock()
-	s := a.sessions[req.SessionID]
+	s := a.detachSessionLocked(req.SessionID)
 	// Only pending setup can open an absent session. A close behind terminal
 	// cleanup must wait for it without cancelling it (in particular, a delete
 	// still needs its request context to remove the stored record).
@@ -610,7 +653,6 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 		default:
 		}
 	}
-	delete(a.sessions, req.SessionID)
 	a.mu.Unlock()
 	if s == nil && previous == nil {
 		return acp.CloseSessionResponse{}, nil
@@ -626,7 +668,7 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 			s.Close()
 			a.release(s)
 		}
-		op.reply.Resolve(acp.CloseSessionResponse{})
+		op.resolveSetup(acp.CloseSessionResponse{})
 		return nil
 	})
 	return op.reply, nil
@@ -636,8 +678,7 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 // setup cleanup before touching the stored record.
 func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest) (any, error) {
 	a.mu.Lock()
-	s := a.sessions[req.SessionID]
-	delete(a.sessions, req.SessionID)
+	s := a.detachSessionLocked(req.SessionID)
 	delete(a.lost, req.SessionID)
 	a.mu.Unlock()
 	if s != nil {
@@ -658,7 +699,7 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 			}
 			return jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot delete the session: %v", err)
 		}
-		op.reply.Resolve(acp.DeleteSessionResponse{})
+		op.resolveSetup(acp.DeleteSessionResponse{})
 		return nil
 	})
 	return op.reply, nil
@@ -669,8 +710,7 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 // Release/delete the lease only after all local resources have closed.
 func (a *Agent) terminalSession(id string, captured *Session) *Session {
 	a.mu.Lock()
-	late := a.sessions[id]
-	delete(a.sessions, id)
+	late := a.detachSessionLocked(id)
 	a.mu.Unlock()
 	if captured == nil {
 		return late
@@ -679,6 +719,17 @@ func (a *Agent) terminalSession(id string, captured *Session) *Session {
 		late.Close()
 	}
 	return captured
+}
+
+// detachSessionLocked removes the generation and revokes a queued activation
+// before a later resume can publish another Session with the same wire ID.
+func (a *Agent) detachSessionLocked(id string) *Session {
+	s := a.sessions[id]
+	if s != nil {
+		s.detachActivation()
+		delete(a.sessions, id)
+	}
+	return s
 }
 
 // release gives a closed session's lease back, unless it was lost.
@@ -748,7 +799,7 @@ func (a *Agent) rememberSelection(model, effort string) {
 func (a *Agent) session(id string) (*Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if s, ok := a.sessions[id]; ok {
+	if s, ok := a.sessions[id]; ok && s.activation.Load() == activationActive {
 		return s, nil
 	}
 	if a.lost[id] {

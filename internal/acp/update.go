@@ -41,6 +41,11 @@ func (n SessionNotification) MarshalJSON() ([]byte, error) {
 	}{n.SessionID, update.Bytes()})
 }
 
+// ReplayComplete ends the history selected by one cursor-based resume.
+type ReplayComplete struct{}
+
+func (ReplayComplete) sessionUpdate() string { return "replay_complete" }
+
 // UserMessage creates or replaces a user message.
 type UserMessage struct {
 	MessageID string         `json:"messageId"`

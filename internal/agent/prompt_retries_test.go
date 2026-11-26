@@ -315,9 +315,9 @@ func TestKeyedRetryAcrossCloseAndResume(t *testing.T) {
 	issue50Wait(t, gate.entered)
 	closed := c.promptWithKey(id, "k", "while closed")
 	resume := c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd})
-	one := c.promptWithKey(id, "k", "after resume")
-	two := c.promptWithKey(id, "k", "duplicate")
-	c.initialize() // All four requests have reached the reader while close still waits.
+	for range 2 {
+		c.sessionNotFound(acp.MethodSessionPrompt, map[string]any{"sessionId": id, "idempotencyKey": "k", "prompt": []any{}})
+	}
 	unblock()
 	if r := c.await(closed); r.Error == nil || r.Error.Code != -32002 {
 		t.Fatalf("closed retry = %+v", r)
@@ -327,6 +327,8 @@ func TestKeyedRetryAcrossCloseAndResume(t *testing.T) {
 			t.Fatal(r.Error)
 		}
 	}
+	one := c.promptWithKey(id, "k", "after activation")
+	two := c.promptWithKey(id, "k", "duplicate")
 	a, b := c.await(one), c.await(two)
 	if a.Error != nil || b.Error != nil || string(a.Result) != string(b.Result) {
 		t.Fatalf("resumed retries = %+v, %+v", a, b)

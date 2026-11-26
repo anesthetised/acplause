@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -17,6 +18,8 @@ type sessionOperation struct {
 	previous *sessionOperation
 	done     chan struct{}
 	reply    requestReply
+	syncing  atomic.Bool    // resume or terminal operation still owes session updates
+	replay   *historyReplay // released by the operation worker
 	prompt   bool
 	terminal bool
 	err      error // published by closing done
@@ -29,6 +32,7 @@ func (a *Agent) reserveOperation(ctx context.Context, id string, terminal, inter
 	stop := context.AfterFunc(a.ctx, cancel)
 	context.AfterFunc(ctx, func() { stop() })
 	op := &sessionOperation{ctx: ctx, cancel: cancel, done: make(chan struct{}), reply: jsonrpc.NewReply(ctx), terminal: terminal}
+	op.syncing.Store(terminal)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	op.previous = a.operations[id]
@@ -52,6 +56,7 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 	go func() {
 		defer a.jobs.Done()
 		defer func() {
+			op.syncing.Store(false)
 			a.mu.Lock()
 			close(op.done)
 			if a.operations[id] == op {
@@ -64,7 +69,7 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			case <-op.previous.done:
 			case <-op.ctx.Done():
 				op.err = acp.ErrRequestCancelled()
-				op.reply.Reject(op.err)
+				op.reject()
 				<-op.previous.done
 				if !op.terminal {
 					return
@@ -82,10 +87,30 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			if errors.Is(op.err, context.Canceled) || op.ctx.Err() != nil {
 				op.err = acp.ErrRequestCancelled()
 			}
-			op.reply.Reject(op.err)
+			op.reject()
 			op.cancel()
 		}
 	}()
+}
+
+// reject ends an incomplete replay with its error before releasing live events,
+// including when a cancelled operation must still wait for its predecessor.
+func (op *sessionOperation) reject() {
+	op.reply.Reject(op.err)
+	if op.replay != nil {
+		op.replay.finish(false)
+		op.replay = nil
+	}
+	if !op.terminal { // a cancelled close/delete must still drain the session
+		op.syncing.Store(false)
+	}
+}
+
+// resolveSetup releases replay admission once all updates owed by setup or
+// terminal cleanup are ordered, before the peer can act on the response.
+func (op *sessionOperation) resolveSetup(result any) {
+	op.syncing.Store(false)
+	op.reply.Resolve(result)
 }
 
 // cancelWaitingPrompts signals cancellation without settling replies owned by

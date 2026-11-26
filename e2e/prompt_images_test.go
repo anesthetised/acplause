@@ -152,7 +152,7 @@ func TestImagePromptRejection(t *testing.T) {
 		a.fails("session/prompt", imageParams(sid, blocks), -32602)
 	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
-	if replay := a.untilIdle(sid); len(replay) != 1 {
+	if replay := a.untilIdle(sid); len(replay) != 2 || !replay[0].is("replay_complete") {
 		t.Fatalf("rejected prompt emitted updates: %v", kinds(replay))
 	}
 	if llm.requestCount() != 0 {

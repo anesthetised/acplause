@@ -95,22 +95,39 @@ func (m *inbound) isResponse() bool { return m.Method == "" && (m.Result != nil 
 // failed treats "error": null as absent: some peers send it next to a result.
 func (m *inbound) failed() bool { return m.Error != nil && string(m.Error) != "null" }
 
+type resultWithBeforeWrite struct {
+	result      any
+	beforeWrite func()
+}
+
+// BeforeWrite attaches a nonblocking action to a successful response. The
+// single writer runs it immediately before attempting the frame's first write.
+// It must not acquire application locks or perform I/O.
+func BeforeWrite(result any, action func()) any {
+	return resultWithBeforeWrite{result, action}
+}
+
 type response struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      ID              `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *Error          `json:"error,omitempty"`
+	beforeWrite func()
+	JSONRPC     string          `json:"jsonrpc"`
+	ID          ID              `json:"id"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Error       *Error          `json:"error,omitempty"`
 }
 
 func newResponse(id ID, result any, err error) *response {
 	if err != nil {
 		return errorResponse(id, AsError(err))
 	}
+	var beforeWrite func()
+	if r, ok := result.(resultWithBeforeWrite); ok {
+		result, beforeWrite = r.result, r.beforeWrite
+	}
 	raw, err := Marshal(result)
 	if err != nil {
 		return errorResponse(id, NewError(CodeInternalError, "encode result: %v", err))
 	}
-	return &response{JSONRPC: Version, ID: id, Result: raw}
+	return &response{JSONRPC: Version, ID: id, Result: raw, beforeWrite: beforeWrite}
 }
 
 func errorResponse(id ID, err *Error) *response {

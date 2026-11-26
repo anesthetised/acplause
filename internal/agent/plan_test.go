@@ -118,6 +118,7 @@ func TestPlanSnapshotsPersistAcrossRestart(t *testing.T) {
 			t.Fatalf("replayed entry %d changed: %s, want %s", i, after, before)
 		}
 	}
+	expectReplayComplete(t, out)
 	if state := (<-out).(acp.StateUpdate); state.State != acp.StateIdle {
 		t.Fatalf("restart state: %+v", state)
 	}
@@ -208,6 +209,7 @@ func TestPlanResumePrecedesCompetingLiveUpdate(t *testing.T) {
 	if u := (<-out).(acp.PlanUpdate); u.Plan.Entries[0].Content != "before" {
 		t.Fatalf("replay snapshot: %+v", u)
 	}
+	expectReplayComplete(t, out)
 	if _, ok := (<-out).(acp.StateUpdate); !ok {
 		t.Fatal("live plan overtook resume state")
 	}
