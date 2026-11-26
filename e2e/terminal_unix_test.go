@@ -172,8 +172,8 @@ func TestCancelDuringBash(t *testing.T) {
 	a.notify("session/cancel", map[string]any{"sessionId": sid})
 
 	updates := a.untilIdle(sid)
-	want := []string{"tool_call_update cancelled", "state_update idle cancelled"}
-	if got := kinds(updates); !slices.Equal(got[len(got)-2:], want) || len(filter(updates, "tool_call_update")) != 1 {
+	want := []string{"tool_call_update cancelled", "session_info_update", "state_update idle cancelled"}
+	if got := kinds(updates); len(got) < len(want) || !slices.Equal(got[len(got)-len(want):], want) || len(filter(updates, "tool_call_update")) != 1 {
 		t.Fatalf("updates after cancel: %v", got)
 	}
 	assertProcessGone(t, pidFile)

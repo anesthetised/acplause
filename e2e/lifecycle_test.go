@@ -41,7 +41,7 @@ func TestPromptLifecycle(t *testing.T) {
 	messageID, resp := a.accepted(id)
 	updates := a.untilIdle(sid)
 
-	want := []string{"user_message", "session_info_update", "state_update running", "agent_thought_chunk", "agent_message_chunk", "usage_update", "state_update idle end_turn"}
+	want := []string{"user_message", "session_info_update", "state_update running", "agent_thought_chunk", "agent_message_chunk", "usage_update", "session_info_update", "state_update idle end_turn"}
 	if got := kinds(updates); !slices.Equal(got, want) {
 		t.Fatalf("updates:\n got %v\nwant %v", got, want)
 	}
@@ -251,7 +251,7 @@ func TestQueuedPromptsRunInOrder(t *testing.T) {
 	if idle.StopReason != "end_turn" || resp.seq < idle.seq {
 		t.Fatalf("second prompt accepted at line %d, before the first turn ended at line %d", resp.seq, idle.seq)
 	}
-	want := []string{"user_message", "state_update running", "agent_message_chunk", "usage_update", "state_update idle end_turn"}
+	want := []string{"user_message", "session_info_update", "state_update running", "agent_message_chunk", "usage_update", "session_info_update", "state_update idle end_turn"}
 	if got := kinds(secondTurn); !slices.Equal(got, want) {
 		t.Fatalf("second turn: %v", got)
 	}

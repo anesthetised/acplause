@@ -214,7 +214,7 @@ func TestMCPImagesCancellationKeepsSiblingResults(t *testing.T) {
 	if err := s.Resume(t.Context(), nil, []acp.MCPServer{cfg}, false); err != nil {
 		t.Fatal(err)
 	}
-	<-out // resume's idle snapshot
+	out.untilIdle(t) // resume's metadata and idle snapshots
 	s.Submit(t.Context(), []acp.ContentBlock{acp.Text("screenshots")})
 	select {
 	case <-entered:

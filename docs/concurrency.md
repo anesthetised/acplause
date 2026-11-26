@@ -299,10 +299,11 @@ catalog and restoring happen after both are released.
   waiting live sender wakes on cursor registration and rechecks admission.
 - The worker takes a transcript cut under `Session.mu` and sends immutable
   history entries outside that lock. Restoration replaces the cut with the
-  authoritative transcript. After setup the worker captures the current state
-  in live-event order. One reserved item commits the marker and owed live
-  updates before the resume response. Each message is a separate NDJSON
-  line. Cursorless resumes send their current state directly.
+  authoritative transcript. After setup the worker captures current metadata
+  and state under the same lock, in live-event order. One reserved item
+  commits the marker and owed live updates before the resume response.
+  Each message is a separate NDJSON line. Cursorless resumes send current
+  metadata and state directly.
 - Overflow cancels the affected replay and uses its reserved item for the
   error and all owed live events, including the trigger. Every history
   enqueue checks the generation and cancellation again. The writer releases

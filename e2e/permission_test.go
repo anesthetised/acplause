@@ -77,10 +77,10 @@ func TestPermissionAllowsFileWrite(t *testing.T) {
 
 	updates := a.untilIdle(sid)
 	want := []string{
-		"user_message", "session_info_update", "state_update running", "usage_update",
+		"user_message", "session_info_update", "state_update running", "usage_update", "session_info_update",
 		"tool_call_update pending", "state_update requires_action", "state_update running",
-		"tool_call_update in_progress", "tool_call_update completed",
-		"agent_message_chunk", "usage_update", "state_update idle end_turn",
+		"tool_call_update in_progress", "tool_call_update completed", "session_info_update",
+		"agent_message_chunk", "usage_update", "session_info_update", "state_update idle end_turn",
 	}
 	if got := kinds(updates); !slices.Equal(got, want) {
 		t.Fatalf("updates:\n got %v\nwant %v", got, want)
@@ -187,7 +187,7 @@ func TestCancelWhileAwaitingPermission(t *testing.T) {
 	a.notify("session/cancel", map[string]any{"sessionId": sid})
 	cancel := a.cancellation(req)
 	after := slices.DeleteFunc(a.untilIdle(sid), func(u update) bool { return u.seq < snapshot.seq })
-	if got := kinds(after); !slices.Equal(got, []string{"tool_call_update cancelled", "state_update idle cancelled"}) {
+	if got := kinds(after); !slices.Equal(got, []string{"tool_call_update cancelled", "session_info_update", "state_update idle cancelled"}) {
 		t.Fatalf("updates after cancel: %v", got)
 	}
 

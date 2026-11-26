@@ -60,7 +60,7 @@ func TestUnsupportedSystemPromptWhileReplayPending(t *testing.T) {
 	for _, u := range got {
 		kinds = append(kinds, u.Update.Kind)
 	}
-	if !slices.Equal(kinds, []string{"replay_complete", "state_update"}) {
+	if !slices.Equal(kinds, []string{"replay_complete", "session_info_update", "state_update"}) {
 		t.Fatalf("original replay updates = %v", kinds)
 	}
 }

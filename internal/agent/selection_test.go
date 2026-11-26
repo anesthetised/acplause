@@ -143,7 +143,10 @@ func TestColdResumeModelPolicy(t *testing.T) {
 				c.ok(acp.MethodSessionResume, params, &res)
 				updates := c.untilIdle(sess.ID)
 				var replayed acp.UserMessage
-				if len(updates) != 3 || updates[0].Update.Kind != "user_message" || json.Unmarshal(updates[0].Update.Raw, &replayed) != nil || replayed.MessageID != msg.MessageID || updates[1].Update.Kind != "replay_complete" || res.ConfigOptions[0].CurrentValue != tc.want.model {
+				if len(updates) != 4 || updates[0].Update.Kind != "user_message" ||
+					json.Unmarshal(updates[0].Update.Raw, &replayed) != nil || replayed.MessageID != msg.MessageID ||
+					updates[1].Update.Kind != "replay_complete" || updates[2].Update.Kind != "session_info_update" ||
+					updates[3].Update.Kind != "state_update" || res.ConfigOptions[0].CurrentValue != tc.want.model {
 					t.Fatalf("cold resume configuration %+v and replay %+v", res.ConfigOptions, updates)
 				}
 				sess.Model, sess.Effort, sess.State, sess.Dirs = tc.want.model, tc.want.effort, "idle", nil

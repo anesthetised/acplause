@@ -54,6 +54,9 @@ func TestModeToolsAndRoundAdmission(t *testing.T) {
 		if update.Status != acp.ToolFailed || !strings.Contains(string(update.RawOutput), "Plan mode") {
 			t.Fatalf("forbidden call: %+v", update)
 		}
+		if u := <-out; u != sessionInfoPatch("", s.updatedAt) {
+			t.Fatalf("tool result metadata: %+v", u)
+		}
 		result := s.history[len(s.history)-1]
 		if result.Role != llm.RoleTool || result.ToolCallID != call.ID {
 			t.Fatalf("missing result: %+v", result)
