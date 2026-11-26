@@ -197,6 +197,7 @@ func start(t *testing.T, llm *mockLLM, opts ...option) *agent {
 	cmd.Env = append(cleanEnv(),
 		"ACPLAUSE_BASE_URL="+llm.srv.URL,
 		"ACPLAUSE_API_KEY=test-key",
+		"ACPLAUSE_DEFAULT_MODEL=test/model",
 		"ACPLAUSE_LOG_LEVEL=debug",
 		"ACPLAUSE_DATA_DIR="+t.TempDir(), // withDataDir shares one between agents
 	)

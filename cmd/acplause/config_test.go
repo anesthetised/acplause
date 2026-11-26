@@ -15,15 +15,16 @@ func env(kv map[string]string) func(string) string {
 
 func TestLoadConfig(t *testing.T) {
 	cfg, err := loadConfig(env(map[string]string{
-		"ACPLAUSE_API_KEY":      "sk-or",
-		"ACPLAUSE_MAX_ROUNDS":   "7",
-		"ACPLAUSE_BASH_TIMEOUT": "90s",
-		"ACPLAUSE_LOG_LEVEL":    "debug",
+		"ACPLAUSE_API_KEY":       "sk-or",
+		"ACPLAUSE_DEFAULT_MODEL": "provider/model",
+		"ACPLAUSE_MAX_ROUNDS":    "7",
+		"ACPLAUSE_BASH_TIMEOUT":  "90s",
+		"ACPLAUSE_LOG_LEVEL":     "debug",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config{ReadConcurrency: 1, BaseURL: llm.DefaultBaseURL, APIKey: "sk-or", MaxRounds: 7, BashTimeout: 90 * time.Second, MCPTimeout: time.Hour, IdleTimeout: llm.DefaultIdleTimeout, LogLevel: slog.LevelDebug}
+	want := config{ReadConcurrency: 1, BaseURL: llm.DefaultBaseURL, APIKey: "sk-or", DefaultModel: "provider/model", MaxRounds: 7, BashTimeout: 90 * time.Second, MCPTimeout: time.Hour, IdleTimeout: llm.DefaultIdleTimeout, LogLevel: slog.LevelDebug}
 	if cfg != want {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
@@ -78,8 +79,8 @@ func TestRedactURL(t *testing.T) {
 }
 
 func TestLoadConfigWithoutModel(t *testing.T) {
-	if _, err := loadConfig(env(nil)); err != nil {
-		t.Fatalf("model selection belongs to the ACP client: %v", err)
+	if cfg, err := loadConfig(env(nil)); err != nil || cfg.DefaultModel != "" {
+		t.Fatalf("unset model default: %q, %v", cfg.DefaultModel, err)
 	}
 }
 

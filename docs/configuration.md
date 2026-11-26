@@ -6,6 +6,7 @@
 | ----------------------- | ------------------------------- | ------------------------------------- |
 | `ACPLAUSE_API_KEY`      |                                 | API key; unset sends no `Authorization` |
 | `ACPLAUSE_BASE_URL`     | `https://openrouter.ai/api/v1`  | any OpenAI-compatible API root        |
+| `ACPLAUSE_DEFAULT_MODEL` | unset                          | fallback model ID from the provider's tool-capable catalog |
 | `ACPLAUSE_READ_CONCURRENCY` | `1`                         | concurrent built-in reads, integer `1..8` |
 | `ACPLAUSE_MAX_ROUNDS`   | `200`                           | model requests per turn; `0` disables |
 | `ACPLAUSE_BASH_TIMEOUT` | `30m`                           | shell tool timeout (bash/PowerShell); `0` disables |
@@ -21,6 +22,21 @@ Point your ACP v2 client at the `acplause` binary with these variables set.
 Use [setup diagnostics](troubleshooting.md) to check the configuration.
 See [parallel reads](tools.md#parallel-reads) for the read concurrency policy
 and [model selection](usage.md#model-and-reasoning-selection) for session settings.
+
+## Default model
+
+Set `ACPLAUSE_DEFAULT_MODEL` to the exact ID of a model that supports tools in
+the `/models` response from `ACPLAUSE_BASE_URL`. Restart the agent after changing
+its launch environment. A new session uses the launcher default when your
+last explicit model choice is missing or unavailable. A session restored from
+disk uses it when its saved model is missing or unavailable. Both cases use
+the provider's default reasoning effort for the fallback. A session already
+open in the same process keeps its selection when reattached.
+
+On a fresh data directory, session creation requires a valid launcher default.
+Once a client saves an explicit model choice, that choice takes precedence on
+future new sessions while it stays available. An empty environment value leaves
+the launcher default unset.
 
 ## Credentials and authentication scope
 

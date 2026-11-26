@@ -137,13 +137,13 @@ func TestImagePromptRestartAndModelSwitch(t *testing.T) {
 func TestImagePromptRejection(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t, imageModelsJSON)
-	a := start(t, llm)
+	a := start(t, llm, withEnv("ACPLAUSE_DEFAULT_MODEL=test/plain"))
 	a.initialize()
 	cwd := t.TempDir()
 	sid := a.newSession(cwd).SessionID
 	valid := promptImage(t, "image/png")
 	a.fails("session/prompt", imageParams(sid, []any{valid}), -32602)
-	for _, model := range []string{"test/plain", "test/unknown", "test/model"} {
+	for _, model := range []string{"test/unknown", "test/model"} {
 		a.ok("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": model}, nil)
 		blocks := []any{valid}
 		if model == "test/model" {

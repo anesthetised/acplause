@@ -89,7 +89,7 @@ func TestMCPImagesUseRoundModelAndSurviveRecovery(t *testing.T) {
 			}
 			models := []llm.Model{{ID: "vision"}, {ID: "text"}}
 			models[0].Architecture.InputModalities = []string{"text", "image"}
-			c := startAgent(t, t.TempDir(), model, func(context.Context) ([]llm.Model, error) { return models, nil })
+			c := startAgentWithConfig(t, t.TempDir(), model, func(context.Context) ([]llm.Model, error) { return models, nil }, Config{DefaultModel: before}, nil)
 			c.initialize()
 			cwd := t.TempDir()
 			var session acp.NewSessionResponse

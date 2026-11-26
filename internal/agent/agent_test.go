@@ -167,7 +167,7 @@ func TestCatalog(t *testing.T) {
 		{ID: "a/plain", SupportedParameters: []string{"tools"}},
 		{ID: "c/no-tools", SupportedParameters: []string{"temperature"}},
 		{ID: "d/unknown"},
-		{ID: ""}, // Empty ids are reserved for the unselected placeholder.
+		{ID: ""}, // Empty IDs cannot identify a usable model.
 	})
 	var ids []string
 	for _, v := range c.choices {

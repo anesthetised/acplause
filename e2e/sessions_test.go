@@ -165,24 +165,16 @@ func TestConfigOptions(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
 	llm.enqueue(reply("one"), reply("two"))
-	a := start(t, llm)
+	a := start(t, llm, withEnv("ACPLAUSE_DEFAULT_MODEL=test/plain"))
 	a.initialize()
 	session := a.newSession(t.TempDir())
 	sid := session.SessionID
 
 	model := configByID(t, session.ConfigOptions, "model")
-	if len(session.ConfigOptions) != 2 || model.CurrentValue != "" || model.Category != "model" || !slices.Equal(values(model), []string{"", "test/model", "test/plain"}) || model.Options[0].Name != "Select a model" {
+	if len(session.ConfigOptions) != 2 || model.CurrentValue != "test/plain" || model.Category != "model" || !slices.Equal(values(model), []string{"test/model", "test/plain"}) {
 		t.Fatalf("model option: %+v", model)
 	}
-	// Reject before inserting the message or contacting the model.
-	if resp := a.response(a.prompt(sid, "must not enter history")); resp.Error == nil || resp.Error.Code != -32602 || !strings.Contains(resp.Error.Message, "select a model") {
-		t.Fatalf("prompt without a model: %+v", resp.Error)
-	}
 	a.fails("session/set_config_option", map[string]any{"sessionId": sid, "configId": "model", "type": "id", "value": ""}, -32602)
-	a.expectQuiet(func(m *message) bool { return m.Method == "session/update" })
-	if llm.requestCount() != 0 {
-		t.Fatal("prompt without a model reached the provider")
-	}
 
 	var res struct {
 		ConfigOptions []configOption `json:"configOptions"`
@@ -202,7 +194,7 @@ func TestConfigOptions(t *testing.T) {
 		t.Fatalf("request with effort: %+v", req)
 	}
 	if msgs := llm.request(0).Messages; len(msgs) != 2 || msgs[1]["content"] != "think hard" {
-		t.Fatalf("rejected prompt entered history: %v", msgs)
+		t.Fatalf("first prompt history: %v", msgs)
 	}
 
 	// A model without reasoning drops the dependent option.
@@ -239,6 +231,9 @@ func TestSessionRequiresAvailableModels(t *testing.T) {
 			e := a.fails("session/new", map[string]any{"cwd": t.TempDir()}, -32603)
 			if !strings.Contains(e.Message, "model") {
 				t.Fatalf("unhelpful catalog error: %+v", e)
+			}
+			if json.Valid([]byte(catalog)) && !strings.Contains(e.Message, "ACPLAUSE_DEFAULT_MODEL") {
+				t.Fatalf("empty usable catalog needs launcher guidance: %+v", e)
 			}
 			var res listResult
 			a.ok("session/list", map[string]any{}, &res)

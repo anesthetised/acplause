@@ -120,6 +120,13 @@ before starting session setup or MCP connections. Tests cover cold and active
 resumes, replay ordering, and omitted or null prompts.
 [Stdio coverage](../../e2e/system_prompt_test.go) · [System prompt][beta-system-prompt]
 
+Session setup advertises an effective model from the available catalog. New
+sessions prefer the remembered choice and cold resumes prefer their saved
+model. Both use `ACPLAUSE_DEFAULT_MODEL` when the saved choice is unavailable.
+Setup fails if neither choice is usable. Tests cover first prompts without a
+setter, restored selections, and failed restores that preserve history.
+[ADR 0039](../adr/0039-model-default-policy.md) · [Stdio tests](../../e2e/selection_test.go) · [Alpha.9 defaults][alpha-defaults] · [Beta.4 defaults][beta-defaults]
+
 Prompt retries share one insertion and retain the original message ID across
 compaction and restart. Coverage includes validation, pending setup, cancellation
 during commit, and retry after a lost response. [ADR 0033](../adr/0033-prompt-idempotency-keys.md) · [Retrying prompts][beta-retry]
@@ -176,13 +183,9 @@ configured values. Tests cover both setup methods and credential handling.
   it with one working and one failing peer. [MCP servers][beta-mcp]
 - **Configuration.** The spec recommends broadcasting the complete config when
   it changes, including client-initiated changes. [Set config](../../internal/agent/agent.go)
-  only returns the response. Expand the scope of [#144](https://github.com/anesthetised/acplause/issues/144)
-  to cover this and check ordering. Alpha.9 already required usable
-  defaults. Beta.4 expresses that requirement through `currentValue`.
-  [The model selector](../../internal/agent/catalog.go) offers
-  an empty placeholder for a fresh session, and [prompt admission](../../internal/agent/session.go)
-  requires a model selection. Resolve the default contract with ADR 0002
-  before changing model selection. [Config changes][beta-config] · [Alpha.9 defaults][alpha-defaults] · [Beta.4 defaults][beta-defaults]
+  currently returns the response. [#144](https://github.com/anesthetised/acplause/issues/144)
+  tracks sending the same complete list in a notification before the response
+  when a setter changes the advertised configuration. [Config changes][beta-config]
 - **Session info.** Resume should send a current `session_info_update` even
   without replay, and active sessions should get updates when metadata
   changes. [The session](../../internal/agent/session.go) sends state on

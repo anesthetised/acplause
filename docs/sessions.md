@@ -42,6 +42,10 @@ See [ADR 0033](adr/0033-prompt-idempotency-keys.md).
 
 `session/list` includes stored sessions from every process using that data
 directory. `session/resume` restores their conversation history and settings.
+When opening a session from disk, its usable saved model takes precedence over
+the [launcher default](configuration.md#default-model). A successful fallback
+saves the replacement on the session. When neither choice is usable, resume
+fails and keeps the saved session and history available for retry.
 `session/close` cancels work and releases the session in this process. Its
 pending permission cancellations and final foreground updates precede the reply.
 A cancelled close replies with `-32800` after cleanup and lease release. The

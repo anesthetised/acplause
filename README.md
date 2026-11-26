@@ -100,6 +100,11 @@ to your provider key. The default provider is OpenRouter; set
 `ACPLAUSE_BASE_URL` for another OpenAI-compatible API root. Without a key,
 acplause sends no `Authorization` header, supporting compatible local providers.
 
+Set `ACPLAUSE_DEFAULT_MODEL` in the client's launch environment to a model ID
+from your provider's `/models` catalog that supports tools. This lets a fresh
+session start when there is no usable remembered model, even if the client has
+no model selector.
+
 Check setup from an environment with the same variables as the client:
 
 ```sh
@@ -108,8 +113,8 @@ acplause doctor          # local configuration and data-directory checks
 acplause doctor --online # also check the provider's model catalog
 ```
 
-Select a model in the client before sending the first prompt. New sessions
-reuse your last model and reasoning effort; acplause never picks a substitute.
+New sessions prefer your last available model and reasoning effort. You can
+change either in a client that exposes model configuration.
 See [configuration](docs/configuration.md), [setup diagnostics](docs/troubleshooting.md)
 and the [usage guide](docs/usage.md).
 
