@@ -315,15 +315,17 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	s.setState(acp.StateUpdate{State: acp.StateRequiresAction})
 	s.flush() // a blocked turn is busy: it cannot be taken over
 	var resp acp.RequestPermissionResponse
-	// Call sends even when ctx has ended; a dialog for a cancelled call would
-	// ask about work that never runs.
+	// State publication and persistence may already have outlasted this request.
 	if err = ctx.Err(); err == nil {
-		err = s.deps.out.Call(ctx, acp.MethodSessionRequestPermission, req, &resp)
+		err = s.deps.out.CallPermission(ctx, acp.MethodSessionRequestPermission, req, &resp)
 	}
 	if turnCtx.Err() != nil {
 		return entry, turnCtx.Err() // the turn ends as cancelled; no running in between
 	}
 	s.setState(acp.StateUpdate{State: acp.StateRunning})
+	if ctx.Err() != nil {
+		return entry, ctx.Err()
+	}
 	switch outcome := resp.Outcome; {
 	case err != nil:
 		return entry, fmt.Errorf("could not get the user's permission: %v", err)
@@ -332,10 +334,10 @@ func (s *Session) requestPermission(ctx, turnCtx context.Context, entry int, upd
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionReject:
 		return entry, errRejected
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionAllowAlways && always:
-		s.remember(call.Command, true, gen)
+		s.remember(ctx, call.Command, true, gen)
 		return entry, nil
 	case outcome.Outcome == acp.OutcomeSelected && outcome.OptionID == optionRejectAlways && always:
-		s.remember(call.Command, false, gen)
+		s.remember(ctx, call.Command, false, gen)
 		return entry, errRejected
 	}
 	return entry, fmt.Errorf("permission was not granted (outcome %q, option %q)", resp.Outcome.Outcome, resp.Outcome.OptionID)

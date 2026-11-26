@@ -160,16 +160,7 @@ func TestContendedPromptCanBeCancelled(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	a, sid, cwd := started(t, newMockLLM(t), withDataDir(dir))
-	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db")+"?_txlock=immediate&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
+	unlock := holdStoreWriter(t, dir)
 
 	prompt := a.prompt(sid, "cancel before insertion")
 	// This response must arrive while the write lock is still held.
@@ -177,14 +168,33 @@ func TestContendedPromptCanBeCancelled(t *testing.T) {
 	a.notify("session/cancel", map[string]any{"sessionId": sid})
 	// Fence the cancellation on the protocol read loop before unlocking.
 	setModel(a, sid)
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
+	unlock()
 	if resp := a.response(prompt); resp.Error == nil || resp.Error.Code != -32800 {
 		t.Fatalf("cancelled prompt: %+v", resp)
 	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
 	if replay := a.untilIdle(sid); len(replay) != 2 || !replay[0].is("replay_complete") {
 		t.Fatalf("cancelled prompt was inserted: %v", kinds(replay))
+	}
+}
+
+// holdStoreWriter fences storage cleanup while the protocol reader keeps serving.
+func holdStoreWriter(t *testing.T, dir string) func() {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "acplause.db")+"?_txlock=immediate&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	return func() {
+		t.Helper()
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -20,7 +20,7 @@ type budgetClient struct {
 	permissions atomic.Int32
 }
 
-func (c *budgetClient) Call(context.Context, string, any, any) error {
+func (c *budgetClient) CallPermission(context.Context, string, any, any) error {
 	c.permissions.Add(1)
 	return nil
 }

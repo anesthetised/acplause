@@ -77,12 +77,10 @@ func TestTurnTimeoutCancelsWorkAndAllowsFollowingPrompt(t *testing.T) {
 			if phase == "model" || phase == "compact" {
 				waitClosed(t, aborted, "deadline did not abort model HTTP stream")
 			}
+			if waiting != nil {
+				a.cancellation(waiting)
+			}
 			if phase == "form" {
-				cancel := a.take(func(m *message) bool { return m.Method == "$/cancel_request" })
-				var params struct{ RequestID json.RawMessage }
-				if err := json.Unmarshal(cancel.Params, &params); err != nil || string(params.RequestID) != string(waiting.ID) {
-					t.Fatalf("form cancellation: %s, %v", cancel.Params, err)
-				}
 				a.answer(waiting, formAnswer("accept"))
 			} else if phase == "permission" {
 				a.answer(waiting, selected(optionOfKind(t, waiting, "allow_once")))

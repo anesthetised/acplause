@@ -19,12 +19,28 @@ type outcomeClient struct {
 	cancel context.CancelFunc
 }
 
-func (c *outcomeClient) Call(ctx context.Context, method string, params, result any) error {
-	err := c.recorder.Call(ctx, method, params, result)
+func (c *outcomeClient) CallPermission(ctx context.Context, method string, params, result any) error {
+	err := c.recorder.CallPermission(ctx, method, params, result)
 	if c.cancel != nil {
 		c.cancel()
 	}
 	return err
+}
+
+// Once the transport has delivered a live approval the worker may still
+// block publishing progress. A cancellation at that boundary must reach
+// even a tool whose implementation would ignore the context.
+func TestCancelledApprovalAtToolDispatch(t *testing.T) {
+	s, _ := testSession(t, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	call := &preparedTool{run: func(context.Context) toolOutput {
+		t.Fatal("cancelled tool was dispatched")
+		return toolOutput{}
+	}}
+	if result := s.executeTool(ctx, call, -1, "test"); !result.Failed {
+		t.Fatal("cancelled tool reported success")
+	}
 }
 
 // outcomeSnapshot exercises the persistence encoding, including typed images,

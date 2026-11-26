@@ -37,11 +37,10 @@ type Model interface {
 // Client is the connection to the ACP client; *jsonrpc.Conn implements it.
 type Client interface {
 	Notify(method string, params any) error
-	// Call sends a request and waits for its result. It blocks, so only
-	// session goroutines use it, never handlers on the read loop.
-	Call(ctx context.Context, method string, params, result any) error
-	// CallCancellable also sends best-effort wire cancellation when a locally
-	// cancelled request is no longer relevant. Permissions use Call instead.
+	// CallPermission reserves wire cancellation for a pending permission.
+	// Both calls block and belong on session workers.
+	CallPermission(ctx context.Context, method string, params, result any) error
+	// CallCancellable sends best-effort wire cancellation for forms.
 	CallCancellable(ctx context.Context, method string, params, result any) error
 }
 
@@ -662,11 +661,15 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 	}
 	interrupt := s != nil || (previous != nil && !previous.terminal)
 	op := a.reserveOperation(ctx, req.SessionID, true, interrupt)
-	a.startOperation(req.SessionID, op, func(context.Context) error {
+	op.closing = true
+	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
 			s.Close()
 			a.release(s)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		op.resolveSetup(acp.CloseSessionResponse{})
 		return nil

@@ -115,10 +115,13 @@ ownership) is in [docs/concurrency.md](docs/concurrency.md).
 - **Errors meant for the model are tool results**, not protocol errors:
   invalid tool arguments, unknown tools, sandbox violations and declined
   permission are reported as a `failed` tool call and sent back to the model.
-- **Agent-to-client requests block**, so `jsonrpc.Conn.Call` and `CallCancellable`
-  are used only from session goroutines. Permissions use `Call`; direct form
-  elicitation uses `CallCancellable`. Anything but an explicit permission allow
-  is not permission; accepted form answers never authorize tools.
+- **Agent-to-client requests block.** Only session workers call
+  `jsonrpc.Conn.CallPermission` or `CallCancellable`. Permissions reserve one
+  of 256 separate cancellation slots before ordinary admission. Cancellation
+  of an admitted, pending permission queues its original request ID before
+  the worker returns. Forms use best-effort cancellation on ordinary capacity.
+  Only an explicit permission allow can authorize a tool. Close replies,
+  including `-32800`, follow worker completion and cleanup.
 - **MCP bindings belong to a model round.** Reconfiguration cannot redirect
   an old call or approval. Every MCP tool requires permission, including one
   with `readOnlyHint`; a lost response never causes a tools/call replay.

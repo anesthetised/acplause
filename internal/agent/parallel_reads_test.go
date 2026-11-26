@@ -341,7 +341,7 @@ type parallelPermissionClient struct {
 	permissions int
 }
 
-func (c *parallelPermissionClient) Call(ctx context.Context, method string, params, result any) error {
+func (c *parallelPermissionClient) CallPermission(ctx context.Context, method string, params, result any) error {
 	c.permissions++
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
@@ -353,7 +353,7 @@ func (c *parallelPermissionClient) Call(ctx context.Context, method string, para
 			c.t.Fatal("later read crossed MCP permission barrier")
 		}
 	}
-	return c.recorder.Call(ctx, method, params, result)
+	return c.recorder.CallPermission(ctx, method, params, result)
 }
 
 func TestParallelReadMCPReadOnlyStillRequiresSerialPermission(t *testing.T) {

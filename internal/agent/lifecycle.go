@@ -22,6 +22,7 @@ type sessionOperation struct {
 	replay   *historyReplay // released by the operation worker
 	prompt   bool
 	terminal bool
+	closing  bool  // close owns its reply until all terminal cleanup has finished
 	err      error // published by closing done
 }
 
@@ -68,8 +69,10 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			select {
 			case <-op.previous.done:
 			case <-op.ctx.Done():
-				op.err = acp.ErrRequestCancelled()
-				op.reject()
+				if !op.closing {
+					op.err = acp.ErrRequestCancelled()
+					op.reject()
+				}
 				<-op.previous.done
 				if !op.terminal {
 					return

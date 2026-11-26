@@ -287,7 +287,7 @@ func TestCallRoutesResponsesByID(t *testing.T) {
 	}
 	call := func(ctx context.Context) (result, error) {
 		var r result
-		return r, p.conn.Call(ctx, "ask", map[string]int{"q": 1}, &r)
+		return r, p.conn.CallPermission(ctx, "ask", map[string]int{"q": 1}, &r)
 	}
 	type outcome struct {
 		r   result
@@ -340,7 +340,7 @@ func TestCallIgnoresNullError(t *testing.T) {
 	p := newPeer(t, Methods{})
 	var r struct{ N int }
 	errs := make(chan error, 1)
-	go func() { errs <- p.conn.Call(context.Background(), "ask", nil, &r) }()
+	go func() { errs <- p.conn.CallPermission(context.Background(), "ask", nil, &r) }()
 	var req struct {
 		ID json.RawMessage `json:"id"`
 	}
@@ -390,7 +390,7 @@ func TestCallReturnsWhenContextEnds(t *testing.T) {
 	p := newPeer(t, Methods{"echo": echo})
 	ctx, cancel := context.WithCancel(context.Background())
 	errs := make(chan error, 1)
-	go func() { errs <- p.conn.Call(ctx, "ask", nil, &struct{}{}) }()
+	go func() { errs <- p.conn.CallPermission(ctx, "ask", nil, &struct{}{}) }()
 	var req struct {
 		ID json.RawMessage `json:"id"`
 	}
@@ -401,6 +401,7 @@ func TestCallReturnsWhenContextEnds(t *testing.T) {
 	if err := <-errs; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Call: %v", err)
 	}
+	p.expect(`{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":` + string(req.ID) + `}}`)
 	// A late answer is dropped and the connection keeps serving.
 	p.send(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{}}`)
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"echo","params":[1]}`)

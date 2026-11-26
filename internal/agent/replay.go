@@ -154,11 +154,11 @@ func (c replayClient) wait(ctx context.Context) error {
 	}
 }
 
-func (c replayClient) Call(ctx context.Context, method string, params, result any) error {
+func (c replayClient) CallPermission(ctx context.Context, method string, params, result any) error {
 	if err := c.wait(ctx); err != nil {
 		return err
 	}
-	return c.Client.Call(ctx, method, params, result)
+	return c.Client.CallPermission(ctx, method, params, result)
 }
 
 func (c replayClient) CallCancellable(ctx context.Context, method string, params, result any) error {
