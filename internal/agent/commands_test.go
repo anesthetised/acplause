@@ -49,7 +49,7 @@ func TestCompactCommandForcesSummaryBelowThreshold(t *testing.T) {
 	}))
 	s.deps.maxRounds = 1 // no answer request needs to be reserved for a command
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: "old request"}, llm.Message{Role: llm.RoleAssistant, Content: strings.Repeat("old answer ", 30)})
-	s.Submit(context.Background(), []acp.ContentBlock{acp.Text(" /compact\n")})
+	s.Submit(context.Background(), []acp.ContentBlock{acp.Text("/compact\n")})
 	updates := out.untilIdle(t)
 	idle := updates[len(updates)-1].(acp.StateUpdate)
 	if idle.StopReason != acp.StopEndTurn || calls != 1 || s.cost != 0.01 {
@@ -57,7 +57,7 @@ func TestCompactCommandForcesSummaryBelowThreshold(t *testing.T) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.history) != 4 || s.history[1].Content != "Conversation summary:\nTask summary" || s.history[2].Content != " /compact\n" || !strings.Contains(s.history[3].Content, "compacted") {
+	if len(s.history) != 4 || s.history[1].Content != "Conversation summary:\nTask summary" || s.history[2].Content != "/compact\n" || !strings.Contains(s.history[3].Content, "compacted") {
 		t.Fatalf("compacted history: %+v", s.history)
 	}
 	var statuses []acp.CompactionStatus
@@ -124,26 +124,63 @@ func TestCompactCommandRequiresSelectedModel(t *testing.T) {
 	}
 }
 
+func TestCompactCommandRejectsExtraContentBeforeInsertion(t *testing.T) {
+	model := make(scriptedModel, 1)
+	model.reply("ordinary answer", llm.FinishStop, nil)
+	c := startAgent(t, t.TempDir(), model, nil)
+	c.initialize()
+	cwd := t.TempDir()
+	sid := c.newSession(cwd)
+	c.selectModel(sid, "m")
+	for _, wire := range []string{
+		`[{"type":"text","text":"/compact\u2003explanation"}]`,
+		`[{"type":"resource_link","uri":"file:///command","name":"command"},{"type":"text","text":"/compact"}]`,
+		`[{"type":"text","text":"/compact"},{"type":"text","text":""}]`,
+	} {
+		err := c.fails(acp.MethodSessionPrompt, map[string]any{
+			"sessionId": sid, "idempotencyKey": "command", "prompt": json.RawMessage(wire),
+		}, -32602)
+		if !strings.Contains(err.Message, "Send /compact by itself, then send text or attachments separately") {
+			t.Fatalf("command error: %+v", err)
+		}
+	}
+	c.ok(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
+	if got := c.untilIdle(sid); len(got) != 2 || got[0].Update.Kind != "replay_complete" || len(model) != 1 {
+		t.Fatalf("rejected commands affected the session: %+v", got)
+	}
+	if r := c.await(c.promptWithKey(sid, "command", "ordinary prompt")); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	if idle := lastIdle(c.untilIdle(sid)); idle.Update.StopReason != "end_turn" || len(model) != 0 {
+		t.Fatalf("corrected submission: %+v", idle)
+	}
+}
+
 func TestCompactCommandRecognition(t *testing.T) {
 	for _, tc := range []struct {
-		wire string
-		want bool
+		wire    string
+		compact bool
+		invalid bool
 	}{
-		{`[{"type":"text","text":" \n/compact\t","future":true}]`, true},
-		{`[{"type":"text","text":"/compactness"}]`, false},
-		{`[{"type":"text","text":"/compact explanation"}]`, false},
-		{`[{"type":"resource","text":"/compact","resource":{"uri":"file:///cmd","text":"/compact"}}]`, false},
-		{`[{"type":"_future","text":"/compact"}]`, false},
-		{`[{"type":"text","text":"/compact"},{"type":"image","data":"","mimeType":"image/png"}]`, false},
-		{`[{"type":"text","text":"/compact"},{"type":"text","text":""}]`, false},
-		{`[]`, false},
+		{wire: `[{"type":"text","text":"/compact"}]`, compact: true},
+		{wire: `[{"type":"text","text":"/compact\t\u00a0","future":true}]`, compact: true},
+		{wire: `[{"type":"text","text":" \n/compact\t"}]`},
+		{wire: `[{"type":"text","text":"/compactness"}]`},
+		{wire: `[{"type":"text","text":"/compact-now"}]`},
+		{wire: `[{"type":"text","text":"/unknown explanation"}]`},
+		{wire: `[{"type":"text","text":"ordinary"},{"type":"text","text":"/compact"}]`},
+		{wire: `[{"type":"resource","text":"/compact","resource":{"uri":"file:///cmd","text":"/compact"}}]`},
+		{wire: `[{"type":"text","text":"/compact explanation"}]`, invalid: true},
+		{wire: `[{"type":"image","data":"","mimeType":"image/png"},{"type":"text","text":"/compact"}]`, invalid: true},
+		{wire: `[{"type":"text","text":"/compact"},{"type":"text","text":""}]`, invalid: true},
+		{wire: `[]`},
 	} {
 		var blocks []acp.ContentBlock
 		if err := json.Unmarshal([]byte(tc.wire), &blocks); err != nil {
 			t.Fatal(err)
 		}
-		if got := isCompactCommand(blocks); got != tc.want {
-			t.Errorf("recognize %s = %t", tc.wire, got)
+		if compact, err := classifyCompact(blocks); compact != tc.compact || (err != nil) != tc.invalid {
+			t.Errorf("classify %s = %t, %v", tc.wire, compact, err)
 		}
 	}
 }

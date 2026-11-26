@@ -74,11 +74,15 @@ func TestCompactCommandForcesAndPersistsFullReplay(t *testing.T) {
 	llm := newMockLLM(t, compactionModels)
 	a, sid, cwd := seedCommandHistory(t, llm, withDataDir(dir), withEnv("ACPLAUSE_MAX_ROUNDS=2"))
 	llm.enqueue(reply("Remember the inspected directory."))
-	command := "  /compact\n"
-	id, response := a.accepted(a.prompt(sid, command))
+	const blocks = `[{"type":"text","text":"/compact\n\t\u2003","future":{"opaque":true}}]`
+	id, response := a.accepted(a.request("session/prompt", map[string]any{"sessionId": sid, "prompt": json.RawMessage(blocks)}))
 	updates := a.untilIdle(sid)
-	if updates[0].MessageID != id || updates[0].text() != command || updates[0].seq < response.seq {
+	users := filter(updates, "user_message")
+	if len(users) != 1 || users[0].MessageID != id || users[0].seq < response.seq || string(users[0].Content) != blocks {
 		t.Fatalf("command insertion: %v", kinds(updates))
+	}
+	if states := filter(updates, "state_update"); len(states) != 2 || states[0].State != "running" || states[1].State != "idle" {
+		t.Fatalf("command states: %v", kinds(updates))
 	}
 	compactions := filter(updates, "compaction_update")
 	if len(compactions) != 2 || compactions[0].Status != "in_progress" || compactions[1].Status != "completed" || compactions[0].CompactionID != compactions[1].CompactionID {
@@ -104,7 +108,7 @@ func TestCompactCommandForcesAndPersistsFullReplay(t *testing.T) {
 	b.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
 	replay := b.untilIdle(sid)
 	want := []string{"user_message", "tool_call_update completed", "agent_message", "user_message", "compaction_update", "agent_message", "replay_complete", "state_update idle"}
-	if !slices.Equal(kinds(replay), want) || replay[0].text() != "old request" || replay[2].text() != strings.Repeat("old answer ", 30) || replay[3].text() != command || replay[4].CompactionID != compactions[1].CompactionID || replay[4].Status != "completed" {
+	if !slices.Equal(kinds(replay), want) || replay[0].text() != "old request" || replay[2].text() != strings.Repeat("old answer ", 30) || replay[3].MessageID != id || string(replay[3].Content) != blocks || replay[4].CompactionID != compactions[1].CompactionID || replay[4].Status != "completed" {
 		t.Fatalf("full replay changed: %v", kinds(replay))
 	}
 	llm.enqueue(reply("next answer"))
@@ -139,39 +143,79 @@ func TestCompactCommandNoOp(t *testing.T) {
 }
 
 func TestCommandLikePromptsStayOrdinary(t *testing.T) {
-	for _, kind := range []string{"compactness", "args", "unknown", "resource", "resource link", "two texts", "image"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, tc := range []struct{ name, blocks string }{
+		{"prefix", `[{"type":"text","text":"/compactness"}]`},
+		{"alias", `[{"type":"text","text":"/compact-now"}]`},
+		{"unknown command", `[{"type":"text","text":"/unknown input"}]`},
+		{"leading whitespace", `[{"type":"text","text":" /compact"}]`},
+		{"later text", `[{"type":"text","text":"ordinary"},{"type":"text","text":"/compact"}]`},
+		{"blank first text", `[{"type":"text","text":""},{"type":"text","text":"/compact"}]`},
+		{"resource", `[{"type":"resource","resource":{"uri":"file:///command","text":"/compact"}}]`},
+		{"resource link", `[{"type":"resource_link","uri":"file:///command","name":"/compact"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			llm := newMockLLM(t, imageModelsJSON)
+			llm := newMockLLM(t)
 			llm.enqueue(reply("ordinary answer"))
 			a, sid, _ := started(t, llm)
-			text := map[string]any{"type": "text", "text": "/compact"}
-			blocks := []any{text}
-			switch kind {
-			case "compactness":
-				text["text"] = "/compactness"
-			case "args":
-				text["text"] = "/compact explanation"
-			case "unknown":
-				text["text"] = "/unknown"
-			case "resource":
-				blocks = []any{map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///command", "text": "/compact"}}}
-			case "resource link":
-				blocks = []any{map[string]any{"type": "resource_link", "uri": "file:///command", "name": "/compact"}}
-			case "two texts":
-				blocks = append(blocks, map[string]any{"type": "text", "text": ""})
-			case "image":
-				blocks = append(blocks, promptImage(t, "image/png"))
-			}
-			a.accepted(a.request("session/prompt", imageParams(sid, blocks)))
+			id, _ := a.accepted(a.request("session/prompt", map[string]any{"sessionId": sid, "prompt": json.RawMessage(tc.blocks)}))
 			updates := a.untilIdle(sid)
 			if joinChunks(updates, "agent_message_chunk").text != "ordinary answer" || len(filter(updates, "compaction_update")) != 0 || llm.requestCount() != 1 {
 				t.Fatalf("intercepted ordinary prompt: %v", kinds(updates))
 			}
+			users := filter(updates, "user_message")
+			if len(users) != 1 || users[0].MessageID != id {
+				t.Fatalf("ordinary prompt insertion: %v", kinds(updates))
+			}
+			assertJSON(t, users[0].Content, tc.blocks)
 			if len(llm.request(0).Tools) == 0 {
 				t.Fatal("ordinary prompt became a summary")
 			}
 		})
+	}
+}
+
+func TestCompactCommandPreservesQueueAndRetryPrecedence(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t, compactionModels)
+	release := make(chan struct{})
+	llm.enqueue(waitFor(release, nil), reply("Earlier task summary."))
+	a, sid, cwd := started(t, llm)
+	first, _ := a.accepted(a.prompt(sid, "first"))
+	a.updateWhere(sid, func(u update) bool { return u.is("agent_message_chunk") })
+
+	params := func(blocks ...any) map[string]any {
+		return map[string]any{"sessionId": sid, "idempotencyKey": "command", "prompt": blocks}
+	}
+	text := func(content string) map[string]any { return map[string]any{"type": "text", "text": content} }
+	command := text("/compact\n\t")
+	args := params(text("/compact\nexplanation"))
+	image := promptImage(t, "image/png")
+	for _, bad := range []map[string]any{args, params(image, command), params(command, image), params(command, text(""))} {
+		// The blocked foreground turn must not delay a rejected command.
+		if err := a.fails("session/prompt", bad, -32602); !strings.Contains(err.Message, "Send /compact by itself, then send text or attachments separately") {
+			t.Fatalf("command error: %+v", err)
+		}
+	}
+	pending := a.request("session/prompt", params(command))
+	retry := a.request("session/prompt", args)
+	a.ok("session/list", map[string]any{}, nil) // Both attempts reached admission before the worker became free.
+	close(release)
+	a.untilIdle(sid)
+	id, _ := a.accepted(pending)
+	if got, _ := a.accepted(retry); got != id {
+		t.Fatalf("pending retry returned %q, want %q", got, id)
+	}
+	updates := a.untilIdle(sid)
+	if len(filter(updates, "compaction_update")) != 2 || updates[len(updates)-1].StopReason != "end_turn" {
+		t.Fatalf("corrected command: %v", kinds(updates))
+	}
+	if got, _ := a.accepted(a.request("session/prompt", args)); got != id {
+		t.Fatalf("recorded retry returned %q, want %q", got, id)
+	}
+	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
+	if users := filter(a.untilIdle(sid), "user_message"); len(users) != 2 || users[0].MessageID != first || users[1].MessageID != id || users[1].text() != command["text"] || llm.requestCount() != 2 {
+		t.Fatalf("replayed users: %+v; model requests: %d", users, llm.requestCount())
 	}
 }
 

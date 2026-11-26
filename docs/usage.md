@@ -180,7 +180,7 @@ behavior.
 
 ### Manual compaction
 
-Send `/compact` as a single text-only prompt to summarize older history now,
+Send `/compact` by itself to summarize older history now,
 even below the automatic threshold. It runs in the prompt queue with the
 selected model, reports compaction progress and a short confirmation, and
 keeps the original full conversation for replay. Summary requests count
@@ -188,12 +188,21 @@ toward usage, cost and the turn's request limit; the command does not run an
 ordinary answer or tools afterwards. With no older history or no published
 context window, it returns a short explanation without contacting the model.
 Cancellation and summary failures keep the pre-summary history (apart from
-any completed tool-output trimming). `/compact explanation`, `/compactness`,
-resource contents and prompts mixing text with attachments remain ordinary
-prompts. The command is advertised on session creation and resume; see
-[ADR 0015](adr/0015-compact-slash-command.md). In the tested T3 Code (Beta)
-0.1.0 build, the advertised command is absent from the slash menu and submission
-fails before ACP dispatch; see [#70](https://github.com/anesthetised/acplause/issues/70).
+any completed tool-output trimming).
+
+The first text block must start with `/compact` followed by whitespace or the
+end of the block. Trailing whitespace is allowed. Arguments such as
+`/compact explanation` or any additional block, including an attachment before
+the first text block, cause the agent to reject the prompt. Send the command
+by itself, then send text or attachments separately. `/compactness`, a command
+preceded by whitespace, slash text in a later text block, and unadvertised
+commands remain ordinary prompts. The command is advertised on session
+creation and resume. See [ADR 0015](adr/0015-compact-slash-command.md) and
+[ADR 0037](adr/0037-compact-prompt-admission.md).
+
+In the tested T3 Code (Beta) 0.1.0 build, the advertised command is absent
+from the slash menu and submission fails before ACP dispatch. See
+[#70](https://github.com/anesthetised/acplause/issues/70).
 The [runtime smoke record](testing/t3-first-class-smoke.md) distinguishes
 shipped ACP behavior from client compatibility. Full T3 acceptance
 [#38](https://github.com/anesthetised/acplause/issues/38) remains open for this

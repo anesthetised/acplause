@@ -19,7 +19,7 @@ func TestCompactClassifiesStoredPrompts(t *testing.T) {
 			c.selectModel(sid, "m")
 			prompt := []acp.ContentBlock{acp.Text("/compact")}
 			if multipart {
-				prompt = append(prompt, acp.Text(""))
+				prompt = append([]acp.ContentBlock{acp.Text("")}, prompt...)
 				model.reply(strings.Repeat("ordinary answer ", 100), llm.FinishStop, nil)
 			}
 			c.ok(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": prompt}, nil)

@@ -14,7 +14,7 @@ T3 populates its provider slash menu from availableCommands. acplause has automa
 
 1. Initially advertise only compact, with no arguments, in session/new and session/resume. The availableCommands list is static, so do not emit available_commands_update without a real list change. T3's '$' skill naming is client behavior, not a reason to invent skills or commands.
 
-2. Recognize only a prompt containing exactly one text block whose trimmed text is '/compact'. Mixed blocks, '/compact explanation', '/compactness' and unknown commands remain ordinary prompts. Parse structurally; never execute a shell command or treat slash text in an embedded resource as a command.
+2. *Superseded by [ADR 0037](0037-compact-prompt-admission.md).* Recognize only a prompt containing exactly one text block whose trimmed text is '/compact'. Mixed blocks, '/compact explanation', '/compactness' and unknown commands remain ordinary prompts. Parse structurally; never execute a shell command or treat slash text in an embedded resource as a command.
 
 3. Use the existing queue and insertion boundary: accepted /compact is an ordinary echoed user message with messageId, followed by foreground compaction work on the session worker. Require a selected model. No provider work occurs in the ACP handler. Cancellation before insertion rejects; afterwards it ends once with idle(cancelled).
 

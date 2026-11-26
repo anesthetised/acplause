@@ -3,23 +3,44 @@ package agent
 import (
 	"context"
 	"strings"
+	"unicode"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 	"github.com/anesthetised/acplause/internal/llm"
 )
 
+const compactName = "compact"
+
 func availableCommands() []acp.AvailableCommand {
 	return []acp.AvailableCommand{{
 		Type:        "command",
-		Name:        "compact",
+		Name:        compactName,
 		Description: "Summarize older conversation history to free model context.",
 	}}
 }
 
-// isCompactCommand checks the original blocks, never flattened resource text.
-func isCompactCommand(prompt []acp.ContentBlock) bool {
-	return len(prompt) == 1 && prompt[0].Type == acp.ContentText && strings.TrimSpace(prompt[0].Text) == "/compact"
+// classifyCompact checks the first original text block so neither flattened
+// resource text nor a later text block can invoke the command.
+func classifyCompact(prompt []acp.ContentBlock) (bool, error) {
+	for _, block := range prompt {
+		if block.Type != acp.ContentText {
+			continue
+		}
+		rest, found := strings.CutPrefix(block.Text, "/"+compactName)
+		if !found {
+			return false, nil
+		}
+		args := strings.TrimLeftFunc(rest, unicode.IsSpace)
+		if rest != "" && args == rest {
+			return false, nil // The command name continues past /compact.
+		}
+		if args != "" || len(prompt) != 1 {
+			return false, acp.ErrInvalidParams("Send /compact by itself, then send text or attachments separately.")
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // compactCommand runs after insertion on the worker, sharing automatic
