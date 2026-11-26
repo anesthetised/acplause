@@ -132,8 +132,8 @@ func issue50RetakeDrainsOldSaves(t *testing.T, claim bool) {
 	go func() { old.flush(); close(queued) }()
 	prompt := a.prompt(old.id, "stale queued prompt")
 	// Fence the reader: the prompt worker has been admitted while the old
-	// save still owns flushMu. Initialization must remain responsive.
-	a.initialize()
+	// save still owns flushMu.
+	a.fenceReader()
 	resumed := a.send(acp.MethodSessionResume, map[string]any{"sessionId": old.id, "cwd": cwd})
 	select {
 	case <-gate.acquireEntered:
@@ -201,7 +201,7 @@ func TestIssue50RetakeWaitsForRenewalResult(t *testing.T) {
 	go func() { a.agent.renew(); close(renewed) }()
 	issue50Wait(t, gate.renewEntered)
 	response := a.send(acp.MethodSessionResume, map[string]any{"sessionId": old.id, "cwd": cwd})
-	a.initialize() // The ownership wait must never block the protocol reader.
+	a.fenceReader() // The ownership wait must never block the protocol reader.
 	select {
 	case <-gate.acquireEntered:
 		if result := a.await(response); result.Error != nil {

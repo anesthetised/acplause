@@ -302,6 +302,13 @@ func (c *acpClient) initialize() {
 	c.ok(acp.MethodInitialize, map[string]any{"protocolVersion": acp.ProtocolVersion, "info": map[string]any{"name": "test", "version": "1"}}, nil)
 }
 
+// fenceReader waits until the read loop has dispatched earlier frames without
+// waiting for any deferred replies.
+func (c *acpClient) fenceReader() {
+	c.t.Helper()
+	c.fails("_test/barrier", nil, jsonrpc.CodeMethodNotFound)
+}
+
 func (c *acpClient) newSession(cwd string) string {
 	c.t.Helper()
 	var res acp.NewSessionResponse
@@ -336,11 +343,40 @@ func hasKind(updates []notification, kind string) bool {
 func TestMethodsRequireInitialize(t *testing.T) {
 	c := startAgent(t, t.TempDir(), make(scriptedModel), nil)
 	c.fails(acp.MethodSessionNew, map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}}, jsonrpc.CodeInvalidRequest)
-	c.fails(acp.MethodInitialize, map[string]any{"protocolVersion": 1, "info": map[string]any{"name": "old", "version": "1"}}, acp.CodeUnsupportedProtocolVersion)
+	c.fails("_unknown/method", nil, jsonrpc.CodeInvalidRequest)
+	c.fails(acp.MethodInitialize, json.RawMessage(`{"info":false,"protocolVersion":1}`), acp.CodeUnsupportedProtocolVersion)
+	c.fails("_unknown/method", nil, jsonrpc.CodeInvalidRequest)
 	var res acp.InitializeResponse
 	c.ok(acp.MethodInitialize, map[string]any{"protocolVersion": acp.ProtocolVersion, "info": map[string]any{"name": "test", "version": "1"}}, &res)
 	if res.ProtocolVersion != acp.ProtocolVersion || res.Info.Name != "test" || res.Capabilities.Session == nil {
 		t.Fatalf("initialize: %+v", res)
+	}
+	c.fails(acp.MethodInitialize, nil, jsonrpc.CodeInvalidRequest)
+	c.fails("_unknown/method", nil, jsonrpc.CodeMethodNotFound)
+}
+
+func TestInitializeRepeatsKeepLatestSuccessfulCapabilities(t *testing.T) {
+	c := startAgent(t, t.TempDir(), make(scriptedModel), nil)
+	c.notify(acp.MethodSessionCancel, map[string]any{"sessionId": "missing"})
+	c.formInitialize()
+	c.fails(acp.MethodInitialize, json.RawMessage(`{"protocolVersion":2,"info":{"name":"missing version"}}`), jsonrpc.CodeInvalidParams)
+	if !c.agent.deps.forms.Load() {
+		t.Fatal("failed initialize cleared form support")
+	}
+
+	c.ok(acp.MethodInitialize, json.RawMessage(`{"protocolVersion":3,"info":[],"capabilities":{"elicitation":{"form":[]}}}`), nil)
+	if c.agent.deps.forms.Load() {
+		t.Fatal("successful downgrade kept stale form support")
+	}
+	c.notify(jsonrpc.CancelRequestMethod, map[string]any{"requestId": 1})
+	c.ok(acp.MethodInitialize, json.RawMessage(`{"protocolVersion":3,"info":{"name":false},"capabilities":{"elicitation":{"form":{}}}}`), nil)
+	if !c.agent.deps.forms.Load() {
+		t.Fatal("downgrade dropped readable form support")
+	}
+	c.fails(acp.MethodSessionNew, nil, jsonrpc.CodeInvalidParams)
+	c.fails(acp.MethodInitialize, json.RawMessage(`{"protocolVersion":1}`), jsonrpc.CodeInvalidRequest)
+	if !c.agent.deps.forms.Load() {
+		t.Fatal("blocked initialize cleared form support")
 	}
 }
 

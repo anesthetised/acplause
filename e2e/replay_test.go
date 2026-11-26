@@ -292,7 +292,7 @@ func TestRetakeOrdersCancelledIdleAfterReplayMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	resume := a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}})
-	a.initialize()
+	a.fails("_test/barrier", nil, -32601)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}

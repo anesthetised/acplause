@@ -73,7 +73,10 @@ Not lock-guarded, by ownership instead:
 - `sessionOperation.err` is published by closing `done`. `prompt` is set on
   the read loop right after reservation; its readers are read-loop handlers
   or operation goroutines started later.
-- `Agent.initialized` and `deps.forms` are atomics set by `initialize`.
+- The JSON-RPC read loop owns `Agent.initialized` and
+  `Agent.otherRequestSeen`. It publishes negotiated capabilities after the
+  successful initialize response enters the output queue. Session workers
+  read `deps.forms` atomically.
 
 ### Where locks must not be held
 

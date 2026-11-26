@@ -145,9 +145,9 @@ func TestElicitationStopsWithSession(t *testing.T) {
 					t.Fatalf("history: %+v", last)
 				}
 			}
-			// Late responses are ignored; initialize is a read-loop barrier.
+			// Late responses are ignored.
 			c.write(map[string]any{"jsonrpc": "2.0", "id": q.ID, "result": map[string]any{"action": "accept", "content": json.RawMessage(typedQuestionAnswers)}})
-			c.formInitialize()
+			c.fenceReader()
 		})
 	}
 }

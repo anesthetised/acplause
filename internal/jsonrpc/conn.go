@@ -34,6 +34,13 @@ type Handler func(ctx context.Context, params json.RawMessage) (any, error)
 type Methods struct {
 	Requests      map[string]Handler
 	Notifications map[string]Handler
+
+	// BeforeRequest can reject a valid request before method lookup. It runs
+	// synchronously on the read loop, including for unregistered methods.
+	BeforeRequest func(method string) error
+	// AcceptNotification can suppress valid notifications, including cancellation.
+	// A nil callback accepts them all.
+	AcceptNotification func() bool
 }
 
 // Handle adapts a function of decoded params into a Handler; see
@@ -255,19 +262,26 @@ func (c *Conn) Serve(ctx context.Context, methods Methods) error {
 	for {
 		select {
 		case <-c.quit:
-			cancel() // release a line already waiting for dispatch
-			if input, ok := c.in.(io.ReadCloser); ok {
-				_ = input.Close() // release a line still waiting for input
-			}
-			return ErrClosed
 		case line, ok := <-lines:
-			if !ok {
-				return <-readErr
+			select {
+			case <-c.quit:
+				// A failed response enqueue can close the connection while a
+				// later request is already waiting on the read loop.
+			default:
+				if !ok {
+					return <-readErr
+				}
+				c.handleLine(ctx, methods, line)
+				continue
 			}
-			c.handleLine(ctx, methods, line)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		cancel() // release a line already waiting for dispatch
+		if input, ok := c.in.(io.ReadCloser); ok {
+			_ = input.Close() // release a line still waiting for input
+		}
+		return ErrClosed
 	}
 }
 
@@ -387,12 +401,20 @@ func (c *Conn) dispatch(ctx context.Context, methods Methods, raw []byte) {
 			c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "method %s requires a request id", method)))
 			return
 		}
-		c.notify(ctx, methods.Notifications, method, msg.Params)
+		if methods.AcceptNotification == nil || methods.AcceptNotification() {
+			c.notify(ctx, methods.Notifications, method, msg.Params)
+		}
 		return
 	}
 	if _, ok := methods.Notifications[method]; ok || method == CancelRequestMethod {
 		c.respond(errorResponse(id, NewError(CodeInvalidRequest, "method %s is a notification", method)))
 		return
+	}
+	if methods.BeforeRequest != nil {
+		if err := methods.BeforeRequest(method); err != nil {
+			c.respond(errorResponse(id, AsError(err)))
+			return
+		}
 	}
 	c.call(ctx, methods.Requests, id, key, method, msg.Params)
 }
@@ -504,6 +526,10 @@ func (c *Conn) untrack(id ID, tracked *context.CancelFunc) {
 func (c *Conn) respond(r *response) {
 	if err := c.send(r); err != nil {
 		c.log.Warn("dropping outgoing message", "err", err)
+		return
+	}
+	if r.afterEnqueue != nil {
+		r.afterEnqueue()
 	}
 }
 

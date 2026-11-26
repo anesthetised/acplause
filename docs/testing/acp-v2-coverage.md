@@ -136,6 +136,12 @@ permission requests by ID. The stdio tests cover late replies, session
 isolation and close ordering. The transport tests saturate both queues and
 exercise response races and shutdown. [ADR 0034](../adr/0034-permission-request-cancellation.md) · [Cancellation][beta-cancel]
 
+Initialization rejects other requests with `-32600` before dispatch and
+allows repeats until a valid non-initialize request arrives. The agent reads
+the version first and ignores unreadable fields during downgrade. Stdio tests
+cover the repeat window, including unknown requests and invalid parameters.
+[Stdio tests](../../e2e/protocol_test.go) · [Initialization guard][beta-init] · [Version negotiation][beta-version]
+
 JSON-RPC dispatch rejects invalid request IDs and request or notification
 forms before invoking a handler. It echoes valid IDs in their original spelling
 and uses `id: null` when an error cannot identify a request. Invalid responses
@@ -156,15 +162,6 @@ configured values. Tests cover both setup methods and credential handling.
 
 ### Other follow-ups
 
-- **Initialization.** Before initialization any other request must get
-  `-32600`. A repeat after another request must also get `-32600`. Version
-  negotiation must read the version first and ignore unreadable fields when
-  negotiating down. [Dispatch](../../internal/jsonrpc/conn.go) answers unknown
-  methods before the [agent's initialize guard](../../internal/agent/agent.go),
-  and [parameter validation](../../internal/acp/initialize.go) requires `info`
-  before version selection. Add stdio cases for each ordering rule and for
-  malformed fields in a newer client's request.
-  [Initialization guard][beta-init] · [Version negotiation][beta-version]
 - **Mixed-content command dispatch.** Alpha.9 already allowed commands to
   accompany other content. Beta.4
   specifies how to recognize a command in the first text block.

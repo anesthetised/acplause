@@ -90,10 +90,6 @@ func TestValidation(t *testing.T) {
 		into    any
 		wantErr string
 	}{
-		{"initialize ok", `{"protocolVersion":2,"info":{"name":"c","version":"1"}}`, &InitializeRequest{}, ""},
-		{"initialize no version", `{"info":{"name":"c","version":"1"}}`, &InitializeRequest{}, "protocolVersion is required"},
-		{"initialize fractional", `{"protocolVersion":2.5,"info":{"name":"c","version":"1"}}`, &InitializeRequest{}, "cannot unmarshal"},
-		{"initialize no info", `{"protocolVersion":2}`, &InitializeRequest{}, "info is required"},
 		{"new relative cwd", `{"cwd":"src"}`, &NewSessionRequest{}, "cwd must be an absolute path"},
 		{"new relative extra dir", `{"cwd":` + string(cwd) + `,"additionalDirectories":["x"]}`, &NewSessionRequest{}, "additionalDirectories must be an absolute path"},
 		{"prompt missing", `{"sessionId":"s"}`, &PromptRequest{}, "prompt is required"},
@@ -117,6 +113,47 @@ func TestValidation(t *testing.T) {
 			}
 			if code := jsonrpc.AsError(err).Code; code != jsonrpc.CodeInvalidParams {
 				t.Fatalf("got code %d, want %d", code, jsonrpc.CodeInvalidParams)
+			}
+		})
+	}
+}
+
+func TestDecodeInitializeRequest(t *testing.T) {
+	for _, tc := range []struct {
+		params string
+		code   int
+	}{
+		{`{"protocolVersion":2,"info":{"name":"c","version":"1","title":true}}`, 0},
+		{`{"protocolVersion":2.0,"info":{"name":"c","version":"1"}}`, 0},
+		{`{"protocolVersion":2,"ProtocolVersion":1,"info":{"name":"c","version":"1","Name":42}}`, 0},
+		{`{"protocolVersion":65535,"info":true}`, 0},
+		{`{"protocolVersion":655350e-1,"info":true}`, 0},
+		{`{"protocolVersion":1,"info":true}`, CodeUnsupportedProtocolVersion},
+		{`{"protocolVersion":10e-1,"info":true}`, CodeUnsupportedProtocolVersion},
+		{`{"protocolVersion":0}`, CodeUnsupportedProtocolVersion},
+		{`{"protocolVersion":-0}`, CodeUnsupportedProtocolVersion},
+		{`{"info":true}`, jsonrpc.CodeInvalidParams},
+		{`{"ProtocolVersion":2,"info":{"name":"c","version":"1"}}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":null,"info":true}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":2.5}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":65536}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":65534.99999999999999}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":-1}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":2}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":2,"info":{"name":null,"version":"1"}}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":2,"info":{"Name":"c","version":"1"}}`, jsonrpc.CodeInvalidParams},
+		{`{"protocolVersion":2,"info":{"name":"c","version":1}}`, jsonrpc.CodeInvalidParams},
+		{`[]`, jsonrpc.CodeInvalidParams},
+		{`null`, jsonrpc.CodeInvalidParams},
+	} {
+		t.Run(tc.params, func(t *testing.T) {
+			_, err := DecodeInitializeRequest(json.RawMessage(tc.params))
+			code := 0
+			if err != nil {
+				code = jsonrpc.AsError(err).Code
+			}
+			if code != tc.code {
+				t.Fatalf("got %v, want code %d", err, tc.code)
 			}
 		})
 	}

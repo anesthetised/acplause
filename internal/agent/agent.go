@@ -72,9 +72,11 @@ type Agent struct {
 	deps    deps
 	catalog func() (*catalog, error)
 
-	initialized atomic.Bool
-	ctx         context.Context // parent of all sessions
-	cancel      context.CancelFunc
+	// Connection admission state belongs to the JSON-RPC read loop.
+	initialized      bool
+	otherRequestSeen bool
+	ctx              context.Context // parent of all sessions
+	cancel           context.CancelFunc
 
 	// ownershipMu serialises acquisition/publication with renewal and its
 	// loss results. Only background operations take it; turns use their own
@@ -219,18 +221,20 @@ func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 // Methods returns the agent's JSON-RPC handlers.
 func (a *Agent) Methods() jsonrpc.Methods {
 	return jsonrpc.Methods{
+		BeforeRequest:      a.beforeRequest,
+		AcceptNotification: func() bool { return a.initialized },
 		Requests: map[string]jsonrpc.Handler{
-			acp.MethodInitialize:       jsonrpc.Handle(a.initialize),
-			acp.MethodSessionNew:       a.ready(jsonrpc.Handle(a.newSession)),
-			acp.MethodSessionPrompt:    a.ready(jsonrpc.Handle(a.prompt)),
-			acp.MethodSessionList:      a.ready(jsonrpc.Handle(a.listSessions)),
-			acp.MethodSessionResume:    a.ready(jsonrpc.Handle(a.resumeSession)),
-			acp.MethodSessionClose:     a.ready(jsonrpc.Handle(a.closeSession)),
-			acp.MethodSessionDelete:    a.ready(jsonrpc.Handle(a.deleteSession)),
-			acp.MethodSessionSetConfig: a.ready(jsonrpc.Handle(a.setConfigOption)),
+			acp.MethodInitialize:       a.initialize,
+			acp.MethodSessionNew:       jsonrpc.Handle(a.newSession),
+			acp.MethodSessionPrompt:    jsonrpc.Handle(a.prompt),
+			acp.MethodSessionList:      jsonrpc.Handle(a.listSessions),
+			acp.MethodSessionResume:    jsonrpc.Handle(a.resumeSession),
+			acp.MethodSessionClose:     jsonrpc.Handle(a.closeSession),
+			acp.MethodSessionDelete:    jsonrpc.Handle(a.deleteSession),
+			acp.MethodSessionSetConfig: jsonrpc.Handle(a.setConfigOption),
 		},
 		Notifications: map[string]jsonrpc.Handler{
-			acp.MethodSessionCancel: a.ready(jsonrpc.Handle(a.cancelSession)),
+			acp.MethodSessionCancel: jsonrpc.Handle(a.cancelSession),
 		},
 	}
 }
@@ -261,23 +265,28 @@ func (a *Agent) Shutdown() {
 	}
 }
 
-// ready rejects session methods until initialize has succeeded.
-func (a *Agent) ready(h jsonrpc.Handler) jsonrpc.Handler {
-	return func(ctx context.Context, params json.RawMessage) (any, error) {
-		if !a.initialized.Load() {
-			return nil, jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "connection is not initialized")
+// beforeRequest enforces the handshake even for requests that fail dispatch
+// or params validation. Failed initializations can still be retried.
+func (a *Agent) beforeRequest(method string) error {
+	if method == acp.MethodInitialize {
+		if a.initialized && a.otherRequestSeen {
+			return jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "initialize cannot be repeated after another request")
 		}
-		return h(ctx, params)
+		return nil
 	}
+	a.otherRequestSeen = true
+	if !a.initialized {
+		return jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "connection is not initialized")
+	}
+	return nil
 }
 
-func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, error) {
-	if *req.ProtocolVersion < acp.ProtocolVersion {
-		return nil, acp.ErrUnsupportedProtocolVersion(*req.ProtocolVersion)
+func (a *Agent) initialize(_ context.Context, params json.RawMessage) (any, error) {
+	capabilities, err := acp.DecodeInitializeRequest(params)
+	if err != nil {
+		return nil, err
 	}
-	a.deps.forms.Store(req.Capabilities.Elicitation != nil && req.Capabilities.Elicitation.Form != nil)
-	a.initialized.Store(true)
-	return acp.InitializeResponse{
+	result := acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersion,
 		Info:            a.cfg.Info,
 		Capabilities: acp.AgentCapabilities{
@@ -288,7 +297,11 @@ func (a *Agent) initialize(_ context.Context, req acp.InitializeRequest) (any, e
 				Delete:                &acp.Supported{},
 			},
 		},
-	}, nil
+	}
+	return jsonrpc.OnEnqueue(result, func() {
+		a.deps.forms.Store(capabilities.Elicitation != nil && capabilities.Elicitation.Form != nil)
+		a.initialized = true
+	}), nil
 }
 
 // newSession waits for the catalog and earlier model selections off the

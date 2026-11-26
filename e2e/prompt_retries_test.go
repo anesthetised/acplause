@@ -205,7 +205,7 @@ func TestRetainedRetrySurvivesFailedReconfiguration(t *testing.T) {
 		t.Fatal("MCP setup did not start")
 	}
 	retry, fresh := prompt("retained"), prompt("new")
-	a.initialize()
+	a.fails("_test/barrier", nil, -32601)
 	unblock()
 	for _, id := range []string{resume, fresh} {
 		if r := a.response(id); r.Error == nil || r.Error.Code != -32602 {

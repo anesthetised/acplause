@@ -3,9 +3,59 @@ package jsonrpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+func TestFailedResponseEnqueueStopsBeforeFollowingRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n" +
+			`{"jsonrpc":"2.0","id":2,"method":"session/list"}` + "\n")
+		out := stoppedWriter{release: make(chan struct{}), fail: true}
+		c := NewConn(in, out, slog.New(slog.DiscardHandler))
+		if err := c.Notify("hold_writer", nil); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		for range cap(c.ordinary.slots) {
+			if err := c.Notify("fill_queue", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var called, initialized, listed bool
+		methods := Methods{Requests: map[string]Handler{
+			"initialize": func(context.Context, json.RawMessage) (any, error) {
+				called = true
+				return OnEnqueue(nil, func() { initialized = true }), nil
+			},
+			"session/list": func(context.Context, json.RawMessage) (any, error) {
+				listed = true
+				return nil, nil
+			},
+		}}
+		served := make(chan error, 1)
+		go func() { served <- c.Serve(t.Context(), methods) }()
+		synctest.Wait()
+		if !called || initialized || listed {
+			t.Fatalf("while queued: initialize called=%v, published=%v, list called=%v", called, initialized, listed)
+		}
+		close(out.release)
+		if err := <-served; !errors.Is(err, ErrClosed) {
+			t.Fatalf("serve: %v", err)
+		}
+		if initialized || listed {
+			t.Fatalf("after failed enqueue: initialize published=%v, list called=%v", initialized, listed)
+		}
+		if err := c.Close(); !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("close: %v", err)
+		}
+	})
+}
 
 func TestInvalidRequestEnvelopePreservesOnlyValidIDs(t *testing.T) {
 	calls := 0

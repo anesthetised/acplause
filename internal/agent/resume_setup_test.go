@@ -651,7 +651,7 @@ func TestCancelledRetakeStillOwesRetiringToolAndIdle(t *testing.T) {
 	default:
 	}
 	later := c.send(acp.MethodSessionResume, params)
-	c.initialize() // fence receipt while lease release is blocked
+	c.fenceReader() // Fence receipt while lease release is blocked.
 	releaseLease()
 	for _, ch := range []<-chan rpcResponse{closing, later} {
 		if r := c.await(ch); r.Error != nil {
@@ -734,7 +734,7 @@ func TestRetakeDrainsRetiringTurn(t *testing.T) {
 			if tc.closeDuring {
 				closing = c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
 			}
-			c.initialize() // The reader remains available during the drain.
+			c.fenceReader() // The reader remains available during the drain.
 			renewed := make(chan struct{})
 			go func() { c.agent.renew(); close(renewed) }()
 			issue50Wait(t, renewed)
