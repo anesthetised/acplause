@@ -1,6 +1,9 @@
 package agent
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 // drop forgets a session another process now owns, as lease renewal does.
 func (a *Agent) drop(id string) {
@@ -14,5 +17,5 @@ func (a *Agent) drop(id string) {
 
 // SetConfigOption changes a setting without the protocol handler's setup fence.
 func (s *Session) SetConfigOption(id, valueType string, raw json.RawMessage) error {
-	return s.setConfigOption(id, valueType, raw, false)
+	return s.setConfigOption(context.Background(), id, valueType, raw, false)
 }

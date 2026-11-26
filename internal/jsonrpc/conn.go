@@ -70,12 +70,21 @@ type Conn struct {
 // line. For a permission cancellation it is reserved before the request, so
 // the cancellation can always be enqueued even if stdout is blocked.
 type outputQueue struct {
-	lines chan []byte
+	lines chan outputFrame
 	slots chan struct{}
 }
 
+type outputFrame struct {
+	prefix      func() ([]byte, error)
+	lines       [][]byte // a reserved completion may emit several separate frames
+	taken       func()
+	line        []byte
+	beforeWrite func()
+	afterWrite  func(error)
+}
+
 func newOutputQueue(capacity int) outputQueue {
-	return outputQueue{lines: make(chan []byte, capacity), slots: make(chan struct{}, capacity)}
+	return outputQueue{lines: make(chan outputFrame, capacity), slots: make(chan struct{}, capacity)}
 }
 
 type pendingCall struct {
@@ -127,7 +136,7 @@ func (c *Conn) CallCancellable(ctx context.Context, method string, params, resul
 
 func (c *Conn) callPeer(ctx context.Context, method string, params, result any, reserve bool) error {
 	if reserve {
-		if err := c.acquireSlot(ctx, &c.cancels); err != nil {
+		if err := c.acquireSlot(ctx, &c.cancels, nil); err != nil {
 			return err
 		}
 	}
@@ -191,7 +200,7 @@ func (c *Conn) cancelCallLocked(id ID, call pendingCall, err error) {
 	b, _ := Marshal(notification{JSONRPC: Version, Method: CancelRequestMethod, Params: struct {
 		RequestID ID `json:"requestId"`
 	}{id}})
-	c.enqueueLocked(queue, b)
+	c.enqueueLocked(queue, outputFrame{line: b})
 	call.done <- callResult{err: err}
 }
 
@@ -373,7 +382,7 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	reply := &Reply{}
+	reply := &Reply{id: id}
 	tracked := c.track(id, func() {
 		cancel()
 		if reply.onCancelRequest != nil {
@@ -383,7 +392,9 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 	reply.bind(func(result any, err error) {
 		c.untrack(id, tracked)
 		cancel()
-		c.respond(newResponse(id, result, err))
+		if _, alreadySent := result.(sentResponse); !alreadySent {
+			c.respond(newResponse(id, result, err))
+		}
 	})
 	ctx = context.WithValue(ctx, replyContextKey{}, reply)
 	result, err := c.invoke(ctx, method, handler, params)
@@ -474,10 +485,12 @@ func (c *Conn) send(v any) error {
 
 // acquireSlot waits outside mu. sendOrdinary rechecks cancellation and closure
 // at admission because select may choose a slot when both are ready.
-func (c *Conn) acquireSlot(ctx context.Context, q *outputQueue) error {
+func (c *Conn) acquireSlot(ctx context.Context, q *outputQueue, changed <-chan struct{}) error {
 	select {
 	case q.slots <- struct{}{}:
 		return nil
+	case <-changed:
+		return ErrAdmissionChanged
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.quit:
@@ -493,32 +506,53 @@ func (c *Conn) sendOrdinary(ctx context.Context, v any, id ID, call pendingCall)
 	if err != nil {
 		return fmt.Errorf("jsonrpc: encode message: %w", err)
 	}
-	if err := c.acquireSlot(ctx, &c.ordinary); err != nil {
+	frame := outputFrame{line: b}
+	if r, ok := v.(*response); ok {
+		frame.beforeWrite, frame.afterWrite = r.beforeWrite, r.afterWrite
+	}
+	admit, _ := ctx.Value(admissionKey{}).(Admission)
+	return c.sendFrame(ctx, frame, id, call, nil, admit)
+}
+
+func (c *Conn) sendFrame(ctx context.Context, frame outputFrame, id ID, call pendingCall, changed <-chan struct{}, admit Admission) error {
+	if err := c.acquireSlot(ctx, &c.ordinary, changed); err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	select {
-	case <-c.quit:
+	queued := false
+	commit := func() error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		select {
+		case <-c.quit:
+			return ErrClosed
+		default:
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if id != "" {
+			c.calls[id] = call
+		}
+		c.enqueueLocked(&c.ordinary, frame)
+		queued = true
+		return nil
+	}
+	var err error
+	if admit == nil {
+		err = commit()
+	} else {
+		err = admit(commit)
+	}
+	if !queued {
 		<-c.ordinary.slots
-		return ErrClosed
-	default:
 	}
-	if err := ctx.Err(); err != nil {
-		<-c.ordinary.slots
-		return err
-	}
-	if id != "" {
-		c.calls[id] = call
-	}
-	c.enqueueLocked(&c.ordinary, b)
-	return nil
+	return err
 }
 
 // enqueueLocked is the single ordering point. The caller owns a slot in q,
 // and order has room for one pointer per slot across both physical FIFOs.
-func (c *Conn) enqueueLocked(q *outputQueue, b []byte) {
-	q.lines <- b
+func (c *Conn) enqueueLocked(q *outputQueue, frame outputFrame) {
+	q.lines <- frame
 	c.order <- q
 }
 
@@ -542,15 +576,37 @@ func (c *Conn) stop() {
 func (c *Conn) writeLoop() {
 	defer close(c.writerDone)
 	for q := range c.order {
-		b := <-q.lines
+		frame := <-q.lines
 		<-q.slots
-		if c.writeErr != nil {
-			continue // discard remaining queued lines and release their slots
+		if frame.taken != nil {
+			frame.taken()
 		}
-		b = append(b, '\n')
-		n, err := c.out.Write(b)
-		if err == nil && n != len(b) {
-			err = io.ErrShortWrite
+		if c.writeErr != nil {
+			continue
+		}
+		if frame.beforeWrite != nil {
+			frame.beforeWrite()
+		}
+		var err error
+		if frame.line != nil {
+			err = c.writeLine(frame.line)
+		} else {
+			err = c.writeReserved(frame)
+		}
+		if frame.afterWrite != nil {
+			// A graceful close can seal admission while an already queued
+			// frame is being written. It cannot activate another session.
+			c.mu.Lock()
+			outcome := err
+			select {
+			case <-c.quit:
+				if outcome == nil {
+					outcome = ErrClosed
+				}
+			default:
+			}
+			frame.afterWrite(outcome)
+			c.mu.Unlock()
 		}
 		if err != nil {
 			c.writeErr = err
@@ -558,4 +614,31 @@ func (c *Conn) writeLoop() {
 			c.log.Error("write failed", "err", err)
 		}
 	}
+}
+
+func (c *Conn) writeLine(line []byte) error {
+	b := append(line, '\n')
+	n, err := c.out.Write(b)
+	if err == nil && n != len(b) {
+		return io.ErrShortWrite
+	}
+	return err
+}
+
+func (c *Conn) writeReserved(frame outputFrame) error {
+	if frame.prefix != nil {
+		line, err := frame.prefix()
+		if err != nil {
+			return err
+		}
+		if err = c.writeLine(line); err != nil {
+			return err
+		}
+	}
+	for _, line := range frame.lines {
+		if err := c.writeLine(line); err != nil {
+			return err
+		}
+	}
+	return nil
 }

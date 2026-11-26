@@ -134,18 +134,9 @@ func issue50RetakeDrainsOldSaves(t *testing.T, claim bool) {
 	// Fence the reader: the prompt worker has been admitted while the old
 	// save still owns flushMu. Initialization must remain responsive.
 	a.initialize()
-	opened := make(chan *Session, 1)
-	failed := make(chan error, 1)
-	openDone := make(chan struct{})
-	go func() {
-		s, err := a.agent.resume(context.Background(), acp.ResumeSessionRequest{SessionID: old.id, Cwd: cwd})
-		opened <- s
-		failed <- err
-		close(openDone)
-	}()
+	resumed := a.send(acp.MethodSessionResume, map[string]any{"sessionId": old.id, "cwd": cwd})
 	select {
 	case <-gate.acquireEntered:
-		issue50Wait(t, openDone)
 		t.Error("Acquire restored the process owner ID before the old save finished")
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -164,30 +155,29 @@ func issue50RetakeDrainsOldSaves(t *testing.T, claim bool) {
 	if response := a.await(prompt); response.Error == nil {
 		t.Error("queued old prompt crossed insertion after losing ownership")
 	}
-	select {
-	case s := <-opened:
-		if err := <-failed; err != nil {
-			t.Fatal(err)
-		}
-		if s == old || !old.isLost() {
-			t.Error("obsolete session was reused or left able to save")
-		}
-		issue50Flush(t, old)
-		s.mu.Lock()
-		issue50Contains(t, "restored history", s.history, "B retained prompt", "B retained answer")
-		s.mu.Unlock()
-		// Only the first old save and the new session's repair save may
-		// reach Store. Queued flush/claimTurn must see lost first.
-		if delta := gate.saves.Load() - before; delta != 2 {
-			t.Errorf("Store saves = %d, want one rejected old save and one restore", delta)
-		}
-		old.Close()
-		a.agent.release(old)
-		if lost, err := gate.Store.Renew(context.Background(), []string{old.id}); err != nil || len(lost) != 0 {
-			t.Errorf("old cleanup released the replacement lease: %v %v", lost, err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("reacquisition did not finish")
+	if r := a.await(resumed); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	s, err := a.sessionAfterResponse(old.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == old || !old.isLost() {
+		t.Error("obsolete session was reused or left able to save")
+	}
+	issue50Flush(t, old)
+	s.mu.Lock()
+	issue50Contains(t, "restored history", s.history, "B retained prompt", "B retained answer")
+	s.mu.Unlock()
+	// Only the first old save and the new session's repair save may
+	// reach Store. Queued flush/claimTurn must see lost first.
+	if delta := gate.saves.Load() - before; delta != 2 {
+		t.Errorf("Store saves = %d, want one rejected old save and one restore", delta)
+	}
+	old.Close()
+	a.agent.release(old)
+	if lost, err := gate.Store.Renew(context.Background(), []string{old.id}); err != nil || len(lost) != 0 {
+		t.Errorf("old cleanup released the replacement lease: %v %v", lost, err)
 	}
 }
 
@@ -240,7 +230,7 @@ func TestIssue50RetakeWaitsForRenewalResult(t *testing.T) {
 			t.Fatalf("pending renewal cancelled a later resume: %v", result.Error)
 		}
 	}
-	current, err := a.agent.session(old.id)
+	current, err := a.sessionAfterResponse(old.id)
 	if err != nil || current == old || current.isLost() {
 		t.Fatalf("old renewal result dropped the restored session: %v", err)
 	}

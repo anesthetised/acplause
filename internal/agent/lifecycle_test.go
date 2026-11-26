@@ -301,7 +301,7 @@ func TestResumeWaitsForCatalogOutsideOwnership(t *testing.T) {
 	if r := b.await(resumed); r.Error != nil {
 		t.Fatal(r.Error)
 	}
-	if _, err := b.agent.session(id); err != nil {
+	if _, err := b.sessionAfterResponse(id); err != nil {
 		t.Fatalf("resumed session not published: %v", err)
 	}
 }

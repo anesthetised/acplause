@@ -144,7 +144,7 @@ func TestKeyedSaveFallbackRetainsIdentityUntilFlush(t *testing.T) {
 	checkRetry := func(sess *Session) {
 		t.Helper()
 		retry := &submission{ctx: ctx, key: "key", reply: jsonrpc.NewReply(ctx)}
-		sess.submit(retry)
+		sess.submit(retry, nil)
 		sess.saves.Wait()
 		got, err := settledReply(t, retry.reply)
 		var r acp.PromptResponse
@@ -315,9 +315,9 @@ func TestKeyedRetryAcrossCloseAndResume(t *testing.T) {
 	issue50Wait(t, gate.entered)
 	closed := c.promptWithKey(id, "k", "while closed")
 	resume := c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd})
-	one := c.promptWithKey(id, "k", "after resume")
-	two := c.promptWithKey(id, "k", "duplicate")
-	c.initialize() // All four requests have reached the reader while close still waits.
+	for range 2 {
+		c.sessionNotFound(acp.MethodSessionPrompt, map[string]any{"sessionId": id, "idempotencyKey": "k", "prompt": []any{}})
+	}
 	unblock()
 	if r := c.await(closed); r.Error == nil || r.Error.Code != -32002 {
 		t.Fatalf("closed retry = %+v", r)
@@ -327,6 +327,8 @@ func TestKeyedRetryAcrossCloseAndResume(t *testing.T) {
 			t.Fatal(r.Error)
 		}
 	}
+	one := c.promptWithKey(id, "k", "after activation")
+	two := c.promptWithKey(id, "k", "duplicate")
 	a, b := c.await(one), c.await(two)
 	if a.Error != nil || b.Error != nil || string(a.Result) != string(b.Result) {
 		t.Fatalf("resumed retries = %+v, %+v", a, b)
@@ -496,5 +498,45 @@ func TestRecordedRetryArrivingAfterOwnershipRead(t *testing.T) {
 	}
 	if r := c.await(second); r.Error == nil || r.Error.Message != store.ErrLost.Error() {
 		t.Fatalf("retry used an ownership read from before it arrived: %+v", r)
+	}
+}
+
+func TestRetainedRetryAfterFailedSetup(t *testing.T) {
+	model := make(scriptedModel, 1)
+	model.reply("done", llm.FinishStop, nil)
+	gate := &gatedAcquireStore{entered: make(chan struct{}, 1), release: make(chan error, 1)}
+	defer close(gate.release)
+	owner := &gatedOwnerCheck{entered: make(chan struct{}, 1), release: make(chan error, 1)}
+	defer close(owner.release)
+	c := startAgent(t, t.TempDir(), model, nil, func(st Store) Store {
+		owner.Store = st
+		gate.Store = owner
+		return gate
+	})
+	c.initialize()
+	cwd := t.TempDir()
+	id := c.newSession(cwd)
+	c.selectModel(id, "m")
+	original := c.await(c.promptWithKey(id, "k", "first"))
+	if original.Error != nil {
+		t.Fatal(original.Error)
+	}
+	c.untilIdle(id)
+	resume := c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd, "additionalDirectories": []string{cwd + "/absent"}})
+	issue50Wait(t, gate.entered)
+	retry := c.promptWithKey(id, "k", "retry")
+	newKey := c.promptWithKey(id, "new", "new work")
+	c.initialize()
+	gate.release <- nil
+	if r := c.await(resume); r.Error == nil || r.Error.Code != -32602 {
+		t.Fatalf("setup: %+v", r)
+	}
+	issue50Wait(t, owner.entered)
+	owner.release <- nil
+	if r := c.await(retry); r.Error != nil || string(r.Result) != string(original.Result) {
+		t.Fatalf("retained retry = %+v, want %+v", r, original)
+	}
+	if r := c.await(newKey); r.Error == nil || r.Error.Code != -32602 {
+		t.Fatalf("new key: %+v", r)
 	}
 }

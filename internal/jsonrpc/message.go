@@ -95,22 +95,42 @@ func (m *inbound) isResponse() bool { return m.Method == "" && (m.Result != nil 
 // failed treats "error": null as absent: some peers send it next to a result.
 func (m *inbound) failed() bool { return m.Error != nil && string(m.Error) != "null" }
 
+type resultWithWriteHooks struct {
+	result      any
+	beforeWrite func()
+	afterWrite  func(error)
+}
+
+// OnWrite attaches nonblocking callbacks to a successful response. The writer
+// brackets the frame's own Write, treating a short write or sealed connection
+// as an unsuccessful delivery. Callbacks must not take locks or perform I/O.
+func OnWrite(result any, before func(), after func(error)) any {
+	return resultWithWriteHooks{result, before, after}
+}
+
 type response struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      ID              `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *Error          `json:"error,omitempty"`
+	beforeWrite func()
+	afterWrite  func(error)
+	JSONRPC     string          `json:"jsonrpc"`
+	ID          ID              `json:"id"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Error       *Error          `json:"error,omitempty"`
 }
 
 func newResponse(id ID, result any, err error) *response {
 	if err != nil {
 		return errorResponse(id, AsError(err))
 	}
+	var beforeWrite func()
+	var afterWrite func(error)
+	if r, ok := result.(resultWithWriteHooks); ok {
+		result, beforeWrite, afterWrite = r.result, r.beforeWrite, r.afterWrite
+	}
 	raw, err := Marshal(result)
 	if err != nil {
 		return errorResponse(id, NewError(CodeInternalError, "encode result: %v", err))
 	}
-	return &response{JSONRPC: Version, ID: id, Result: raw}
+	return &response{JSONRPC: Version, ID: id, Result: raw, beforeWrite: beforeWrite, afterWrite: afterWrite}
 }
 
 func errorResponse(id ID, err *Error) *response {

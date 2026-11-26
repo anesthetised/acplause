@@ -280,7 +280,7 @@ func TestCompactCommandOverProtocolPersistsContextAndReplay(t *testing.T) {
 	for _, n := range replay {
 		kinds = append(kinds, n.Update.Kind)
 	}
-	if !slices.Equal(kinds, []string{"user_message", "agent_message", "user_message", "compaction_update", "agent_message", "state_update"}) {
+	if !slices.Equal(kinds, []string{"user_message", "agent_message", "user_message", "compaction_update", "agent_message", "replay_complete", "state_update"}) {
 		t.Fatalf("replay: %v", kinds)
 	}
 	var completed acp.CompactionUpdate

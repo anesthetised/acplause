@@ -14,6 +14,7 @@ import (
 // synchronously inside Resolve or Reject, even before the handler returns.
 // A notification sent afterwards therefore follows the response on the wire.
 type Reply struct {
+	id              ID
 	mu              sync.Mutex
 	settled         bool
 	result          any
@@ -67,3 +68,15 @@ func (r *Reply) bind(deliver func(any, error)) {
 		deliver(r.result, r.err)
 	}
 }
+
+// ErrorLine prepares a failure for a reserved output item. The writer encodes
+// even a long request ID outside the application's admission lock.
+func (r *Reply) ErrorLine(err error) func() ([]byte, error) {
+	response := errorResponse(r.id, AsError(err))
+	return func() ([]byte, error) { return Marshal(response) }
+}
+
+type sentResponse struct{}
+
+// Delivered settles a request whose response already entered a reserved slot.
+func (r *Reply) Delivered() { r.Resolve(sentResponse{}) }

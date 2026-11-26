@@ -87,7 +87,7 @@ func TestSessionsSurviveRestart(t *testing.T) {
 	}
 	second.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, &resumed)
 	replay := second.untilIdle(sid)
-	if got := kinds(replay); !slices.Equal(got, []string{"user_message", "agent_message", "state_update idle"}) || replay[1].text() != "Paris." {
+	if got := kinds(replay); !slices.Equal(got, []string{"user_message", "agent_message", "replay_complete", "state_update idle"}) || replay[1].text() != "Paris." {
 		t.Fatalf("replay after restart: %v", got)
 	}
 	if resumed.ConfigOptions[0].CurrentValue != "test/model" {
@@ -173,7 +173,7 @@ func TestContendedPromptCanBeCancelled(t *testing.T) {
 		t.Fatalf("cancelled prompt: %+v", resp)
 	}
 	a.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]any{"type": "start"}}, nil)
-	if replay := a.untilIdle(sid); len(replay) != 1 {
+	if replay := a.untilIdle(sid); len(replay) != 2 || !replay[0].is("replay_complete") {
 		t.Fatalf("cancelled prompt was inserted: %v", kinds(replay))
 	}
 }

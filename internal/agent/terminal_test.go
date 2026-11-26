@@ -455,6 +455,7 @@ func TestTerminalReplayPrecedesCompetingBytesAndExit(t *testing.T) {
 	if string(decodeTerminalBytes(t, replay.Output.Data)) != "before" || replay.ExitStatus != nil {
 		t.Fatalf("stale replay: %+v", replay)
 	}
+	expectReplayComplete(t, out)
 	if _, ok := (<-out).(acp.StateUpdate); !ok {
 		t.Fatal("bytes overtook replay state")
 	}

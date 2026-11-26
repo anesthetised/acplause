@@ -114,7 +114,7 @@ func TestIssue50RetakePreservesLatestSession(t *testing.T) {
 					t.Errorf("resume transcript lost %q", marker)
 				}
 			}
-			retaken, _ := a.agent.session(id)
+			retaken, _ := a.sessionAfterResponse(id)
 			retaken.mu.Lock()
 			issue50Contains(t, "memory", retaken.history, "B unique prompt", "B unique answer")
 			if retaken.model != "r" || retaken.effort != "high" || retaken.mode != "plan" || retaken.cost != 0.375 {

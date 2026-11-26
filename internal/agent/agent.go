@@ -111,7 +111,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	}
 	a := &Agent{
 		cfg:        cfg,
-		deps:       deps{forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store, calibration: new(calibration)},
+		deps:       deps{replays: newReplayStreams(out), forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store, calibration: new(calibration)},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*Session),
@@ -156,9 +156,13 @@ func (a *Agent) renew() {
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
 	a.mu.Lock()
-	ids := slices.Collect(maps.Keys(a.sessions))
-	pending := make(map[string]*sessionOperation, len(ids))
-	for _, id := range ids {
+	ids := make([]string, 0, len(a.sessions))
+	pending := make(map[string]*sessionOperation, len(a.sessions))
+	for id := range a.sessions {
+		if a.lost[id] {
+			continue // renewal already retired this generation
+		}
+		ids = append(ids, id)
 		pending[id] = a.operations[id]
 	}
 	a.mu.Unlock()
@@ -181,7 +185,11 @@ func (a *Agent) renew() {
 func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 	a.mu.Lock()
 	s := a.sessions[id]
-	delete(a.sessions, id)
+	if s != nil {
+		s.activation.Store(activationLost)
+		a.jobs.Add(1)
+	}
+	a.prompts.detach(id)
 	for op := pending; op != nil; op = op.previous {
 		op.cancel()
 	}
@@ -190,11 +198,20 @@ func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 	if s != nil {
 		a.cfg.Log.Info("session taken over by another process", "session", id)
 		s.markLost()
-		// The map no longer exposes s to open. Drain its old write before
-		// releasing ownershipMu, or reacquisition could revive that write's
-		// process owner ID even though the detached session is marked lost.
+		// A terminal handler can detach s before acquire sees it. Fence any
+		// store write already in flight before releasing ownershipMu (ADR 0004).
 		s.flushMu.Lock()
-		go s.Close()
+		// Keep the lost generation reachable until its final updates are queued.
+		// Resume and close can join this cleanup without holding an agent lock.
+		go func() {
+			defer a.jobs.Done()
+			s.Close()
+			a.mu.Lock()
+			if a.sessions[id] == s {
+				a.detachSessionLocked(id)
+			}
+			a.mu.Unlock()
+		}()
 		s.flushMu.Unlock()
 	}
 }
@@ -216,13 +233,13 @@ func (a *Agent) Methods() jsonrpc.Methods {
 
 // Shutdown cancels all work and closes every session.
 func (a *Agent) Shutdown() {
-	if saved := a.pendingSelection(); saved != nil {
-		<-saved
-	}
 	a.cancel()
 	a.mu.Lock()
 	a.shuttingDown = true
 	sessions := slices.Collect(maps.Values(a.sessions))
+	for _, s := range sessions {
+		s.detachActivation()
+	}
 	clear(a.sessions)
 	a.mu.Unlock()
 
@@ -235,6 +252,9 @@ func (a *Agent) Shutdown() {
 	}
 	wg.Wait()
 	a.jobs.Wait()
+	if saved := a.pendingSelection(); saved != nil {
+		<-saved
+	}
 }
 
 // ready rejects session methods until initialize has succeeded.
@@ -344,55 +364,76 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 	return reply, nil
 }
 
+// rejectLater keeps the reader available even when ordinary output is full.
+func (a *Agent) rejectLater(reply *jsonrpc.Reply, err error) (any, error) {
+	a.jobs.Go(func() { reply.Reject(err) })
+	return reply, nil
+}
+
 func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) {
-	a.mu.Lock()
-	previous := a.operations[req.SessionID]
-	a.mu.Unlock()
-	// A terminal operation has detached the old activation. Until a resume
-	// is reserved, retries have no live session or setup to join.
-	if previous != nil && previous.terminal {
-		return nil, acp.ErrSessionNotFound(req.SessionID)
-	}
 	reply := jsonrpc.NewReply(ctx)
 	sub := &submission{ctx: ctx, prompt: req.Prompt, key: string(req.IdempotencyKey), reply: reply}
+	a.mu.Lock()
+	previous := a.operations[req.SessionID]
+	s := a.sessions[req.SessionID]
+	// Admission belongs to the activation visible at receipt. Register the
+	// key under the same fence as detachment on close or ownership loss.
+	activation := activationDetached
+	if s != nil {
+		activation = s.activation.Load()
+	}
+	writing := activation == activationWriting
+	staged := writing || (previous != nil && previous.staged)
+	if (activation != activationActive && !writing) || (previous != nil && previous.terminal) {
+		lost := previous == nil && (activation == activationLost || a.lost[req.SessionID])
+		a.mu.Unlock()
+		if lost {
+			return a.rejectLater(reply, errSessionLost())
+		}
+		return a.rejectLater(reply, acp.ErrSessionNotFound(req.SessionID))
+	}
 	if sub.key != "" {
 		shared, group, first := a.prompts.join(ctx, promptIdentity{req.SessionID, sub.key}, reply)
 		if !first {
+			a.mu.Unlock()
 			return reply, nil
 		}
 		sub.ctx, sub.reply = shared, group
-	}
-	if previous == nil {
-		s, err := a.session(req.SessionID)
-		if err != nil {
-			sub.reply.Reject(err)
-			return reply, nil
+		if staged {
+			group.setStaged(true)
 		}
-		s.submit(sub)
+	}
+	a.mu.Unlock()
+	if previous == nil && !staged {
+		s.submit(sub, nil)
 		return reply, nil
 	}
 	op := a.reserveOperation(sub.ctx, req.SessionID, false, false)
 	op.prompt = true
+	op.staged = staged
 	op.reply = sub.reply
 	sub.ctx = op.ctx
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		if writing {
+			if err := s.awaitWritten(ctx); err != nil {
+				return err
+			}
+		}
 		// A prompt depends on the requested setup, not on whether an earlier
 		// prompt was cancelled. Failed setup must reject before insertion.
 		// The predecessor observed at receipt may have finished while the
 		// group was registered. Its result still applies to this prompt.
+		var setupErr error
 		for setup := previous; setup != nil; setup = setup.previous {
-			if !setup.prompt {
-				if setup.err != nil {
-					return setup.err
-				}
+			if !setup.prompt && !setup.config {
+				setupErr = setup.err
 				break
 			}
 		}
-		s, err := a.session(req.SessionID)
-		if err != nil {
+		if err := a.checkGeneration(s); err != nil {
 			return err
 		}
-		s.submit(sub)
+		s.submit(sub, setupErr)
 		return nil
 	})
 	return reply, nil
@@ -449,25 +490,38 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
 		return nil, acp.ErrInvalidParams("unsupported replayFrom type %q", req.ReplayFrom.Type)
 	}
-	op := a.reserveOperation(ctx, req.SessionID, false, false)
-	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
-		s, err := a.resume(ctx, req)
+	var r *historyReplay
+	reply := jsonrpc.NewReply(ctx)
+	if replay {
+		var err error
+		r, err = a.deps.replays.begin(ctx, req.SessionID, reply)
 		if err != nil {
-			return err
+			return a.rejectLater(reply, err)
 		}
-		op.reply.Resolve(acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()})
-		return nil
+		ctx = r.ctx
+	}
+	a.mu.Lock()
+	live := a.sessions[req.SessionID]
+	a.mu.Unlock()
+	op := a.reserveOperation(ctx, req.SessionID, false, false)
+	if !replay {
+		op.owed = a.deps.replays.owe(req.SessionID)
+	}
+	op.replay = r
+	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		if op.replay != nil && live != nil {
+			op.replay.snapshot(live)
+		}
+		return a.resume(ctx, req, op)
 	})
 	return op.reply, nil
 }
 
-// resume keeps a restored session private until setup succeeds. In particular,
-// a failed MCP connection must not publish or save the requested directories.
-// Live sessions retain Resume's transactional configuration replacement.
-func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest) (s *Session, err error) {
+// resume keeps a restored session private until setup succeeds.
+func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest, op *sessionOperation) (err error) {
 	s, restored, err := a.open(ctx, req.SessionID, req.Cwd, req.AdditionalDirectories)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if restored {
 		defer func() {
@@ -477,13 +531,33 @@ func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest) (s *Se
 			}
 		}()
 	}
-	if err = s.Resume(ctx, req.AdditionalDirectories, req.MCPServers, req.ReplayFrom != nil); err != nil {
-		return s, acp.ErrInvalidParams("cannot configure session: %v", err)
+	if err := s.syncResume(ctx, req.AdditionalDirectories, req.MCPServers, op.replay, op.owed); err != nil {
+		return err
 	}
+	if r := op.replay; r != nil {
+		err = r.finish(ctx, nil)
+		if err != nil {
+			return err
+		}
+		op.replay = nil
+	}
+	op.owed.release()
+	var result any = acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()}
 	if restored {
-		err = a.publishRestored(ctx, s)
+		s.written = make(chan struct{})
+		s.activation.Store(activationPending)
+		if err = a.publishRestored(ctx, s); err != nil {
+			return err
+		}
+		result = jsonrpc.OnWrite(result, s.beginWrite, s.endWrite)
+	} else if ctx.Err() != nil || s.ctx.Err() != nil {
+		if s.isLost() {
+			return errSessionLost()
+		}
+		return acp.ErrRequestCancelled()
 	}
-	return s, err
+	op.resolveSetup(result)
+	return nil
 }
 
 // publishRestored fences publication and the first save against lease renewal.
@@ -519,9 +593,14 @@ func (a *Agent) publishRestored(ctx context.Context, s *Session) error {
 // provider for catalogTimeout, which must not delay lease renewal; the session
 // stays private until publishRestored, so nothing else can observe it meanwhile.
 func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Session, bool, error) {
-	live, l, err := a.acquire(ctx, id, cwd)
-	if live != nil || err != nil {
-		return live, false, err
+	cached, l, err := a.acquire(ctx, id, cwd)
+	if l == nil || err != nil {
+		return cached, false, err
+	}
+	if cached != nil {
+		// Join the retiring worker outside all locks, before synchronizing
+		// replacement state. Its process-owned lease is now ours to keep.
+		cached.Close()
 	}
 	c, err := a.catalog()
 	if err != nil {
@@ -537,11 +616,11 @@ func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Sessi
 	return s, true, nil
 }
 
-// acquire takes the session's lease and returns either the continuously owned
-// live session or the stored record to restore. Old saves must finish before
-// ownership can return to this process, or their process-owner check could
-// overwrite the new history; a live session that lost ownership is marked lost
-// while its flushMu still fences queued flushes and prompt insertions.
+// acquire takes the lease and returns the cached session, if any. A non-nil
+// record requires restoration and draining any cached session. Old saves must
+// finish before ownership can return to this process, or their process-owner
+// check could overwrite the new history. Mark the old session lost while its
+// flushMu still fences queued flushes and insertions.
 func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.Loaded, error) {
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
@@ -573,20 +652,25 @@ func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.L
 		return nil, nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
 	}
 	if old != nil {
-		if l.AlreadyOwned && !old.isLost() {
+		old.mu.Lock()
+		if l.AlreadyOwned && !old.lost {
+			old.mu.Unlock()
 			return old, nil, nil
 		}
-		// A lost context/MCP manager cannot be revived.
-		old.markLost()
+		// Cancellation can remove the current cursor while Close drains.
+		// Fence the old worker's output before detaching its generation.
+		old.sealOutputLocked()
+		old.loseLocked()
+		old.mu.Unlock()
 		a.mu.Lock()
 		if a.sessions[id] == old {
-			delete(a.sessions, id)
+			a.prompts.detach(id)
+			a.detachSessionLocked(id)
 		}
 		a.lost[id] = true
 		a.mu.Unlock()
-		go old.Close() // never release the replacement's process-owned lease
 	}
-	return nil, l, nil
+	return old, l, nil
 }
 
 // closeSession cancels the session's work at once, to keep ordering with
@@ -594,7 +678,7 @@ func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.L
 // is released for other processes.
 func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (any, error) {
 	a.mu.Lock()
-	s := a.sessions[req.SessionID]
+	s := a.detachSessionLocked(req.SessionID)
 	// Only pending setup can open an absent session. A close behind terminal
 	// cleanup must wait for it without cancelling it (in particular, a delete
 	// still needs its request context to remove the stored record).
@@ -609,17 +693,16 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 		default:
 		}
 	}
-	delete(a.sessions, req.SessionID)
 	a.mu.Unlock()
 	if s == nil && previous == nil {
 		return acp.CloseSessionResponse{}, nil
 	}
-	if s != nil {
-		s.Cancel()
-	}
 	interrupt := s != nil || (previous != nil && !previous.terminal)
 	op := a.reserveOperation(ctx, req.SessionID, true, interrupt)
 	op.closing = true
+	if s != nil {
+		s.sealOutput()
+	}
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
@@ -629,7 +712,7 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		op.reply.Resolve(acp.CloseSessionResponse{})
+		op.resolveSetup(acp.CloseSessionResponse{})
 		return nil
 	})
 	return op.reply, nil
@@ -639,14 +722,13 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 // setup cleanup before touching the stored record.
 func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest) (any, error) {
 	a.mu.Lock()
-	s := a.sessions[req.SessionID]
-	delete(a.sessions, req.SessionID)
+	s := a.detachSessionLocked(req.SessionID)
 	delete(a.lost, req.SessionID)
 	a.mu.Unlock()
-	if s != nil {
-		s.Cancel()
-	}
 	op := a.reserveOperation(ctx, req.SessionID, true, true)
+	if s != nil {
+		s.sealOutput()
+	}
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
@@ -661,7 +743,7 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 			}
 			return jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot delete the session: %v", err)
 		}
-		op.reply.Resolve(acp.DeleteSessionResponse{})
+		op.resolveSetup(acp.DeleteSessionResponse{})
 		return nil
 	})
 	return op.reply, nil
@@ -672,8 +754,7 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 // Release/delete the lease only after all local resources have closed.
 func (a *Agent) terminalSession(id string, captured *Session) *Session {
 	a.mu.Lock()
-	late := a.sessions[id]
-	delete(a.sessions, id)
+	late := a.detachSessionLocked(id)
 	a.mu.Unlock()
 	if captured == nil {
 		return late
@@ -682,6 +763,18 @@ func (a *Agent) terminalSession(id string, captured *Session) *Session {
 		late.Close()
 	}
 	return captured
+}
+
+// detachSessionLocked removes the generation and revokes a queued activation
+// before a later resume can publish another Session with the same wire ID.
+func (a *Agent) detachSessionLocked(id string) *Session {
+	s := a.sessions[id]
+	if s != nil {
+		s.detachActivation()
+		s.activation.CompareAndSwap(activationActive, activationDetached)
+		delete(a.sessions, id)
+	}
+	return s
 }
 
 // release gives a closed session's lease back, unless it was lost.
@@ -697,26 +790,63 @@ func (a *Agent) releaseID(id string) {
 	}
 }
 
-func (a *Agent) setConfigOption(_ context.Context, req acp.SetConfigOptionRequest) (any, error) {
-	s, err := a.session(req.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	// Session.mu may be held across a full writer queue, so do not wait for it
-	// under Agent.mu. Admission stays atomic: only read-loop handlers reserve
-	// setup, so none can start before Session.mu is taken, and a pending
-	// setup submits its prompts to the session queue before it leaves operations.
+func (a *Agent) setConfigOption(ctx context.Context, req acp.SetConfigOptionRequest) (any, error) {
 	a.mu.Lock()
-	setupPending := a.operations[req.SessionID] != nil
+	s := a.sessions[req.SessionID]
+	previous := a.operations[req.SessionID]
+	state := activationDetached
+	if s != nil {
+		state = s.activation.Load()
+	}
+	lost := previous == nil && (state == activationLost || a.lost[req.SessionID])
+	stage := state == activationWriting || (state == activationActive && previous != nil && previous.staged)
 	a.mu.Unlock()
-	if err = s.setConfigOption(req.ConfigID, req.Type, req.Value, setupPending); err != nil {
+	if stage {
+		op := a.reserveOperation(ctx, req.SessionID, false, false)
+		op.staged, op.config = true, true
+		var selection *modelSelection
+		if req.ConfigID == configModel || req.ConfigID == configEffort {
+			selection = new(modelSelection)
+			a.rememberSelection(op.done, selection)
+		}
+		a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+			if err := s.awaitWritten(ctx); err != nil {
+				return err
+			}
+			if err := a.checkGeneration(s); err != nil {
+				return err
+			}
+			result, err := a.applyConfigOption(ctx, s, req, false, selection)
+			if err == nil {
+				op.reply.Resolve(result)
+			}
+			return err
+		})
+		return op.reply, nil
+	}
+	if state != activationActive {
+		reply := jsonrpc.NewReply(ctx)
+		if lost {
+			return a.rejectLater(reply, errSessionLost())
+		}
+		return a.rejectLater(reply, acp.ErrSessionNotFound(req.SessionID))
+	}
+	return a.applyConfigOption(ctx, s, req, previous != nil, nil)
+}
+
+func (a *Agent) applyConfigOption(ctx context.Context, s *Session, req acp.SetConfigOptionRequest, setupPending bool, staged *modelSelection) (any, error) {
+	if err := s.setConfigOption(ctx, req.ConfigID, req.Type, req.Value, setupPending); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	model, effort := s.model, s.effort
-	s.mu.Unlock()
 	if req.ConfigID != configMode {
-		a.rememberSelection(model, effort)
+		s.mu.Lock()
+		choice := modelSelection{s.model, s.effort}
+		s.mu.Unlock()
+		if staged != nil {
+			*staged = choice
+		} else {
+			a.rememberSelection(nil, &choice)
+		}
 	}
 	return acp.SetConfigOptionResponse{ConfigOptions: s.ConfigOptions()}, nil
 }
@@ -729,9 +859,12 @@ func (a *Agent) pendingSelection() <-chan struct{} {
 	return a.selectionSaved
 }
 
+// modelSelection stays empty when a staged request is withdrawn before mutation.
+type modelSelection struct{ model, effort string }
+
 // rememberSelection queues writes in request order across all sessions.
 // Background session saves and resume never change this user preference.
-func (a *Agent) rememberSelection(model, effort string) {
+func (a *Agent) rememberSelection(ready <-chan struct{}, choice *modelSelection) {
 	done := make(chan struct{})
 	a.mu.Lock()
 	previous := a.selectionSaved
@@ -742,7 +875,13 @@ func (a *Agent) rememberSelection(model, effort string) {
 		if previous != nil {
 			<-previous
 		}
-		if err := a.cfg.Store.SetSelection(a.ctx, model, effort); err != nil {
+		if ready != nil {
+			<-ready
+		}
+		if choice.model == "" {
+			return
+		}
+		if err := a.cfg.Store.SetSelection(context.WithoutCancel(a.ctx), choice.model, choice.effort); err != nil {
 			a.cfg.Log.Warn("saving last model selection", "err", err)
 		}
 	}()
@@ -751,13 +890,27 @@ func (a *Agent) rememberSelection(model, effort string) {
 func (a *Agent) session(id string) (*Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if s, ok := a.sessions[id]; ok {
-		return s, nil
+	if s := a.sessions[id]; s != nil {
+		switch s.activation.Load() {
+		case activationActive:
+			return s, nil
+		case activationLost:
+			return nil, errSessionLost()
+		}
 	}
 	if a.lost[id] {
 		return nil, errSessionLost()
 	}
 	return nil, acp.ErrSessionNotFound(id)
+}
+
+// checkGeneration revalidates queued work before handing it to the session.
+func (a *Agent) checkGeneration(s *Session) error {
+	current, err := a.session(s.id)
+	if err == nil && current != s {
+		return errSessionLost()
+	}
+	return err
 }
 
 // Cursors are opaque to clients; inside they are list offsets.

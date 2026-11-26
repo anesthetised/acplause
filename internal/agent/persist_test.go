@@ -159,6 +159,7 @@ func TestPromptSaveDoesNotBlockSessionHandlers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("session handlers blocked on prompt persistence")
 	}
+	expectReplayComplete(t, out)
 	if u := <-out; u.(acp.StateUpdate).State != acp.StateIdle {
 		t.Fatalf("uncommitted prompt visible in replay: %+v", u)
 	}

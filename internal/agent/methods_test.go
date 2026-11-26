@@ -98,13 +98,22 @@ type acpClient struct {
 // startAgent serves an Agent over pipes with a store in dir.
 func startAgent(t *testing.T, dir string, model Model, list ListModels, wrapStore ...func(Store) Store) *acpClient {
 	t.Helper()
+	return startAgentWithOutput(t, dir, model, list, nil, wrapStore...)
+}
+
+func startAgentWithOutput(t *testing.T, dir string, model Model, list ListModels, wrapOutput func(io.Writer) io.Writer, wrapStore ...func(Store) Store) *acpClient {
+	t.Helper()
 	st, err := store.Open(dir, newID())
 	if err != nil {
 		t.Fatal(err)
 	}
 	clientOut, agentIn := io.Pipe()
 	agentOut, clientIn := io.Pipe()
-	conn := jsonrpc.NewConn(clientOut, clientIn, slog.New(slog.DiscardHandler))
+	var output io.Writer = clientIn
+	if wrapOutput != nil {
+		output = wrapOutput(output)
+	}
+	conn := jsonrpc.NewConn(clientOut, output, slog.New(slog.DiscardHandler))
 	if list == nil {
 		list = func(context.Context) ([]llm.Model, error) { return testModels, nil }
 	}
@@ -663,4 +672,20 @@ func TestResumeAfterSavedDirectoryRemoved(t *testing.T) {
 	c.fails(acp.MethodSessionResume, resume([]string{extra}), jsonrpc.CodeInvalidParams)
 	c.ok(acp.MethodSessionResume, resume([]string{}), nil)
 	c.untilIdle(res.SessionID)
+}
+
+// sessionAfterResponse is for internal inspection after receiving a cold
+// resume response. The pipe can deliver the bytes just before Write returns.
+func (c *acpClient) sessionAfterResponse(id string) (*Session, error) {
+	c.agent.mu.Lock()
+	s := c.agent.sessions[id]
+	c.agent.mu.Unlock()
+	if s != nil && s.written != nil {
+		select {
+		case <-s.written:
+		case <-c.t.Context().Done():
+			return nil, c.t.Context().Err()
+		}
+	}
+	return c.agent.session(id)
 }

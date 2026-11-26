@@ -17,6 +17,10 @@ type sessionOperation struct {
 	previous *sessionOperation
 	done     chan struct{}
 	reply    requestReply
+	owed     *outputObligation // cursorless resume still owes its state update
+	replay   *historyReplay    // released by the operation worker
+	staged   bool              // this admission belongs to a chain waiting on a cold write
+	config   bool
 	prompt   bool
 	terminal bool
 	closing  bool  // close owns its reply until all terminal cleanup has finished
@@ -33,6 +37,7 @@ func (a *Agent) reserveOperation(ctx context.Context, id string, terminal, inter
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	op.previous = a.operations[id]
+	op.staged = !terminal && op.previous != nil && op.previous.staged
 	if terminal {
 		a.prompts.detach(id)
 	}
@@ -53,6 +58,7 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 	go func() {
 		defer a.jobs.Done()
 		defer func() {
+			op.owed.release()
 			a.mu.Lock()
 			close(op.done)
 			if a.operations[id] == op {
@@ -66,7 +72,7 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			case <-op.ctx.Done():
 				if !op.closing {
 					op.err = acp.ErrRequestCancelled()
-					op.reply.Reject(op.err)
+					op.reject()
 				}
 				<-op.previous.done
 				if !op.terminal {
@@ -85,10 +91,34 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			if errors.Is(op.err, context.Canceled) || op.ctx.Err() != nil {
 				op.err = acp.ErrRequestCancelled()
 			}
-			op.reply.Reject(op.err)
+			op.reject()
 			op.cancel()
 		}
 	}()
+}
+
+// reject ends an incomplete replay with its error before releasing live events,
+// including when a cancelled operation must still wait for its predecessor.
+func (op *sessionOperation) reject() {
+	if r := op.replay; r != nil {
+		op.err = r.finish(op.ctx, op.err)
+		op.replay = nil
+		if r.slot != nil {
+			r.reply.Delivered()
+		} else {
+			op.reply.Reject(op.err)
+		}
+	} else {
+		op.reply.Reject(op.err)
+	}
+	op.owed.release()
+}
+
+// resolveSetup releases replay admission once all updates owed by setup or
+// terminal cleanup are ordered, before the peer can act on the response.
+func (op *sessionOperation) resolveSetup(result any) {
+	op.owed.release()
+	op.reply.Resolve(result)
 }
 
 // cancelWaitingPrompts signals cancellation without settling replies owned by
@@ -101,6 +131,9 @@ func (a *Agent) cancelWaitingPrompts(id string) bool {
 	for op := tail; op != nil; op = op.previous {
 		if op.prompt {
 			op.cancel()
+			if group, ok := op.reply.(*promptGroup); ok {
+				group.detachStaged()
+			}
 		}
 	}
 	return tail != nil

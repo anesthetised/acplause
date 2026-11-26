@@ -95,7 +95,7 @@ func TestCompactionReportsFitsAndSurvivesRestart(t *testing.T) {
 	if len(got) != 1 || got[0].CompactionID != compactions[1].CompactionID || got[0].Status != "completed" || string(got[0].Summary) != string(compactions[1].Summary) {
 		t.Fatalf("compaction replay: %+v", got)
 	}
-	want := []string{"user_message", "tool_call_update completed", "agent_message", "user_message", "compaction_update", "tool_call_update completed", "agent_message", "state_update idle"}
+	want := []string{"user_message", "tool_call_update completed", "agent_message", "user_message", "compaction_update", "tool_call_update completed", "agent_message", "replay_complete", "state_update idle"}
 	if !slices.Equal(kinds(replay), want) || len(replay[0].text()) < 7000 || len(replay[2].text()) < 12000 {
 		t.Fatalf("original timeline was changed: %v", kinds(replay))
 	}
