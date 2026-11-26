@@ -1,6 +1,6 @@
 # ADR 0002: Let the ACP client select the model
 
-- Status: accepted; decision 2 partially superseded by [ADR 0005](0005-remember-model-selection.md)
+- Status: accepted; model setup policy superseded by [ADR 0039](0039-model-default-policy.md)
 - Date: 2026-10-18
 
 ## Context

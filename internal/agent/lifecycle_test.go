@@ -95,7 +95,7 @@ func TestCancelledNewSessionRemovesUnpublishedRecord(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	st := &cancelledCreateStore{cancel: cancel}
-	a := New(Config{Store: st}, make(recorder, 8), nil, func(context.Context) ([]llm.Model, error) { return []llm.Model{{ID: "m"}}, nil })
+	a := New(Config{Store: st, DefaultModel: "m"}, make(recorder, 8), nil, func(context.Context) ([]llm.Model, error) { return []llm.Model{{ID: "m"}}, nil })
 	defer a.Shutdown()
 	value, err := a.newSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()})
 	if err != nil {
@@ -228,7 +228,7 @@ func TestCancelledSetupReportsCancellation(t *testing.T) {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		}))
 		defer peer.Close()
-		a := New(Config{Store: &cancelledCreateStore{}}, make(recorder, 8), nil, models)
+		a := New(Config{Store: &cancelledCreateStore{}, DefaultModel: "m"}, make(recorder, 8), nil, models)
 		defer a.Shutdown()
 		value, err := a.newSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir(), MCPServers: []acp.MCPServer{{Type: "http", Name: "slow", URL: peer.URL}}})
 		if err != nil {

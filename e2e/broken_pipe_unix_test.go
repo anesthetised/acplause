@@ -27,7 +27,7 @@ func TestBrokenStdoutReleasesSession(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), timeout)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binary)
-			cmd.Env = append(cleanEnv(), "ACPLAUSE_BASE_URL="+llm.srv.URL, "ACPLAUSE_API_KEY=test-key", "ACPLAUSE_DATA_DIR="+dir)
+			cmd.Env = append(cleanEnv(), "ACPLAUSE_BASE_URL="+llm.srv.URL, "ACPLAUSE_API_KEY=test-key", "ACPLAUSE_DATA_DIR="+dir, "ACPLAUSE_DEFAULT_MODEL=test/model")
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			stdin, err := cmd.StdinPipe()

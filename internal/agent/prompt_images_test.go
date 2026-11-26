@@ -96,7 +96,7 @@ func TestImagePromptQueuedModelChange(t *testing.T) {
 				onDelta(llm.Delta{Kind: llm.DeltaText, Text: "seen"})
 				return &llm.Completion{Content: "seen", FinishReason: llm.FinishStop}, nil
 			}
-			c := startAgent(t, t.TempDir(), model, func(context.Context) ([]llm.Model, error) { return models, nil })
+			c := startAgentWithConfig(t, t.TempDir(), model, func(context.Context) ([]llm.Model, error) { return models, nil }, Config{DefaultModel: "vision"}, nil)
 			c.initialize()
 			cwd := t.TempDir()
 			sid := c.newSession(cwd)

@@ -115,12 +115,14 @@ func TestCompactCommandNoOp(t *testing.T) {
 }
 
 func TestCompactCommandRequiresSelectedModel(t *testing.T) {
-	c := startAgent(t, t.TempDir(), make(scriptedModel), nil)
-	c.initialize()
-	sid := c.newSession(t.TempDir())
-	result := c.await(c.prompt(sid, "/compact"))
-	if result.Error == nil || !strings.Contains(result.Error.Message, "select a model") {
-		t.Fatalf("unselected model: %+v", result)
+	s, err := newSession(t.Context(), deps{}, newCatalog(testModels), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, rpcErr := settledReply(t, s.Submit(t.Context(), []acp.ContentBlock{acp.Text("/compact")}))
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "select a model") {
+		t.Fatalf("unselected model: %+v", rpcErr)
 	}
 }
 

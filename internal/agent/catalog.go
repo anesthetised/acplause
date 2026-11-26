@@ -2,6 +2,7 @@ package agent
 
 import (
 	"cmp"
+	"errors"
 	"log/slog"
 	"maps"
 	"slices"
@@ -26,6 +27,8 @@ const catalogTTL = time.Hour
 
 // effortDefault leaves reasoning effort to the provider.
 const effortDefault = "default"
+
+var errNoInitialModel = errors.New("no usable model is selected. Set ACPLAUSE_DEFAULT_MODEL in the launcher environment to a model ID with tool support from the provider's /models catalog and restart acplause")
 
 var efforts = []acp.ConfigOptionValue{
 	{Value: effortDefault, Name: "Default", Description: "The provider's default"},
@@ -132,6 +135,21 @@ func (c *catalog) has(model string) bool {
 	return ok
 }
 
+// initialSelection uses only an available saved choice or an explicit launcher
+// default. Effort belongs to the saved model and never carries to a fallback.
+func (c *catalog) initialSelection(saved modelSelection, fallback string) (modelSelection, error) {
+	if c.has(saved.model) {
+		if !c.reasons(saved.model) || !validEffort(saved.effort) {
+			saved.effort = effortDefault
+		}
+		return saved, nil
+	}
+	if c.has(fallback) {
+		return modelSelection{model: fallback, effort: effortDefault}, nil
+	}
+	return modelSelection{}, errNoInitialModel
+}
+
 // contextLength is the model's context window, or 0 if unknown.
 func (c *catalog) contextLength(model string) uint64 { return c.models[model].ContextLength }
 
@@ -157,14 +175,6 @@ func (c *catalog) options(model, effort, mode string) []acp.ConfigOption {
 	choices := c.choices
 	if len(c.groups) > 0 {
 		choices = c.groups
-	}
-	if model == "" {
-		// ACP requires a currentValue even before the client selects a model.
-		placeholder := acp.ConfigOptionValue{Value: "", Name: "Select a model"}
-		if len(c.groups) > 0 {
-			placeholder = acp.ConfigOptionValue{GroupID: "selection", Name: "Model selection", Options: []acp.ConfigOptionValue{placeholder}}
-		}
-		choices = append([]acp.ConfigOptionValue{placeholder}, choices...)
 	}
 	options := []acp.ConfigOption{{
 		ConfigID:     configModel,

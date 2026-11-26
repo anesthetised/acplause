@@ -36,3 +36,9 @@ selectable models fail with safe categories and exit status `1`; successful
 local and catalog checks return `0`. Counts establish catalog access and
 advertised tool support, not successful inference or T3 interoperability.
 Provider messages, model names/descriptions and credentials stay out of reports.
+
+If session setup says no usable model is selected, find a model ID with tool
+support in your provider's `/models` catalog, set `ACPLAUSE_DEFAULT_MODEL` in
+the ACP client's launch environment and restart the agent. A successful online
+diagnostic confirms that the catalog offers selectable models. Check the exact
+configured ID against that catalog. See [default model setup](configuration.md#default-model).

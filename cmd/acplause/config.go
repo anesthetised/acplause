@@ -18,6 +18,7 @@ import (
 type config struct {
 	BaseURL         string
 	APIKey          string
+	DefaultModel    string
 	ReadConcurrency int
 	MaxRounds       int
 	BashTimeout     time.Duration
@@ -34,6 +35,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	cfg := config{
 		BaseURL:         cmp.Or(getenv("ACPLAUSE_BASE_URL"), llm.DefaultBaseURL),
 		APIKey:          getenv("ACPLAUSE_API_KEY"),
+		DefaultModel:    getenv("ACPLAUSE_DEFAULT_MODEL"),
 		DataDir:         getenv("ACPLAUSE_DATA_DIR"),
 		ReadConcurrency: 1,
 		MaxRounds:       agent.DefaultMaxRounds,

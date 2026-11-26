@@ -5,6 +5,7 @@
 //
 //	ACPLAUSE_API_KEY        API key; default none
 //	ACPLAUSE_BASE_URL       API root; default https://openrouter.ai/api/v1
+//	ACPLAUSE_DEFAULT_MODEL fallback model ID; default none
 //	ACPLAUSE_READ_CONCURRENCY built-in read workers; default 1, range 1..8
 //	ACPLAUSE_MAX_ROUNDS     model requests per turn; default 200, 0 disables
 //	ACPLAUSE_BASH_TIMEOUT   bash tool timeout; default 30m, 0 disables
@@ -87,6 +88,7 @@ func serve() error {
 	conn := jsonrpc.NewConn(os.Stdin, os.Stdout, log)
 	ag := agent.New(agent.Config{
 		Info:            acp.Implementation{Name: "acplause", Version: version()},
+		DefaultModel:    cfg.DefaultModel,
 		ReadConcurrency: cfg.ReadConcurrency,
 		MaxRounds:       &cfg.MaxRounds,
 		MCPTimeout:      &cfg.MCPTimeout,

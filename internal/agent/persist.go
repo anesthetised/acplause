@@ -239,8 +239,8 @@ func (s *Session) flushAsync() {
 	}()
 }
 
-// restoreSession rebuilds a session from the store. A session its last
-// process left mid-turn is repaired so every tool call has a result.
+// restoreSession rebuilds a session from the store after setup resolves its
+// model and effort. It repairs interrupted turns so each tool call has a result.
 func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded) (*Session, error) {
 	s, err := newSession(parent, d, c, l.Cwd, l.Dirs)
 	if err != nil {
@@ -249,12 +249,7 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 	s.mode = cmp.Or(l.Mode, modeBuild)
 	s.history[0].Content = systemPrompt(s.cwd, s.dirs, s.instructions, s.mode)
 	s.id, s.title, s.updatedAt, s.cost = l.ID, l.Title, l.UpdatedAt, l.Cost
-	if c.has(l.Model) {
-		s.model = l.Model
-		if c.reasons(l.Model) && validEffort(l.Effort) {
-			s.effort = l.Effort
-		}
-	}
+	s.model, s.effort = l.Model, cmp.Or(l.Effort, effortDefault)
 	for _, data := range l.History {
 		var m llm.Message
 		if err := json.Unmarshal(data, &m); err != nil {

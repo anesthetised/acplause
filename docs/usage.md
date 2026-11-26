@@ -4,25 +4,30 @@
 
 ## Model and reasoning selection
 
-The client receives the available models in `session/new` and selects one
-with `session/set_config_option`. Catalogs with multiple model-ID namespaces
-use labeled groups (for example `openai/…` and `anthropic/…`); unprefixed IDs
-appear under "Other models". Single-group catalogs stay flat. Grouping changes
-presentation only; model IDs and selection behavior stay the same. See
+The client receives the effective model and the available choices in
+`session/new` and can change the model with `session/set_config_option`.
+Catalogs with multiple model-ID namespaces use labeled groups (for example
+`openai/…` and `anthropic/…`). Unprefixed IDs appear under "Other models".
+Single-group catalogs stay flat. See
 [ADR 0018](adr/0018-group-model-options.md).
 
-New sessions reuse the last selected model
-and reasoning effort, remembered across restarts and editor windows in the
-same data directory. If there is no remembered selection or the model is no
-longer available, sessions show "Select a model"; prompts are rejected until
-the client selects one. The agent never picks a substitute model. If the
-provider's model list cannot be loaded or contains no models with tool
-support, session creation fails and the next request retries the list. A
-loaded list is served for one hour; the next `session/new` or resume after
-that reloads it in the background without delaying the response. Sessions
-created or resumed after a successful reload see the new list, open sessions
-keep their list and selected model, and no `config_option_update` is sent. A
-failed reload keeps the previous list and logs a warning. See [ADR 0005](adr/0005-remember-model-selection.md).
+New sessions reuse the last explicitly selected model and valid reasoning
+effort across restarts and editor windows in the same data directory. A cold
+resume prefers that session's own saved model and effort. If the relevant
+model is missing or unavailable, setup uses the configured
+[`ACPLAUSE_DEFAULT_MODEL`](configuration.md#default-model) with the provider's
+default reasoning effort. If neither choice is usable, setup fails with
+instructions to configure a default. A restored session saves its replacement
+model in that session. Only explicit client changes update the remembered
+choice. See [ADR 0039](adr/0039-model-default-policy.md).
+
+If the provider's catalog cannot be loaded or contains no models with tool
+support, setup fails and the next request retries the list. A loaded list is
+served for one hour. The next catalog lookup after that triggers a background
+reload and uses the previous list for the current response. New sessions and
+cold resumes after a successful reload see the new list. Open sessions keep
+their list and selected model. A failed reload keeps the previous list and
+logs a warning.
 
 ## Plan and Build modes
 

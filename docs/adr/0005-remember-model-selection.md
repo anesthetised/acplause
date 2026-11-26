@@ -1,6 +1,6 @@
 # ADR 0005: Remember the last selected model and reasoning effort
 
-- Status: accepted
+- Status: accepted; setup fallback updated by [ADR 0039](0039-model-default-policy.md)
 - Date: 2026-10-19
 - Issue: #10
 - Supersedes: ADR 0002 decision 2 for new sessions with an available remembered model

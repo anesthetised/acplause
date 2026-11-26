@@ -51,6 +51,7 @@ type ListModels func(ctx context.Context) ([]llm.Model, error)
 type Config struct {
 	ReadConcurrency int // built-in read workers; zero selects 1, bounded to 1..8
 	Info            acp.Implementation
+	DefaultModel    string         // launcher fallback when a saved choice is unavailable
 	MaxRounds       *int           // nil selects DefaultMaxRounds; zero disables the request limit
 	MCPTimeout      *time.Duration // nil selects DefaultMCPTimeout; zero disables the tool deadline
 	TurnTimeout     *time.Duration // nil or zero disables the post-insertion turn deadline
@@ -129,7 +130,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 		}
 		c := newCatalog(models)
 		if len(c.choices) == 0 {
-			return nil, errors.New("no models with tool support are available")
+			return nil, errors.New("no models with tool support are available. Configure a provider that offers one before setting ACPLAUSE_DEFAULT_MODEL")
 		}
 		return c, nil
 	}, catalogTTL, cfg.Log)
@@ -305,7 +306,7 @@ func (a *Agent) initialize(_ context.Context, params json.RawMessage) (any, erro
 }
 
 // newSession waits for the catalog and earlier model selections off the
-// read loop, then creates a session with the last available user choice.
+// read loop. Setup needs a usable model even if the client has no selector.
 func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any, error) {
 	reply := jsonrpc.NewReply(ctx)
 	saved := a.pendingSelection()
@@ -324,6 +325,24 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 			}
 		}
 		c, err := a.catalog()
+		if ctx.Err() != nil || a.ctx.Err() != nil {
+			reply.Reject(acp.ErrRequestCancelled())
+			return
+		}
+		if err != nil {
+			reply.Reject(turnError(err))
+			return
+		}
+		model, effort, err := a.cfg.Store.Selection(ctx)
+		if ctx.Err() != nil || a.ctx.Err() != nil {
+			reply.Reject(acp.ErrRequestCancelled())
+			return
+		}
+		if err != nil {
+			a.cfg.Log.Warn("loading last model selection", "err", err)
+			model, effort = "", ""
+		}
+		choice, err := c.initialSelection(modelSelection{model, effort}, a.cfg.DefaultModel)
 		if err != nil {
 			reply.Reject(turnError(err))
 			return
@@ -333,12 +352,13 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 			reply.Reject(acp.ErrInvalidParams("cannot open workspace: %v", err))
 			return
 		}
+		s.model, s.effort = choice.model, choice.effort
 		change, err := s.mcp.Prepare(ctx, mcpConfigs(req.MCPServers))
 		if err == nil {
 			err = change.Commit()
 			change.Discard()
 		}
-		if err != nil {
+		if err != nil || ctx.Err() != nil || a.ctx.Err() != nil {
 			s.Close()
 			if ctx.Err() != nil || a.ctx.Err() != nil {
 				reply.Reject(acp.ErrRequestCancelled())
@@ -346,15 +366,6 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 				reply.Reject(acp.ErrInvalidParams("cannot configure MCP servers: %v", err))
 			}
 			return
-		}
-		model, effort, err := a.cfg.Store.Selection(a.ctx)
-		if err != nil {
-			a.cfg.Log.Warn("loading last model selection", "err", err)
-		} else if c.has(model) {
-			s.model = model
-			if c.reasons(model) && validEffort(effort) {
-				s.effort = effort
-			}
 		}
 		if err := a.cfg.Store.Create(a.ctx, s.record()); err != nil {
 			s.Close()
@@ -620,10 +631,20 @@ func (a *Agent) open(ctx context.Context, id, cwd string, dirs []string) (*Sessi
 		cached.Close()
 	}
 	c, err := a.catalog()
+	if ctx.Err() != nil || a.ctx.Err() != nil {
+		a.releaseID(id)
+		return nil, false, acp.ErrRequestCancelled()
+	}
 	if err != nil {
 		a.releaseID(id)
 		return nil, false, turnError(err)
 	}
+	choice, err := c.initialSelection(modelSelection{l.Model, l.Effort}, a.cfg.DefaultModel)
+	if err != nil {
+		a.releaseID(id)
+		return nil, false, turnError(err)
+	}
+	l.Model, l.Effort = choice.model, choice.effort
 	l.Dirs = dirs
 	s, err := restoreSession(a.ctx, a.deps, c, l)
 	if err != nil {

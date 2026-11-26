@@ -458,7 +458,7 @@ func TestAdmissionsDuringColdResponseWrite(t *testing.T) {
 			c.send(acp.MethodSessionList, map[string]any{})
 			issue50Wait(t, listed)
 			s.mu.Lock()
-			if len(s.keys) != 0 || s.model != "" || len(model) != 3 {
+			if len(s.keys) != 0 || s.model != "m" || len(model) != 3 {
 				t.Errorf("work preceded write outcome: keys=%v model=%q", s.keys, s.model)
 			}
 			s.mu.Unlock()
@@ -467,7 +467,7 @@ func TestAdmissionsDuringColdResponseWrite(t *testing.T) {
 				c.agent.jobs.Wait()
 				s.mu.Lock()
 				defer s.mu.Unlock()
-				if len(s.keys) != 0 || s.model != "" || len(model) != 3 {
+				if len(s.keys) != 0 || s.model != "m" || len(model) != 3 {
 					t.Fatal("failed write admitted work")
 				}
 				return

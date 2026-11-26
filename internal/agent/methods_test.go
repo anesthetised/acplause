@@ -103,6 +103,11 @@ func startAgent(t *testing.T, dir string, model Model, list ListModels, wrapStor
 
 func startAgentWithOutput(t *testing.T, dir string, model Model, list ListModels, wrapOutput func(io.Writer) io.Writer, wrapStore ...func(Store) Store) *acpClient {
 	t.Helper()
+	return startAgentWithConfig(t, dir, model, list, Config{DefaultModel: "m"}, wrapOutput, wrapStore...)
+}
+
+func startAgentWithConfig(t *testing.T, dir string, model Model, list ListModels, cfg Config, wrapOutput func(io.Writer) io.Writer, wrapStore ...func(Store) Store) *acpClient {
+	t.Helper()
 	st, err := store.Open(dir, newID())
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +127,9 @@ func startAgentWithOutput(t *testing.T, dir string, model Model, list ListModels
 		persistence = wrapStore[0](st)
 	}
 	c := &acpClient{t: t, in: agentIn, updates: make(chan notification, 256), pending: make(map[int]chan rpcResponse), elicitations: make(chan clientElicitation, 16), cancellations: make(chan json.RawMessage, 16)}
-	c.agent = New(Config{Info: acp.Implementation{Name: "test", Version: "1"}, Store: persistence}, conn, model, list)
+	cfg.Info = acp.Implementation{Name: "test", Version: "1"}
+	cfg.Store = persistence
+	c.agent = New(cfg, conn, model, list)
 
 	served := make(chan struct{})
 	go func() {
@@ -474,12 +481,11 @@ func TestPromptOverProtocol(t *testing.T) {
 
 	c.sessionNotFound(acp.MethodSessionPrompt, map[string]any{"sessionId": "missing", "prompt": []any{map[string]any{"type": "text", "text": "hi"}}})
 
-	c.fails(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []any{map[string]any{"type": "text", "text": "hi"}}}, jsonrpc.CodeInvalidParams)
-
-	c.selectModel(sid, "m")
 	model.callTool("w1", "write_file", `{"path":"a.txt","content":"hi"}`)
 	model.reply("written", llm.FinishLength, &llm.Usage{PromptTokens: 10, CompletionTokens: 5, Cost: 0.25, HasPromptTokens: true, HasCompletionTokens: true})
-	c.await(c.prompt(sid, "write a file"))
+	if res := c.await(c.prompt(sid, "write a file")); res.Error != nil {
+		t.Fatalf("first prompt: %+v", res.Error)
+	}
 	updates := c.untilIdle(sid)
 	if idle := lastIdle(updates); idle.Update.StopReason != string(acp.StopMaxTokens) {
 		t.Fatalf("idle: %+v", idle.Update)

@@ -1,6 +1,6 @@
 # ADR 0018: Group model choices by their ID namespace
 
-- Status: accepted
+- Status: accepted; decision 4 superseded by [ADR 0039](0039-model-default-policy.md)
 - Date: 2026-10-20
 - Scope change: Extends ADR 0002's model selector presentation
 - Source: ACP `2.0.0-alpha.9` at `3be9cfc` (`testdata/schema/v2/VERSION`)
