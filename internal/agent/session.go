@@ -80,6 +80,7 @@ type Session struct {
 	worker        chan struct{}   // closed when the running worker exits; nil when idle
 	claimed       bool            // a prompt left the queue and its turn has not ended
 	stopTurn      context.CancelFunc
+	rejections    sync.WaitGroup // queued replies detached under mu, settled before Close returns
 	closed        bool
 
 	// Private lookup and persistence indexes for inserted user messages, guarded by mu.
@@ -214,16 +215,36 @@ func (s *Session) submit(sub *submission) {
 // Cancel stops the running turn and drops queued prompts.
 func (s *Session) Cancel() {
 	s.mu.Lock()
-	queued := s.queue
-	s.queue = nil
+	defer s.mu.Unlock()
 	if s.stopTurn != nil {
 		s.stopTurn()
 	}
-	s.mu.Unlock()
+	s.rejectQueuedLocked(s.queue)
+	s.queue = nil
+}
+
+// rejectQueuedLocked ends admission to each withdrawn group on the reader.
+// Only writing the replies can wait for stdout. Close joins that work.
+func (s *Session) rejectQueuedLocked(queued []*submission) {
+	if len(queued) == 0 {
+		return
+	}
+	replies := make([]requestReply, 0, len(queued))
 	for _, sub := range queued {
 		sub.stopWatch()
-		sub.reply.Reject(acp.ErrRequestCancelled())
+		if group, ok := sub.reply.(*promptGroup); ok {
+			for _, w := range group.takeWaiters() {
+				replies = append(replies, w.reply)
+			}
+		} else {
+			replies = append(replies, sub.reply)
+		}
 	}
+	s.rejections.Go(func() {
+		for _, reply := range replies {
+			reply.Reject(acp.ErrRequestCancelled())
+		}
+	})
 }
 
 // Close cancels all work, waits for the final updates of a running turn and
@@ -242,6 +263,7 @@ func (s *Session) Close() {
 	}
 	s.cancel()
 	s.saves.Wait()
+	s.rejections.Wait()
 	s.closeToolbox(s.toolbox)
 }
 
@@ -418,13 +440,10 @@ func (s *Session) setConfigOption(id, valueType string, raw json.RawMessage, set
 // withdraw drops a prompt whose request was cancelled before insertion.
 func (s *Session) withdraw(sub *submission) {
 	s.mu.Lock()
-	i := slices.Index(s.queue, sub)
-	if i >= 0 {
+	defer s.mu.Unlock()
+	if i := slices.Index(s.queue, sub); i >= 0 {
+		s.rejectQueuedLocked(s.queue[i : i+1])
 		s.queue = slices.Delete(s.queue, i, i+1)
-	}
-	s.mu.Unlock()
-	if i >= 0 {
-		sub.reply.Reject(acp.ErrRequestCancelled())
 	}
 }
 

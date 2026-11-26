@@ -84,8 +84,13 @@ func newOutputQueue(capacity int) outputQueue {
 }
 
 type pendingCall struct {
-	done     chan *inbound
-	reserved bool // owns a slot in cancels until response, cancellation, or shutdown
+	done       chan callResult
+	permission context.Context // non-nil while this call owns a cancellation slot
+}
+
+type callResult struct {
+	msg *inbound
+	err error
 }
 
 // NewConn starts the writer for out; call Close to flush and stop it.
@@ -135,25 +140,31 @@ func (c *Conn) callPeer(ctx context.Context, method string, params, result any, 
 	c.lastCall++
 	id := ID(strconv.FormatInt(c.lastCall, 10))
 	c.mu.Unlock()
-	call := pendingCall{done: make(chan *inbound, 1), reserved: reserve}
+	call := pendingCall{done: make(chan callResult, 1)}
+	if reserve {
+		call.permission = ctx
+	}
 	if err := c.sendOrdinary(ctx, request{JSONRPC: Version, ID: id, Method: method, Params: params}, id, call); err != nil {
 		if reserve {
 			<-c.cancels.slots
 		}
 		return err
 	}
-	var msg *inbound
+	var outcome callResult
 	select {
-	case msg = <-call.done:
+	case outcome = <-call.done:
 	case <-ctx.Done():
-		if c.cancelCall(id) {
-			return ctx.Err()
+		c.mu.Lock()
+		if _, ok := c.calls[id]; ok {
+			c.cancelCallLocked(id, call, ctx.Err())
 		}
-		msg = <-call.done // delivery or shutdown already claimed the waiter
+		c.mu.Unlock()
+		outcome = <-call.done
 	}
-	if msg == nil {
-		return ErrClosed
+	if outcome.err != nil {
+		return outcome.err
 	}
+	msg := outcome.msg
 	if msg.failed() {
 		var e Error
 		if err := json.Unmarshal(msg.Error, &e); err != nil {
@@ -167,23 +178,18 @@ func (c *Conn) callPeer(ctx context.Context, method string, params, result any, 
 	return nil
 }
 
-// cancelCall competes with deliver under mu. Its caller has already enqueued
-// the request, so a cancellation queued here cannot overtake that request.
-func (c *Conn) cancelCall(id ID) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	call, ok := c.calls[id]
-	if !ok {
-		return false
-	}
+// cancelCallLocked transfers the permission reservation to the writer before
+// waking the worker. Forms can only enqueue when ordinary capacity is free.
+func (c *Conn) cancelCallLocked(id ID, call pendingCall, err error) {
 	delete(c.calls, id)
 	queue := &c.cancels
-	if !call.reserved {
+	if call.permission == nil {
 		queue = &c.ordinary
 		select {
 		case queue.slots <- struct{}{}:
 		default:
-			return true // form cancellation never waits for space
+			call.done <- callResult{err: err}
+			return
 		}
 	}
 	// Locally generated numeric IDs and this fixed payload always marshal.
@@ -191,7 +197,7 @@ func (c *Conn) cancelCall(id ID) bool {
 		RequestID ID `json:"requestId"`
 	}{id}})
 	c.enqueueLocked(queue, outputFrame{line: b})
-	return true
+	call.done <- callResult{err: err}
 }
 
 // deliver hands a response to the call awaiting it. Responses nobody awaits,
@@ -210,14 +216,22 @@ func (c *Conn) deliver(msg *inbound) {
 	}
 }
 
-// completeLocked releases a waiter's reservation and publishes its response
-// (nil on shutdown) before cancellation can observe its removal.
+// completeLocked arbitrates delivery against the permission context even if
+// its worker has not run since the previous line cancelled the session.
 func (c *Conn) completeLocked(id ID, call pendingCall, msg *inbound) {
-	delete(c.calls, id)
-	if call.reserved {
+	if call.permission != nil {
+		if err := call.permission.Err(); msg != nil && err != nil {
+			c.cancelCallLocked(id, call, err)
+			return
+		}
 		<-c.cancels.slots
 	}
-	call.done <- msg
+	delete(c.calls, id)
+	if msg == nil {
+		call.done <- callResult{err: ErrClosed}
+	} else {
+		call.done <- callResult{msg: msg}
+	}
 }
 
 // Serve reads and dispatches messages until the input ends (returning nil),

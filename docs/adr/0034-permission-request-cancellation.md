@@ -22,12 +22,12 @@ would hold up the worker that close needs to join.
    observe the request context and connection shutdown. Losing admission
    releases acquired capacity and emits nothing.
 2. Register the response waiter when the request enters the ordinary FIFO.
-   Response delivery and cancellation compete to remove that waiter. A
-   response releases the reservation. When cancellation wins, the worker
-   transfers its reservation to a `$/cancel_request` with the original
-   request ID before returning. Late answers are ignored. The session
-   rechecks cancellation before executing a tool or recording a shell
-   decision under [ADR 0029](0029-session-remembered-permissions.md).
+   Delivery checks the permission context under the connection lock. A live
+   context accepts the response and releases the reservation. If cancellation
+   preceded delivery, the reader or worker transfers the reservation to a
+   `$/cancel_request` with the original request ID before the call returns. Late
+   answers are ignored. The session rechecks cancellation before executing a
+   tool or recording a shell decision under [ADR 0029](0029-session-remembered-permissions.md).
 3. One enqueue order spans both FIFOs. The single stdout writer consumes
    lines in that order, including during graceful close. A write failure
    closes admission, wakes waiters and discards undeliverable output.

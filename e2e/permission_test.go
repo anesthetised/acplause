@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -213,6 +214,29 @@ func TestCancelWhileAwaitingPermission(t *testing.T) {
 	}
 	if !slices.Equal(results, []string{"Cancelled by the user."}) {
 		t.Fatalf("cancelled tool history: %v", results)
+	}
+}
+
+func TestCancelAndAllowInOneWrite(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(callTool("write_file", `{"path":"ran","content":"allowed"}`))
+	a, sid, cwd := started(t, llm, askingUser)
+	a.accepted(a.prompt(sid, "write"))
+	req := a.permissionRequest()
+	a.send(fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":%q}}
+{"jsonrpc":"2.0","id":%s,"result":{"outcome":{"outcome":"selected","optionId":%q}}}`,
+		sid, req.ID, optionOfKind(t, req, "allow_once")))
+	updates := a.untilIdle(sid)
+	cancelled := filter(updates, "tool_call_update")
+	if idle := updates[len(updates)-1]; idle.StopReason != "cancelled" || len(cancelled) == 0 || cancelled[len(cancelled)-1].Status != "cancelled" {
+		t.Fatalf("turn after cancellation and allow: %v", kinds(updates))
+	}
+	if a.cancellation(req).seq >= cancelled[len(cancelled)-1].seq {
+		t.Fatal("tool cancellation preceded permission cancellation")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ran")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled permission allowed a write: %v", err)
 	}
 }
 

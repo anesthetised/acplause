@@ -104,16 +104,21 @@ the writer's order channel. Every enqueue records one pointer there. Its
 capacity is the sum of both FIFO capacities, so a producer with a slot
 can always publish the line and its order under the lock.
 
-Delivery removes the waiter and releases its reservation. If cancellation
-claims the waiter first, it queues the original request ID in the reserved
-slot before returning. The writer releases that slot when it dequeues the
-notification. A form uses a free ordinary slot when available. The worker
-checks cancellation again before tool execution and under `Session.mu`
-before storing a remembered decision.
+Under `Conn.mu`, delivery checks the pending permission's context. A live
+permission accepts its response and releases the reservation. If the context
+has ended, either delivery or the worker queues the original request ID in
+the reserved slot and wakes the caller with the context error. Removing the
+waiter under the same lock makes later responses harmless. The writer releases
+that slot when it dequeues the notification. A form uses a free ordinary slot
+when available. The worker checks cancellation again before tool execution
+and under `Session.mu` before storing a remembered decision.
 
 Transport shutdown seals both FIFOs, releases pending calls and wakes
 capacity waiters. The sole writer drains lines in order. After a failed
-write it discards remaining lines and releases their slots.
+write it discards remaining lines and releases their slots. During service
+the executable subscribes to SIGPIPE so a broken Unix stdout returns EPIPE.
+It reports the writer's error after agent cleanup, including during the
+final drain after stdin EOF.
 [ADR 0034](adr/0034-permission-request-cancellation.md)
 
 ## Goroutines
@@ -137,7 +142,8 @@ Per session:
 | Goroutine | Started by | Notes |
 | --- | --- | --- |
 | Worker | `Session.submit`, when the queue gains work and none runs | `Session.work` runs turns one at a time and exits when the queue is empty; `Session.worker` is closed then |
-| Prompt withdrawal | `context.AfterFunc` in `Session.submit` | rejects a queued prompt whose request was cancelled |
+| Prompt withdrawal | `context.AfterFunc` in `Session.submit` | detaches a queued prompt whose request was cancelled |
+| Queued prompt rejections | `Session.rejectQueuedLocked`, tracked by `Session.rejections` | settles detached replies off the reader and session lock. Close waits for their admission to stdout |
 | Async save or cached retry check | `Session.flushAsync` or `Session.submit`; tracked by `Session.saves` | `Session.Close` waits for it before the lease can be released |
 | Read-group workers | `orderedReads` in `parallel_reads.go` | up to `ACPLAUSE_READ_CONCURRENCY` (at most 8) built-in reads against the worker's pinned toolbox. Outcomes are committed on the worker in call order; all join before return |
 | Terminal pump | `Session.executeTool` in `terminal.go`, per observed shell call | publishes shell output under `Session.mu` and saves at tool start; joined before the tool finishes |
@@ -179,7 +185,11 @@ when it is answered, on `$/cancel_request`, or when `Serve` returns.
 
 `session/cancel` is a notification. `Agent.cancelWaitingPrompts` only cancels
 chained prompt contexts and never settles them, because a store commit racing
-the cancellation may already have crossed insertion.
+the cancellation may already have crossed insertion. Under the session lock,
+`Session.Cancel` stops the active turn, removes queued submissions, detaches
+their keyed groups and stops their watches. The next request can reuse a
+withdrawn key immediately, even while the old waiters' replies await stdout
+capacity.
 
 The **insertion boundary** is `Session.insert` → `Session.claimTurn`
 (`persist.go`), on the worker, under `flushMu` and `Session.mu`.

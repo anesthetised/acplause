@@ -78,6 +78,12 @@ func serve() error {
 	}
 	defer st.Close()
 
+	// A broken stdout must reach the writer as EPIPE so shutdown can release
+	// the session leases. Notify keeps child commands' SIGPIPE behavior intact.
+	brokenPipe := make(chan os.Signal, 1)
+	signal.Notify(brokenPipe, syscall.SIGPIPE)
+	defer signal.Stop(brokenPipe)
+
 	conn := jsonrpc.NewConn(os.Stdin, os.Stdout, log)
 	ag := agent.New(agent.Config{
 		Info:            acp.Implementation{Name: "acplause", Version: version()},
@@ -95,7 +101,9 @@ func serve() error {
 	log.Info("serving", "base_url", redactURL(cfg.BaseURL), "data_dir", dir)
 	err = conn.Serve(ctx, ag.Methods())
 	ag.Shutdown()
-	_ = conn.Close()
+	if writeErr := conn.Close(); writeErr != nil {
+		return writeErr
+	}
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
