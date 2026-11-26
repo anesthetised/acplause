@@ -121,7 +121,7 @@ and the [usage guide](docs/usage.md).
 - [Sessions and storage](docs/sessions.md): resume, multiple windows and persistence.
 - [All documentation](docs/README.md): guides, architecture decisions and runtime verification.
 
-ACP v2 is a draft. Actual T3 compatibility and known client gaps are recorded
+ACP v2 is in preview. Actual T3 compatibility and known client gaps are recorded
 in the [runtime smoke record](docs/testing/t3-first-class-smoke.md).
 
 ## Develop
