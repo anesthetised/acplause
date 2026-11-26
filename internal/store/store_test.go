@@ -377,11 +377,11 @@ func TestMigrateModeFromPreviousSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l.Mode != "build" || l.Title != "kept" || !slices.Equal(strs(l.History), []string{"history"}) || !slices.Equal(strs(l.Transcript), []string{"transcript"}) {
+	if len(l.TranscriptKeys) != 0 || l.Mode != "build" || l.Title != "kept" || !slices.Equal(strs(l.History), []string{"history"}) || !slices.Equal(strs(l.Transcript), []string{"transcript"}) {
 		t.Fatalf("migration lost state: %+v", l)
 	}
 	var version int
-	if err := upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+	if err := upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != len(migrations) {
 		t.Fatalf("version=%d: %v", version, err)
 	}
 	if model, effort, err := upgraded.Selection(ctx); err != nil || model != "m" || effort != "high" {
@@ -449,5 +449,45 @@ func TestModeMigrationFailureDoesNotAdvanceVersion(t *testing.T) {
 	var version int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
 		t.Fatalf("failed migration advanced version to %d: %v", version, err)
+	}
+}
+
+func TestTranscriptKeyIdentity(t *testing.T) {
+	s := open(t, t.TempDir(), "owner")
+	for _, id := range []string{"first", "second"} {
+		sess := session(id, "idle")
+		if err := s.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+		tr := rows("original", "upper", "composed", "decomposed", "nul")
+		for i, key := range []string{"k", "K", "é", "e\u0301", "k\x00tail"} {
+			tr[i].Key = key
+		}
+		if err := s.Save(ctx, sess, rows("original"), tr); err != nil {
+			t.Fatal(err)
+		}
+		// Dirty snapshots may rewrite the same immutable user message.
+		if err := s.Save(ctx, sess, nil, tr); err != nil {
+			t.Fatal(err)
+		}
+		for _, conflict := range []Row{
+			{Seq: 5, Data: []byte("duplicate"), Key: "k"},
+			{Seq: 0, Data: []byte("changed"), Key: "k"},
+			{Seq: 0, Data: []byte("unkeyed")},
+			{Seq: 0, Data: []byte("original"), Key: "other"},
+		} {
+			if err := s.Save(ctx, sess, rows("rolled back"), []Row{conflict}); !errors.Is(err, ErrKeyConflict) {
+				t.Fatalf("expected identity conflict, got %v", err)
+			}
+		}
+		l, err := s.Acquire(ctx, id)
+		if err != nil || len(l.TranscriptKeys) != len(tr) || string(l.History[0]) != "original" {
+			t.Fatalf("failed to retain original rows: %+v, %v", l, err)
+		}
+		for i, row := range tr {
+			if l.TranscriptKeys[i] != row.Key || string(l.Transcript[i]) != string(row.Data) {
+				t.Fatalf("changed transcript row %d", i)
+			}
+		}
 	}
 }

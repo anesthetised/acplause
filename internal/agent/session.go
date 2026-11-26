@@ -79,6 +79,11 @@ type Session struct {
 	claimed       bool            // a prompt left the queue and its turn has not ended
 	stopTurn      context.CancelFunc
 	closed        bool
+
+	// Private lookup and persistence indexes for inserted user messages, guarded by mu.
+	keys           map[string]string // key to client-visible message ID
+	transcriptKeys map[int]string    // transcript position to key
+
 	// shellDecisions holds ADR 0029's remembered bash choices, guarded by mu;
 	// never persisted, cleared when the roots change.
 	shellDecisions map[string]bool
@@ -105,7 +110,8 @@ type Session struct {
 type submission struct {
 	ctx       context.Context // the session/prompt request's context
 	prompt    []acp.ContentBlock
-	reply     *jsonrpc.Reply
+	key       string
+	reply     requestReply
 	stopWatch func() bool // stops watching ctx for cancellation
 }
 
@@ -116,22 +122,24 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &Session{
-		id:        newID(),
-		cwd:       cwd,
-		deps:      d,
-		catalog:   c,
-		ctx:       ctx,
-		cancel:    cancel,
-		dirs:      dirs,
-		toolbox:   toolbox,
-		mcp:       mcp.New(ctx, cwd, d.log),
-		mode:      modeBuild,
-		effort:    effortDefault,
-		updatedAt: time.Now(),
-		history:   []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, "", modeBuild)}},
-		state:     acp.StateUpdate{State: acp.StateIdle},
-		dirty:     map[int]bool{},
-		planIndex: map[string]int{},
+		id:             newID(),
+		cwd:            cwd,
+		deps:           d,
+		catalog:        c,
+		ctx:            ctx,
+		cancel:         cancel,
+		dirs:           dirs,
+		toolbox:        toolbox,
+		mcp:            mcp.New(ctx, cwd, d.log),
+		mode:           modeBuild,
+		effort:         effortDefault,
+		updatedAt:      time.Now(),
+		history:        []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt(cwd, dirs, "", modeBuild)}},
+		state:          acp.StateUpdate{State: acp.StateIdle},
+		dirty:          map[int]bool{},
+		keys:           make(map[string]string),
+		transcriptKeys: make(map[int]string),
+		planIndex:      map[string]int{},
 	}, nil
 }
 
@@ -140,15 +148,22 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 // cancelled first, through ctx or session/cancel.
 func (s *Session) Submit(ctx context.Context, prompt []acp.ContentBlock) *jsonrpc.Reply {
 	reply := jsonrpc.NewReply(ctx)
-	s.submit(ctx, prompt, reply)
+	s.submit(&submission{ctx: ctx, prompt: prompt, reply: reply})
 	return reply
 }
 
-func (s *Session) submit(ctx context.Context, prompt []acp.ContentBlock, reply *jsonrpc.Reply) {
-	sub := &submission{ctx: ctx, prompt: prompt, reply: reply}
+func (sub *submission) cancelled() bool {
+	if sub.ctx.Err() != nil {
+		return true
+	}
+	g, ok := sub.reply.(*promptGroup)
+	return ok && g.cancelled()
+}
+
+func (s *Session) submit(sub *submission) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || ctx.Err() != nil {
+	if s.closed {
 		sub.reply.Reject(acp.ErrRequestCancelled())
 		return
 	}
@@ -156,12 +171,20 @@ func (s *Session) submit(ctx context.Context, prompt []acp.ContentBlock, reply *
 		sub.reply.Reject(errSessionLost())
 		return
 	}
+	if id, ok := s.keys[sub.key]; ok {
+		sub.reply.Resolve(acp.PromptResponse{MessageID: id})
+		return
+	}
+	if sub.cancelled() {
+		sub.reply.Reject(acp.ErrRequestCancelled())
+		return
+	}
 	if s.model == "" {
 		sub.reply.Reject(acp.ErrInvalidParams("select a model before submitting a prompt"))
 		return
 	}
 	s.queue = append(s.queue, sub)
-	sub.stopWatch = context.AfterFunc(ctx, func() { s.withdraw(sub) })
+	sub.stopWatch = context.AfterFunc(sub.ctx, func() { s.withdraw(sub) })
 	if s.worker == nil {
 		s.worker = make(chan struct{})
 		go s.work(s.worker)
@@ -473,7 +496,7 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 		sub.reply.Reject(errSessionLost())
 		return false
 	}
-	if ctx.Err() != nil || sub.ctx.Err() != nil {
+	if ctx.Err() != nil || sub.cancelled() {
 		sub.reply.Reject(acp.ErrRequestCancelled())
 		return false
 	}
@@ -499,11 +522,15 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	updated := time.Now()
 	// Until the transaction commits, neither replay nor the model may see
 	// the prompt. Cancellation remains available while SQLite is busy.
-	if err := s.claimTurn(saveCtx, msg, user, updated); err != nil {
+	if err := s.claimTurn(saveCtx, sub, msg, user, updated); err != nil {
 		sub.reply.Reject(err)
 		return false
 	}
 	s.history = append(s.history, user)
+	if sub.key != "" {
+		s.keys[sub.key] = msg.MessageID
+		s.transcriptKeys[len(s.transcript)] = sub.key
+	}
 	s.transcript = append(s.transcript, msg)
 	s.planID = "" // A rejected or merely queued prompt must not reset the plan.
 	s.dirty[len(s.transcript)-1] = true

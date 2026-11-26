@@ -34,7 +34,7 @@ func TestSaveFailureNotices(t *testing.T) {
 				}
 				s.mu.Lock()
 				defer s.mu.Unlock()
-				if err := s.claimTurn(context.Background(), acp.UserMessage{MessageID: "m"}, llm.Message{Role: llm.RoleUser}, time.Now()); err != nil {
+				if err := s.claimTurn(context.Background(), &submission{ctx: context.Background()}, acp.UserMessage{MessageID: "m"}, llm.Message{Role: llm.RoleUser}, time.Now()); err != nil {
 					t.Fatal(err)
 				}
 			}

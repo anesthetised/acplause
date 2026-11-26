@@ -135,7 +135,7 @@ func (s *Session) pending() (sess store.Session, history, transcript []store.Row
 		if err != nil {
 			return sess, nil, nil, nil, err
 		}
-		transcript = append(transcript, store.Row{Seq: i, Data: data})
+		transcript = append(transcript, store.Row{Seq: i, Data: data, Key: s.transcriptKeys[i]})
 	}
 	s.saved, s.dirty = len(s.history)-1, map[int]bool{}
 	undo = func() {
@@ -172,7 +172,8 @@ func (s *Session) flush() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if errors.Is(err, store.ErrLost) {
+	if errors.Is(err, store.ErrLost) || errors.Is(err, store.ErrKeyConflict) {
+		// Rebuild from the authoritative transcript on the next resume.
 		s.loseLocked()
 		return
 	}
@@ -232,11 +233,20 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 		}
 		s.history = append(s.history, m)
 	}
-	for _, data := range l.Transcript {
+	for i, data := range l.Transcript {
 		u, err := decodeEntry(data)
 		if err != nil {
 			s.Close()
 			return nil, fmt.Errorf("session %s transcript: %w", l.ID, err)
+		}
+		if key := l.TranscriptKeys[i]; key != "" {
+			msg, ok := u.(acp.UserMessage)
+			if !ok || msg.MessageID == "" {
+				s.Close()
+				return nil, fmt.Errorf("session %s transcript: key without a user message ID", l.ID)
+			}
+			s.keys[key] = msg.MessageID
+			s.transcriptKeys[i] = key
 		}
 		if plan, ok := u.(acp.PlanUpdate); ok {
 			s.planIndex[plan.Plan.PlanID] = len(s.transcript)
@@ -299,8 +309,8 @@ func (s *Session) repair() {
 // transaction. Requires flushMu and mu; releases mu during I/O so protocol
 // handlers stay responsive. A successful commit is the insertion boundary:
 // cancellation after it still acknowledges the prompt, then ends the turn.
-func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.Message, updated time.Time) error {
-	if ctx.Err() != nil {
+func (s *Session) claimTurn(ctx context.Context, sub *submission, msg acp.UserMessage, user llm.Message, updated time.Time) error {
+	if ctx.Err() != nil || sub.cancelled() {
 		return acp.ErrRequestCancelled()
 	}
 	if s.deps.store == nil {
@@ -315,7 +325,7 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 		}
 		if err == nil {
 			history = append(history, store.Row{Seq: len(s.history) - 1, Data: h})
-			transcript = append(transcript, store.Row{Seq: len(s.transcript), Data: t})
+			transcript = append(transcript, store.Row{Seq: len(s.transcript), Data: t, Key: sub.key})
 			sess.State, sess.UpdatedAt = string(acp.StateRunning), updated
 			if sess.Title == "" {
 				sess.Title = title(msg.Content)
@@ -337,7 +347,11 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 		s.loseLocked()
 		return errSessionLost()
 	}
-	if ctx.Err() != nil {
+	if errors.Is(err, store.ErrKeyConflict) {
+		s.loseLocked()
+		return jsonrpc.NewError(jsonrpc.CodeInternalError, "%v", store.ErrKeyConflict)
+	}
+	if ctx.Err() != nil || sub.cancelled() || errors.Is(err, context.Canceled) {
 		return acp.ErrRequestCancelled()
 	}
 	// Other storage failures retain the existing in-memory fallback.

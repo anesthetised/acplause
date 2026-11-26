@@ -16,7 +16,7 @@ type sessionOperation struct {
 	cancel   context.CancelFunc
 	previous *sessionOperation
 	done     chan struct{}
-	reply    *jsonrpc.Reply
+	reply    requestReply
 	prompt   bool
 	terminal bool
 	err      error // published by closing done
@@ -32,6 +32,9 @@ func (a *Agent) reserveOperation(ctx context.Context, id string, terminal, inter
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	op.previous = a.operations[id]
+	if terminal {
+		a.prompts.detach(id)
+	}
 	if interrupt {
 		for prev := op.previous; prev != nil; prev = prev.previous {
 			prev.cancel()

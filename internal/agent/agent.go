@@ -81,6 +81,7 @@ type Agent struct {
 	// loss results. Only background operations take it; turns use their own
 	// session locks. Take it before a session's flushMu, never under mu.
 	ownershipMu sync.Mutex
+	prompts     pendingPrompts
 
 	mu             sync.Mutex
 	sessions       map[string]*Session // open in this process
@@ -345,18 +346,31 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 }
 
 func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) {
+	reply := jsonrpc.NewReply(ctx)
+	sub := &submission{ctx: ctx, prompt: req.Prompt, key: string(req.IdempotencyKey), reply: reply}
+	if sub.key != "" {
+		shared, group, first := a.prompts.join(ctx, promptIdentity{req.SessionID, sub.key}, reply)
+		if !first {
+			return reply, nil
+		}
+		sub.ctx, sub.reply = shared, group
+	}
 	a.mu.Lock()
 	pending := a.operations[req.SessionID] != nil
 	a.mu.Unlock()
 	if !pending {
 		s, err := a.session(req.SessionID)
 		if err != nil {
-			return nil, err
+			sub.reply.Reject(err)
+			return reply, nil
 		}
-		return s.Submit(ctx, req.Prompt), nil
+		s.submit(sub)
+		return reply, nil
 	}
-	op := a.reserveOperation(ctx, req.SessionID, false, false)
+	op := a.reserveOperation(sub.ctx, req.SessionID, false, false)
 	op.prompt = true
+	op.reply = sub.reply
+	sub.ctx = op.ctx
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		// A prompt depends on the requested setup, not on whether an earlier
 		// prompt was cancelled. Failed setup must reject before insertion.
@@ -372,10 +386,10 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 		if err != nil {
 			return err
 		}
-		s.submit(ctx, req.Prompt, op.reply)
+		s.submit(sub)
 		return nil
 	})
-	return op.reply, nil
+	return reply, nil
 }
 
 func (a *Agent) cancelSession(_ context.Context, n acp.CancelSessionNotification) (any, error) {

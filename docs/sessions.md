@@ -27,6 +27,15 @@ For an individual prompt request, the acceptance response precedes its
 `user_message` and later turn updates. JSON-RPC batches receive one response
 array after every request in the batch settles; updates may precede that array.
 
+A client can send an optional `idempotencyKey` with `session/prompt`. Use the
+same key for each attempt at one submission. Pending retries share the result,
+and a retry after insertion returns the original `messageId` without another
+turn. Cancelling any pending attempt withdraws the whole submission before
+insertion. The key is private to the session and survives restart and context
+compaction with its user message. If a save warning preceded a restart, both
+the unsaved message and its key may have been lost.
+See [ADR 0033](adr/0033-prompt-idempotency-keys.md).
+
 ## List, resume, close and delete
 
 `session/list` includes stored sessions from every process using that data

@@ -2,7 +2,9 @@ package acp
 
 import (
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
+	"unicode/utf8"
 
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 )
@@ -126,10 +128,29 @@ func (b *ContentBlock) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// IdempotencyKey identifies one prompt within a session. The zero value is unkeyed.
+type IdempotencyKey string
+
+// UnmarshalJSON rejects malformed Unicode instead of silently merging distinct
+// input strings at the replacement character.
+func (k *IdempotencyKey) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*k = ""
+		return nil
+	}
+	var value string
+	if err := jsonv2.Unmarshal(data, &value); err != nil || value == "" || utf8.RuneCountInString(value) > 255 {
+		return errors.New("idempotencyKey must be a string of 1 to 255 characters")
+	}
+	*k = IdempotencyKey(value)
+	return nil
+}
+
 // PromptRequest is the params of session/prompt.
 type PromptRequest struct {
-	SessionID string         `json:"sessionId"`
-	Prompt    []ContentBlock `json:"prompt"`
+	SessionID      string         `json:"sessionId"`
+	Prompt         []ContentBlock `json:"prompt"`
+	IdempotencyKey IdempotencyKey `json:"idempotencyKey,omitempty"`
 }
 
 // Validate implements jsonrpc's params validation.
