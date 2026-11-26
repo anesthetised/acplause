@@ -33,9 +33,8 @@ func TestPromptLifecycle(t *testing.T) {
 	id := a.request("session/prompt", map[string]any{
 		"sessionId": sid,
 		"prompt": []any{
-			map[string]any{"type": "text", "text": "Say hi", "annotations": map[string]any{"priority": 1}},
+			map[string]any{"type": "text", "text": "Say hi", "annotations": map[string]any{"priority": 1}, "future": map[string]any{"payload": 7}},
 			map[string]any{"type": "resource_link", "uri": uri, "name": "main.go"},
-			map[string]any{"type": "_vendor_block", "payload": 7},
 		},
 		"_meta": map[string]any{"traceparent": "00-1-2-01"},
 	})
@@ -50,10 +49,10 @@ func TestPromptLifecycle(t *testing.T) {
 	if user.MessageID != messageID || resp.seq > user.seq {
 		t.Fatalf("user_message %q (line %d) must follow the prompt response %q (line %d)", user.MessageID, user.seq, messageID, resp.seq)
 	}
-	// The prompt is echoed verbatim, unknown blocks and fields included.
+	// The prompt is echoed verbatim, including unknown fields.
 	var content []map[string]any
 	_ = json.Unmarshal(user.Content, &content)
-	if len(content) != 3 || content[2]["type"] != "_vendor_block" || content[0]["annotations"] == nil {
+	if len(content) != 2 || content[0]["future"] == nil || content[0]["annotations"] == nil {
 		t.Fatalf("user_message content: %s", user.Content)
 	}
 

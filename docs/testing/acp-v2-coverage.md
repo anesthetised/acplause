@@ -136,6 +136,12 @@ permission requests by ID. The stdio tests cover late replies, session
 isolation and close ordering. The transport tests saturate both queues and
 exercise response races and shutdown. [ADR 0034](../adr/0034-permission-request-cancellation.md) · [Cancellation][beta-cancel]
 
+Prompt validation rejects unadvertised content types and malformed known fields,
+including negative resource link sizes, before insertion. Accepted content keeps
+its opaque fields in echo and replay. Stored opaque block types remain replayable.
+Empty prompt arrays remain accepted as permitted by beta.4.
+[Stdio coverage](../../e2e/prompt_content_test.go) · [Prompt contents][beta-prompt]
+
 ### Other follow-ups
 
 - **Request envelopes.** Request IDs must be strings or integers, with
@@ -154,20 +160,13 @@ exercise response races and shutdown. [ADR 0034](../adr/0034-permission-request-
   before version selection. Add stdio cases for each ordering rule and for
   malformed fields in a newer client's request.
   [Initialization guard][beta-init] · [Version negotiation][beta-version]
-- **Prompt contents and command dispatch.** The Agent must reject unadvertised
-  or unknown content before insertion. [Prompt decoding](../../internal/acp/content.go)
-  preserves it, and [model projection](../../internal/agent/text.go) skips it
-  while the echo still includes it. Add rejection tests for audio and custom
-  blocks alongside preservation tests for unknown fields on supported blocks.
-  The schema now requires a nonempty prompt and the protocol permits agents
-  to reject the empty arrays the decoder currently accepts. Check validation
-  of known block fields too, including the new nonnegative `resource_link.size`.
-  Alpha.9 already allowed commands to accompany other content. Beta.4
+- **Mixed-content command dispatch.** Alpha.9 already allowed commands to
+  accompany other content. Beta.4
   specifies how to recognize a command in the first text block.
   [The parser](../../internal/agent/commands.go) still requires a single
   text block. Define and test how argument-free `/compact` should handle
   accompanying content.
-  [Prompt contents][beta-prompt] · [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
+  [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
 - **MCP setup.** Agents must reject unsupported transports and duplicate names,
   and transport-owned HTTP headers use transport values. [MCP validation](../../internal/acp/mcp.go)
   skips unrecognized transports and rejects transport-owned headers. Add setup
