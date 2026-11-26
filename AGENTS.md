@@ -111,7 +111,8 @@ ownership) is in [docs/concurrency.md](docs/concurrency.md).
 - **Custom `MarshalJSON` methods use `jsonrpc.Marshal`**, which leaves `<`,
   `>` and `&` unescaped.
 - **Forward compatibility.** Unknown fields and `_`-prefixed variants must not
-  break parsing; prompt content blocks are echoed back verbatim.
+  break parsing. New prompts reject unsupported block types before insertion.
+  Accepted blocks are echoed verbatim, and stored opaque blocks remain replayable.
 - **Errors meant for the model are tool results**, not protocol errors:
   invalid tool arguments, unknown tools, sandbox violations and declined
   permission are reported as a `failed` tool call and sent back to the model.
