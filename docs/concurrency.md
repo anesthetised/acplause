@@ -36,7 +36,7 @@ Where each edge comes from:
 | `ownershipMu` → `Agent.mu` | `agent.go`: `Agent.renew`, `Agent.dropLocked`, `Agent.acquire`, `Agent.publishRestored` |
 | `ownershipMu` → `flushMu` | `Agent.dropLocked` drains a save; `Agent.acquire` holds the live session's `flushMu` across `Store.Acquire`; `Agent.publishRestored` calls `Session.flush` |
 | `flushMu` → `Agent.mu` | `Agent.acquire` removes a session that lost ownership while holding its `flushMu` |
-| `flushMu` → `Session.mu` | `persist.go`: `Session.flush`; `session.go`: `Session.insert`; `Agent.acquire` → `Session.markLost` |
+| `flushMu` → `Session.mu` | `Session.flush`, `Session.insert` and `Agent.acquire` fence session state and ownership against store writes |
 | `Session.mu` → `Manager.mu` → `server.mu` | `turn.go`: `Session.request` → `Manager.Snapshot` |
 | `Session.mu` → `Manager.mu` → `peer.mu` | `Session.configureResume` → `Change.Commit` → `peer.fail` (`mcp/catalog.go`) |
 | `Manager.mu` → `peer.mu` | `Manager.Recover` → `peer.err` |
@@ -306,8 +306,12 @@ catalog and restoring happen after both are released.
   charged frames, bytes and the completion reservation when it takes the
   item. The limits and retry behavior are in
   [ADR 0035](adr/0035-resume-write-and-replay-admission.md).
-- **Discontinuous ownership.** Acquisition marks the old session lost, cancels
-  its turn and removes it from the map. The resume worker joins its cleanup outside the
+- **Discontinuous ownership.** Acquisition withdraws queued prompts and registers
+  any claimed turn's remaining output under the old session's lock before marking
+  it lost and removing it from the map. Close and acquisition share this
+  obligation. Cancelling the cursor leaves it in force until the final idle
+  enters the stream or the worker withdraws the claim before insertion.
+  The resume worker joins its cleanup outside the
   agent and session locks before queuing replacement state. With a cursor,
   buffered completion updates from the retiring turn follow the marker, including its
   final idle. The replacement state follows them. A new session is restored

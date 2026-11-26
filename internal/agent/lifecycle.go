@@ -17,7 +17,7 @@ type sessionOperation struct {
 	previous *sessionOperation
 	done     chan struct{}
 	reply    requestReply
-	owed     *outputObligation // releases the operation’s output obligation
+	owed     *outputObligation // cursorless resume still owes its state update
 	replay   *historyReplay    // released by the operation worker
 	staged   bool              // this admission belongs to a chain waiting on a cold write
 	config   bool
@@ -111,9 +111,7 @@ func (op *sessionOperation) reject() {
 	} else {
 		op.reply.Reject(op.err)
 	}
-	if !op.terminal { // a cancelled close/delete must still drain the session
-		op.owed.release()
-	}
+	op.owed.release()
 }
 
 // resolveSetup releases replay admission once all updates owed by setup or

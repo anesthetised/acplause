@@ -579,6 +579,112 @@ func TestCursorDuringClosingTurnsFinalSave(t *testing.T) {
 	}
 }
 
+// Hold the tool worker after the permission reply, before it publishes the outcome.
+type pausedPermissionReturn struct {
+	Client
+	entered, release chan struct{}
+}
+
+func (p pausedPermissionReturn) CallPermission(ctx context.Context, method string, params, result any) error {
+	err := p.Client.CallPermission(ctx, method, params, result)
+	close(p.entered)
+	<-p.release
+	return err
+}
+
+func TestCancelledRetakeStillOwesRetiringToolAndIdle(t *testing.T) {
+	lease := &gatedReleaseStore{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	releaseLease := sync.OnceFunc(func() { close(lease.release) })
+	defer releaseLease()
+	model := make(scriptedModel, 1)
+	model.callTool("old-call", "write_file", `{"path":"example","content":"example"}`)
+	c := startAgent(t, t.TempDir(), model, nil, func(st Store) Store { lease.Store = st; return lease })
+	c.initialize()
+	cwd := t.TempDir()
+	id := c.newSession(cwd)
+	old, _ := c.agent.session(id)
+	gate := pausedPermissionReturn{old.deps.out, make(chan struct{}), make(chan struct{})}
+	unblock := sync.OnceFunc(func() { close(gate.release) })
+	defer unblock()
+	old.deps.out = gate
+	c.selectModel(id, "m")
+	if r := c.await(c.prompt(id, "start a tool")); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	issue50Wait(t, gate.entered)
+	c.waitFor(id, func(n notification) bool { return n.Update.State == "requires_action" })
+	if err := lease.Store.Release(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{"sessionId": id, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}}
+	first := c.send(acp.MethodSessionResume, params)
+	issue50Wait(t, old.ctx.Done())
+	// Loss cancels the context inside acquire. Wait for its detach before
+	// withdrawing the cursor, with the old tool still unable to finish.
+	c.agent.ownershipMu.Lock()
+	c.agent.mu.Lock()
+	detached := c.agent.sessions[id] == nil
+	c.agent.mu.Unlock()
+	c.agent.ownershipMu.Unlock()
+	if !detached {
+		t.Fatal("retiring generation is still in the session map")
+	}
+	c.notify("$/cancel_request", map[string]any{"requestId": c.lastID()})
+	if r := c.await(first); r.Error == nil || r.Error.Code != -32800 {
+		t.Fatalf("cancelled cursor: %+v", r)
+	}
+	closing := c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
+	c.fails(acp.MethodSessionResume, params, 1001)
+	unblock()
+
+	// Only lease cleanup remains. Both old completions must reach the wire
+	// before close succeeds, and the next cursor can already be admitted.
+	issue50Wait(t, lease.entered)
+	updates := c.untilIdle(id)
+	if len(updates) != 2 || updates[0].Update.Kind != "tool_call_update" ||
+		updates[0].Update.Status != "cancelled" || updates[1].Update.StopReason != "cancelled" {
+		t.Fatalf("retiring turn before close: %+v", updates)
+	}
+	select {
+	case r := <-closing:
+		t.Fatalf("close preceded lease release: %+v", r)
+	default:
+	}
+	later := c.send(acp.MethodSessionResume, params)
+	c.initialize() // fence receipt while lease release is blocked
+	releaseLease()
+	for _, ch := range []<-chan rpcResponse{closing, later} {
+		if r := c.await(ch); r.Error != nil {
+			t.Fatal(r.Error)
+		}
+	}
+	if !hasKind(c.untilIdle(id), "replay_complete") {
+		t.Fatal("retry omitted replay_complete")
+	}
+}
+
+func TestRetiringUninsertedClaimReleasesOutput(t *testing.T) {
+	s, out := testSession(t, nil)
+	// Step the worker between claim and insertion. A close and a retake
+	// can both reach this generation before the worker observes cancellation.
+	reply := jsonrpc.NewReply(t.Context())
+	s.queue = []*submission{{ctx: t.Context(), reply: reply, stopWatch: func() bool { return true }}}
+	sub, ctx := s.next()
+	s.sealOutput()
+	s.sealOutput()
+	if n := s.deps.replays.owed[s.id]; n != 1 {
+		t.Fatalf("claimed turn has %d output obligations", n)
+	}
+	s.runTurn(ctx, sub)
+	if _, err := settledReply(t, reply); err == nil || err.Code != -32800 {
+		t.Fatalf("withdrawn claim: %v", err)
+	}
+	s.next()
+	if n := s.deps.replays.owed[s.id]; n != 0 || len(out) != 0 {
+		t.Fatalf("withdrawn claim left %d obligations and emitted %d updates", n, len(out))
+	}
+}
+
 func TestRetakeDrainsRetiringTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name                             string

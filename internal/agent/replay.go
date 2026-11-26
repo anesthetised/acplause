@@ -185,6 +185,8 @@ func (rs *replayStreams) admitLive(e liveUpdate, commit func() error) (<-chan st
 	rs.mu.Lock()
 	if r := rs.active[e.session.id]; r != nil {
 		deliver, err := r.holdLocked(e)
+		// The cursor now owns this frame. Finishing or cancelling the
+		// cursor enqueues its tail under this same lock before another can arm.
 		e.last.releaseLocked()
 		rs.mu.Unlock()
 		if deliver != nil {

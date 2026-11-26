@@ -85,7 +85,7 @@ type Session struct {
 	closeOnce     sync.Once      // renewal, resume and close can join the same retiring generation
 	closed        bool
 
-	terminalOutput *outputObligation // close/delete awaits the final idle enqueue
+	terminalOutput *outputObligation // owned by the retiring generation until its last update
 
 	// Private lookup and persistence indexes for inserted user messages, guarded by mu.
 	keys           map[string]string // key to client-visible message ID
@@ -292,18 +292,21 @@ func (s *Session) rejectQueuedLocked(queued []*submission) {
 	})
 }
 
-// sealOutput runs after detachment. Closing suppresses asynchronous save
-// notices. Only a claimed turn can still commit and publish its final updates.
-func (s *Session) sealOutput(owed *outputObligation) {
+// sealOutput withdraws the queue on the reader before the next cursor arrives.
+func (s *Session) sealOutput() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.sealOutputLocked()
+}
+
+// A close and a discontinuous acquire can retire the same generation. Only
+// a claimed turn can still publish updates once the queue is withdrawn.
+func (s *Session) sealOutputLocked() {
+	if s.claimed && s.terminalOutput == nil {
+		s.terminalOutput = s.deps.replays.owe(s.id)
+	}
 	s.closed = true
 	s.cancelLocked()
-	if s.claimed {
-		s.terminalOutput = owed
-	} else {
-		owed.release()
-	}
 }
 
 // Close cancels all work, waits for the final updates of a running turn and

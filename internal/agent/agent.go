@@ -652,11 +652,16 @@ func (a *Agent) acquire(ctx context.Context, id, cwd string) (*Session, *store.L
 		return nil, nil, acp.ErrInvalidParams("cwd %q does not match the session's %q", cwd, l.Cwd)
 	}
 	if old != nil {
-		if l.AlreadyOwned && !old.isLost() {
+		old.mu.Lock()
+		if l.AlreadyOwned && !old.lost {
+			old.mu.Unlock()
 			return old, nil, nil
 		}
-		// A lost context/MCP manager cannot be revived.
-		old.markLost()
+		// Cancellation can remove the current cursor while Close drains.
+		// Fence the old worker's output before detaching its generation.
+		old.sealOutputLocked()
+		old.loseLocked()
+		old.mu.Unlock()
 		a.mu.Lock()
 		if a.sessions[id] == old {
 			a.prompts.detach(id)
@@ -695,14 +700,13 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 	interrupt := s != nil || (previous != nil && !previous.terminal)
 	op := a.reserveOperation(ctx, req.SessionID, true, interrupt)
 	op.closing = true
-	a.closeAdmission(s, op)
+	if s != nil {
+		s.sealOutput()
+	}
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
 			s.Close()
-		}
-		op.owed.release()
-		if s != nil {
 			a.release(s)
 		}
 		if err := ctx.Err(); err != nil {
@@ -722,13 +726,14 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 	delete(a.lost, req.SessionID)
 	a.mu.Unlock()
 	op := a.reserveOperation(ctx, req.SessionID, true, true)
-	a.closeAdmission(s, op)
+	if s != nil {
+		s.sealOutput()
+	}
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
 			s.Close()
 		}
-		op.owed.release()
 		if err := a.cfg.Store.Delete(ctx, req.SessionID); err != nil {
 			if s != nil {
 				a.release(s)
@@ -742,18 +747,6 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 		return nil
 	})
 	return op.reply, nil
-}
-
-// closeAdmission withdraws the queue on the reader. An earlier operation
-// already fences its own remaining output, even when it outlives this handler.
-func (a *Agent) closeAdmission(s *Session, op *sessionOperation) {
-	if s == nil {
-		return
-	}
-	if a.deps.replays != nil {
-		op.owed = a.deps.replays.owe(s.id)
-	}
-	s.sealOutput(op.owed)
 }
 
 // terminalSession catches a stored resume published between the handler's
