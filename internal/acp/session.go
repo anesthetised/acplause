@@ -7,15 +7,23 @@ import (
 	"github.com/anesthetised/acplause/internal/jsonrpc"
 )
 
+var errUnsupportedSystemPrompt = errors.New("systemPrompt is not supported")
+
 // NewSessionRequest is the params of session/new.
 type NewSessionRequest struct {
 	Cwd                   string      `json:"cwd"`
 	AdditionalDirectories []string    `json:"additionalDirectories"`
 	MCPServers            []MCPServer `json:"mcpServers"`
+
+	// SystemPrompt is captured only to reject non-null values during validation.
+	SystemPrompt *json.RawMessage `json:"systemPrompt,omitempty,case:strict"`
 }
 
 // Validate implements jsonrpc's params validation.
 func (r NewSessionRequest) Validate() error {
+	if r.SystemPrompt != nil {
+		return errUnsupportedSystemPrompt
+	}
 	return errors.Join(
 		requireAbsolute("cwd", r.Cwd),
 		requireAbsoluteAll("additionalDirectories", r.AdditionalDirectories),
@@ -44,10 +52,16 @@ type ResumeSessionRequest struct {
 	AdditionalDirectories []string    `json:"additionalDirectories"`
 	MCPServers            []MCPServer `json:"mcpServers"`
 	ReplayFrom            *ReplayFrom `json:"replayFrom"`
+
+	// SystemPrompt is captured only to reject non-null values during validation.
+	SystemPrompt *json.RawMessage `json:"systemPrompt,omitempty,case:strict"`
 }
 
 // Validate implements jsonrpc's params validation.
 func (r ResumeSessionRequest) Validate() error {
+	if r.SystemPrompt != nil {
+		return errUnsupportedSystemPrompt
+	}
 	var replay error
 	if r.ReplayFrom != nil && r.ReplayFrom.Type == "" {
 		replay = errors.New("replayFrom.type is required")
