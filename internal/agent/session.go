@@ -476,9 +476,8 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 }
 
 // insert adds the user message to the conversation and acknowledges the
-// prompt, unless it was cancelled first. For an individual request the response
-// precedes user_message on the wire; a batch collects replies before writing
-// its response array, so updates may precede that array.
+// prompt, unless it was cancelled first. The acknowledgement is queued
+// before user_message so the client can match the echo to the accepted prompt.
 func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	// Validation runs on the session worker, never the protocol read loop.
 	// Keep both cancellation sources live while decoding and claiming the turn.

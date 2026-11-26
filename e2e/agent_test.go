@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,7 +64,6 @@ func TestMain(m *testing.M) {
 // message is one line of agent output.
 type message struct {
 	seq    int             // line number in the output
-	batch  bool            // part of a batch response
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
@@ -221,7 +221,13 @@ func start(t *testing.T, llm *mockLLM, opts ...option) *agent {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	go a.read(stdout, v)
+	go func() {
+		defer close(a.readerDone)
+		defer close(a.out)
+		if err := a.read(stdout, v); err != nil && !errors.Is(err, os.ErrClosed) {
+			a.t.Errorf("agent stdout: %v", err)
+		}
+	}()
 	t.Cleanup(a.stop)
 	return a
 }
@@ -257,34 +263,27 @@ func (a *agent) exit() {
 }
 
 // read decodes and validates each line of output.
-func (a *agent) read(stdout io.Reader, v *validator) {
-	defer close(a.readerDone)
-	defer close(a.out)
+func (a *agent) read(stdout io.Reader, v *validator) error {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(nil, 16<<20)
-	for seq := 0; sc.Scan(); seq++ {
-		line := bytes.Clone(sc.Bytes())
-		var batch []json.RawMessage
-		if json.Unmarshal(line, &batch) != nil {
-			a.accept(v, &message{seq: seq}, line)
-			continue
-		}
-		for _, entry := range batch {
-			a.accept(v, &message{seq: seq, batch: true}, entry)
+	for seq := 1; sc.Scan(); seq++ {
+		if err := a.accept(v, seq, sc.Bytes()); err != nil {
+			return fmt.Errorf("line %d: %w", seq, err)
 		}
 	}
+	return sc.Err()
 }
 
-func (a *agent) accept(v *validator, msg *message, raw []byte) {
-	if err := json.Unmarshal(raw, msg); err != nil {
-		a.t.Errorf("agent wrote invalid JSON: %q", raw)
-		return
+func (a *agent) accept(v *validator, seq int, raw []byte) error {
+	msg := &message{seq: seq}
+	if err := v.decodeLine(raw, msg); err != nil {
+		return err
 	}
 	a.mu.Lock()
 	method := a.methods[string(msg.ID)]
 	a.mu.Unlock()
-	if err := v.validate(raw, msg, method); err != nil {
-		a.t.Errorf("schema violation: %v\n%s", err, raw)
+	if err := v.validatePayload(msg, method); err != nil {
+		return fmt.Errorf("schema violation: %w", err)
 	}
 	if msg.Method == "session/request_permission" && !a.askUser {
 		// Not a.answer: this runs off the test goroutine, and stdin may
@@ -297,6 +296,7 @@ func (a *agent) accept(v *validator, msg *message, raw []byte) {
 		a.writeMu.Unlock()
 	}
 	a.out <- msg
+	return nil
 }
 
 // permissionRequest takes the next session/request_permission.

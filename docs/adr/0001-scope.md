@@ -21,9 +21,10 @@ it in tests.
    used by tests.
 4. **Own protocol types** in `internal/acp`, written from the schema, covering
    only what acplause sends or reads. No third-party ACP SDK.
-5. **JSON-RPC batches are supported** (the spec requires accepting batch
-   arrays on stdio). Entries are admitted in array order; the response array
-   is written once every request in the batch is answered.
+5. **JSON-RPC batches are supported** (superseded by [ADR 0032](0032-reject-jsonrpc-batches.md)).
+   The original spec required accepting batch arrays on stdio. Entries were
+   admitted in array order, and the response array was written once every
+   request in the batch was answered.
 6. **`session.additionalDirectories` is advertised**, and the root set
    `[cwd, ...additionalDirectories]` is the sandbox for file tools.
 7. **`session/list` paginates.** `cursor` is an opaque token; `nextCursor` is

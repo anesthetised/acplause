@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -101,9 +102,8 @@ func (v *validator) check(name string, raw json.RawMessage) error {
 	return nil
 }
 
-// validate checks one line of agent output. method is the method of the
-// request a response answers, if known.
-func (v *validator) validate(line []byte, msg *message, method string) error {
+// decodeLine validates the entire stdout frame before decoding its envelope.
+func (v *validator) decodeLine(line []byte, msg *message) error {
 	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(line))
 	if err != nil {
 		return err
@@ -111,6 +111,12 @@ func (v *validator) validate(line []byte, msg *message, method string) error {
 	if err := v.root.Validate(inst); err != nil {
 		return fmt.Errorf("root schema: %v", err)
 	}
+	return json.Unmarshal(line, msg)
+}
+
+// validatePayload checks the definition for the method a response answers
+// or the method of an outgoing request or notification.
+func (v *validator) validatePayload(msg *message, method string) error {
 	switch {
 	case msg.Error != nil:
 		raw, _ := json.Marshal(msg.Error)
@@ -129,4 +135,22 @@ func (v *validator) validate(line []byte, msg *message, method string) error {
 		return v.check(name, msg.Params)
 	}
 	return fmt.Errorf("unrecognised message")
+}
+
+func TestReaderRejectsArrayFrames(t *testing.T) {
+	v, err := loadValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const valid = `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request"}}`
+	for _, array := range []string{`[]`, `[` + valid + `,` + valid + `]`} {
+		a := &agent{out: make(chan *message, 3)}
+		err := a.read(strings.NewReader(valid+"\n"+array+"\n"), v)
+		if err == nil || !strings.Contains(err.Error(), "line 2: root schema") {
+			t.Fatalf("reading %s after a valid frame: %v", array, err)
+		}
+		if len(a.out) != 1 {
+			t.Fatalf("reader delivered %d messages, want only the first frame", len(a.out))
+		}
+	}
 }

@@ -55,35 +55,24 @@ func TestJSONRPCErrors(t *testing.T) {
 	a.expectQuiet(func(*message) bool { return true })
 }
 
-func TestBatch(t *testing.T) {
+func TestRejectsArraysAndContinuesServing(t *testing.T) {
 	t.Parallel()
 	a := start(t, newMockLLM(t))
-	a.mu.Lock()
-	a.methods[`"a"`] = "initialize"
-	a.mu.Unlock()
-	a.send(`[{"jsonrpc":"2.0","id":"a","method":"initialize","params":{"protocolVersion":2,"info":{"name":"e2e","version":"1"}}},` +
-		`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"nope"}},` +
-		`{"jsonrpc":"2.0","id":"b","method":"nope"},` +
-		`42]`)
-
-	responses := map[string]*message{}
-	for range 3 {
-		m := a.take(func(m *message) bool { return m.batch })
-		responses[string(m.ID)] = m
+	const notice = `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"missing"}}`
+	const init = `{"jsonrpc":"2.0","id":"a","method":"initialize","params":{"protocolVersion":2,"info":{"name":"e2e","version":"1"}}}`
+	for _, line := range []string{`[]`, `[` + notice + `,` + notice + `]`, `[` + init + `,` + notice + `,42]`} {
+		a.send(line)
+		m := a.take(func(*message) bool { return true })
+		if string(m.ID) != "null" || m.Error == nil || m.Error.Code != -32600 {
+			t.Fatalf("response to %s: %+v", line, m)
+		}
 	}
-	if m := responses[`"a"`]; m == nil || m.Result == nil {
-		t.Fatalf("initialize in batch: %+v", m)
+	// The embedded initialize must have left the connection uninitialized.
+	a.fails("session/new", map[string]any{"cwd": t.TempDir()}, -32600)
+	a.initialize()
+	if len(a.pending) != 0 {
+		t.Fatalf("extra output: %s", a.describePending())
 	}
-	if m := responses[`"b"`]; m == nil || m.Error.Code != -32601 {
-		t.Fatalf("unknown method in batch: %+v", m)
-	}
-	if m := responses["null"]; m == nil || m.Error.Code != -32600 {
-		t.Fatalf("invalid entry in batch: %+v", m)
-	}
-	if responses[`"a"`].seq != responses[`"b"`].seq {
-		t.Fatal("batch responses were not written as one array")
-	}
-	a.expectQuiet(func(*message) bool { return true })
 }
 
 func assertJSON(t *testing.T, got json.RawMessage, want string) {

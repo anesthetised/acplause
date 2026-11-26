@@ -10,11 +10,9 @@ import (
 // Reject from wherever the work completes. For a request-bound reply, settlement
 // and the handler's return or panic share one completion: only the first counts.
 //
-// For a single request, a reply obtained with NewReply(ctx) queues the response
+// A request-bound reply obtained with NewReply(ctx) queues the response
 // synchronously inside Resolve or Reject, even before the handler returns.
 // A notification sent afterwards therefore follows the response on the wire.
-// For a batch, settlement contributes to the response array without waiting
-// for the other requests; notifications may precede the completed array.
 type Reply struct {
 	mu      sync.Mutex
 	settled bool

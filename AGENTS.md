@@ -63,7 +63,7 @@ Run `just check` before handing work back. All of it must pass.
 
 ```
 cmd/acplause/      entry point; configuration from ACPLAUSE_* env vars
-internal/jsonrpc/  NDJSON framing, dispatch, batches, single stdout writer
+internal/jsonrpc/  one JSON-RPC object per line, dispatch, single stdout writer
 internal/acp/      ACP v2 wire types, only those acplause uses
 internal/agent/    sessions, prompt queue, lifecycle, cancellation, tool loop
 internal/forms/    ask_user form parsing and answer validation, stateless
@@ -149,8 +149,8 @@ ownership) is in [docs/concurrency.md](docs/concurrency.md).
   The e2e binary is not measured, so code reached only through e2e tests
   also needs in-package tests (`internal/agent/methods_test.go` drives the
   handlers over `jsonrpc.Conn`).
-- The e2e harness validates every message the agent writes against the
-  schema: the root schema, plus the specific `*Response` definition for
+- The e2e harness validates each complete stdout line against the pinned
+  root schema, then checks the specific `*Response` definition for
   results and the `*Notification` definition for notification params. A new
   outgoing message type is covered automatically; a violation fails the test.
 - E2E tests allow permission requests automatically; pass `askingUser` to

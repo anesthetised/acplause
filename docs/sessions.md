@@ -23,9 +23,11 @@ sent once, as a `session_info_update`, when that prompt is accepted, and is
 returned by `session/list`. It is not replayed on resume: replay is
 conversation history, and the title is metadata that `session/list` reports.
 
-For an individual prompt request, the acceptance response precedes its
-`user_message` and later turn updates. JSON-RPC batches receive one response
-array after every request in the batch settles; updates may precede that array.
+Send one JSON-RPC object per line and match replies by ID. A client can send
+the next prompt or cancellation while a reply is pending. An accepted prompt's
+`messageId` reply precedes its `user_message` echo and later turn updates.
+A top-level array receives one `-32600` error with `id: null`. None of its
+entries run. [ADR 0032](adr/0032-reject-jsonrpc-batches.md)
 
 A client can send an optional `idempotencyKey` with `session/prompt`. Use the
 same key for each attempt at one submission. Pending retries share the result,
