@@ -95,20 +95,22 @@ func (m *inbound) isResponse() bool { return m.Method == "" && (m.Result != nil 
 // failed treats "error": null as absent: some peers send it next to a result.
 func (m *inbound) failed() bool { return m.Error != nil && string(m.Error) != "null" }
 
-type resultWithBeforeWrite struct {
+type resultWithWriteHooks struct {
 	result      any
 	beforeWrite func()
+	afterWrite  func(error)
 }
 
-// BeforeWrite attaches a nonblocking action to a successful response. The
-// single writer runs it immediately before attempting the frame's first write.
-// It must not acquire application locks or perform I/O.
-func BeforeWrite(result any, action func()) any {
-	return resultWithBeforeWrite{result, action}
+// OnWrite attaches nonblocking callbacks to a successful response. The writer
+// brackets the frame's own Write, treating a short write or sealed connection
+// as an unsuccessful delivery. Callbacks must not take locks or perform I/O.
+func OnWrite(result any, before func(), after func(error)) any {
+	return resultWithWriteHooks{result, before, after}
 }
 
 type response struct {
 	beforeWrite func()
+	afterWrite  func(error)
 	JSONRPC     string          `json:"jsonrpc"`
 	ID          ID              `json:"id"`
 	Result      json.RawMessage `json:"result,omitempty"`
@@ -120,14 +122,15 @@ func newResponse(id ID, result any, err error) *response {
 		return errorResponse(id, AsError(err))
 	}
 	var beforeWrite func()
-	if r, ok := result.(resultWithBeforeWrite); ok {
-		result, beforeWrite = r.result, r.beforeWrite
+	var afterWrite func(error)
+	if r, ok := result.(resultWithWriteHooks); ok {
+		result, beforeWrite, afterWrite = r.result, r.beforeWrite, r.afterWrite
 	}
 	raw, err := Marshal(result)
 	if err != nil {
 		return errorResponse(id, NewError(CodeInternalError, "encode result: %v", err))
 	}
-	return &response{JSONRPC: Version, ID: id, Result: raw, beforeWrite: beforeWrite}
+	return &response{JSONRPC: Version, ID: id, Result: raw, beforeWrite: beforeWrite, afterWrite: afterWrite}
 }
 
 func errorResponse(id ID, err *Error) *response {

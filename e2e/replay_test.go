@@ -2,9 +2,11 @@ package e2e
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -209,6 +211,60 @@ func TestReplayOrdersNewClientRequests(t *testing.T) {
 			}
 			a.untilIdle(sid)
 		})
+	}
+}
+
+func TestReplayOverflowPreservesLiveStream(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	run := make(chan struct{})
+	var want strings.Builder
+	for i := range 70 {
+		fmt.Fprintf(&want, "[%02d]", i)
+	}
+	llm.enqueue(func(s *stream) {
+		s.text("start")
+		select {
+		case <-run:
+		case <-s.r.Context().Done():
+			return
+		}
+		for i := range 70 {
+			s.text(fmt.Sprintf("[%02d]", i))
+		}
+		s.finish("stop")
+	})
+	a, sid, cwd := started(t, llm)
+	a.accepted(a.prompt(sid, "stream"))
+	a.updateWhere(sid, func(u update) bool { return u.is("agent_message_chunk") })
+	resume, _ := gatedReplay(t, a, sid, cwd)
+	params := map[string]any{"sessionId": sid, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}}
+	a.fails("session/resume", params, 1001)
+	close(run)
+	rejected := a.response(resume)
+	if rejected.Error == nil || rejected.Error.Code != -32603 {
+		t.Fatalf("overflow response: %+v", rejected)
+	}
+	var got strings.Builder
+	for _, u := range a.untilIdle(sid) {
+		if u.is("replay_complete") {
+			t.Fatal("incomplete replay sent marker")
+		}
+		if u.is("agent_message_chunk") {
+			if u.seq <= rejected.seq {
+				t.Fatal("live chunk preceded overflow error")
+			}
+			got.WriteString(u.text())
+		}
+	}
+	if got.String() != want.String() {
+		t.Fatalf("overflow lost or reordered live chunks: %q", got.String())
+	}
+	a.ok("session/resume", params, nil)
+	retry := a.untilIdle(sid)
+	answers := filter(retry, "agent_message")
+	if len(filter(retry, "replay_complete")) != 1 || len(answers) != 1 || answers[0].text() != "start"+want.String() {
+		t.Fatalf("retry history: %v", kinds(retry))
 	}
 }
 

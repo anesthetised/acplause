@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -156,7 +157,7 @@ func TestReplayFromReceiptThroughAcquire(t *testing.T) {
 			s.send(acp.Notice{Title: "before cut", Severity: "info"})
 			unlock()
 			issue50Wait(t, gate.entered)
-			c.fails(acp.MethodSessionResume, params, -32600)
+			c.fails(acp.MethodSessionResume, params, 1001)
 			s.mu.Lock()
 			s.send(acp.Notice{Title: "during acquire", Severity: "info"})
 			s.mu.Unlock()
@@ -348,7 +349,7 @@ func TestCursorCannotHoldFinalUpdatesOwedByClose(t *testing.T) {
 	closing := c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
 	issue50Wait(t, cancelled)
 	params := map[string]any{"sessionId": id, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}}
-	c.fails(acp.MethodSessionResume, params, -32600)
+	c.fails(acp.MethodSessionResume, params, 1001)
 	unblock()
 	if r := c.await(closing); r.Error != nil {
 		t.Fatal(r.Error)
@@ -359,6 +360,222 @@ func TestCursorCannotHoldFinalUpdatesOwedByClose(t *testing.T) {
 	c.ok(acp.MethodSessionResume, params, nil)
 	if updates := c.untilIdle(id); !hasKind(updates, "replay_complete") {
 		t.Fatalf("replay after close: %+v", updates)
+	}
+}
+
+func TestCursorDuringLeaseRelease(t *testing.T) {
+	gate := &gatedReleaseStore{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	unblock := sync.OnceFunc(func() { close(gate.release) })
+	defer unblock()
+	c := startAgent(t, t.TempDir(), nil, nil, func(st Store) Store { gate.Store = st; return gate })
+	c.initialize()
+	cwd := t.TempDir()
+	id := c.newSession(cwd)
+	closing := c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
+	issue50Wait(t, gate.entered)
+	cursor := c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}})
+	c.ok(acp.MethodSessionList, map[string]any{}, nil)
+	unblock()
+	for _, ch := range []<-chan rpcResponse{closing, cursor} {
+		if r := c.await(ch); r.Error != nil {
+			t.Fatal(r.Error)
+		}
+	}
+	if !hasKind(c.untilIdle(id), "replay_complete") {
+		t.Fatal("missing replay marker")
+	}
+}
+
+func TestAdmissionsDuringColdResponseWrite(t *testing.T) {
+	for _, outcome := range []string{"before bytes", "after bytes", "short", "failure", "close"} {
+		t.Run(outcome, func(t *testing.T) {
+			entered, release, listed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			armed := make(chan struct{})
+			model := make(scriptedModel, 3)
+			for range cap(model) {
+				model.reply("ok", llm.FinishStop, nil)
+			}
+			c := startAgentWithOutput(t, t.TempDir(), model, nil, func(w io.Writer) io.Writer {
+				return replayTestWriter(func(line []byte) (int, error) {
+					select {
+					case <-armed:
+					default:
+						return w.Write(line)
+					}
+					if !bytes.Contains(line, []byte(`"availableCommands"`)) || bytes.Contains(line, []byte(`"sessionId"`)) {
+						return w.Write(line)
+					}
+					if outcome == "after bytes" {
+						if _, err := w.Write(line); err != nil {
+							return 0, err
+						}
+					}
+					close(entered)
+					<-release
+					switch outcome {
+					case "after bytes":
+						return len(line), nil
+					case "short":
+						return 1, nil
+					case "failure":
+						return 0, io.ErrClosedPipe
+					}
+					return w.Write(line)
+				})
+			}, func(st Store) Store { return observedList{st, listed} })
+			c.initialize()
+			cwd := t.TempDir()
+			id := c.newSession(cwd)
+			other := c.newSession(cwd)
+			c.ok(acp.MethodSessionClose, map[string]any{"sessionId": id}, nil)
+			close(armed)
+			resumed := c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd})
+			issue50Wait(t, entered)
+			c.agent.mu.Lock()
+			s := c.agent.sessions[id]
+			c.agent.mu.Unlock()
+			config := c.send(acp.MethodSessionSetConfig, map[string]any{"sessionId": id, "configId": configModel, "type": acp.ConfigValueID, "value": "r"})
+			old := c.promptWithKey(id, "first", "withdrawn by session cancel")
+			c.notify(acp.MethodSessionCancel, map[string]any{"sessionId": id})
+			old2 := c.promptWithKey(id, "first", "withdrawn by retry cancellation")
+			retry := c.promptWithKey(id, "first", "retry")
+			c.notify("$/cancel_request", map[string]any{"requestId": c.lastID()})
+			first := c.promptWithKey(id, "first", "one")
+			second := c.promptWithKey(id, "second", "two")
+			joined := c.promptWithKey(id, "first", "duplicate")
+			var newSession <-chan rpcResponse
+			if outcome == "before bytes" || outcome == "after bytes" {
+				// This later preference is visible to the next session even if the
+				// staged choice takes longer to apply than the live-session choice.
+				c.send(acp.MethodSessionSetConfig, map[string]any{"sessionId": other, "configId": configModel, "type": "id", "value": "m"})
+				newSession = c.send(acp.MethodSessionNew, map[string]any{"cwd": cwd})
+			}
+			if outcome == "close" {
+				c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
+			}
+			c.send(acp.MethodSessionList, map[string]any{})
+			issue50Wait(t, listed)
+			s.mu.Lock()
+			if len(s.keys) != 0 || s.model != "" || len(model) != 3 {
+				t.Errorf("work preceded write outcome: keys=%v model=%q", s.keys, s.model)
+			}
+			s.mu.Unlock()
+			unblock()
+			if outcome == "short" || outcome == "failure" {
+				c.agent.jobs.Wait()
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if len(s.keys) != 0 || s.model != "" || len(model) != 3 {
+					t.Fatal("failed write admitted work")
+				}
+				return
+			}
+			if r := c.await(resumed); r.Error != nil {
+				t.Fatal(r.Error)
+			}
+			if newSession != nil {
+				var created acp.NewSessionResponse
+				r := c.await(newSession)
+				if r.Error != nil || json.Unmarshal(r.Result, &created) != nil {
+					t.Fatalf("new session: %+v", r)
+				}
+				newlyCreated, err := c.agent.session(created.SessionID)
+				if err != nil || newlyCreated.model != "m" {
+					t.Fatalf("later session missed last model preference: %v", err)
+				}
+				c.ok(acp.MethodSessionSetConfig, map[string]any{"sessionId": id, "configId": configEffort, "type": "id", "value": "high"}, nil)
+			}
+			for _, ch := range []<-chan rpcResponse{old, old2, retry} {
+				if r := c.await(ch); r.Error == nil || r.Error.Code != -32800 {
+					t.Fatalf("withdrawn prompt = %+v", r)
+				}
+			}
+			if outcome == "close" {
+				for _, ch := range []<-chan rpcResponse{config, first, second, joined} {
+					if r := c.await(ch); r.Error == nil {
+						t.Fatal("close admitted staged work")
+					}
+				}
+				return
+			}
+			third := c.promptWithKey(id, "third", "three")
+			if r := c.await(config); r.Error != nil {
+				t.Fatal(r.Error)
+			}
+			a, b, d := c.await(first), c.await(second), c.await(joined)
+			if a.Error != nil || b.Error != nil || d.Error != nil || !bytes.Equal(a.Result, d.Result) || bytes.Equal(a.Result, b.Result) {
+				t.Fatalf("keyed staging: %+v %+v %+v", a, b, d)
+			}
+			if r := c.await(third); r.Error != nil {
+				t.Fatal(r.Error)
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			var texts []string
+			for _, u := range s.transcript {
+				if m, ok := u.(acp.UserMessage); ok {
+					texts = append(texts, m.Content[0].Text)
+				}
+			}
+			if !slices.Equal(texts, []string{"one", "two", "three"}) {
+				t.Fatalf("prompt order %v", texts)
+			}
+		})
+	}
+}
+
+// The idle is on the wire but the turn still owns its final store write.
+type pausedFinalSave struct {
+	Store
+	block            atomic.Bool
+	entered, release chan struct{}
+}
+
+func (g *pausedFinalSave) Save(ctx context.Context, s store.Session, h, tr []store.Row, cancelled func() bool) error {
+	if s.State == "idle" && g.block.CompareAndSwap(true, false) {
+		close(g.entered)
+		<-g.release
+	}
+	return g.Store.Save(ctx, s, h, tr, cancelled)
+}
+
+func TestCursorDuringClosingTurnsFinalSave(t *testing.T) {
+	gate := &pausedFinalSave{entered: make(chan struct{}), release: make(chan struct{})}
+	unblock := sync.OnceFunc(func() { close(gate.release) })
+	defer unblock()
+	entered := make(chan struct{})
+	model := fakeModel(func(ctx context.Context, _ llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	c := startAgent(t, t.TempDir(), model, nil, func(st Store) Store { gate.Store = st; return gate })
+	c.initialize()
+	cwd := t.TempDir()
+	id := c.newSession(cwd)
+	c.selectModel(id, "m")
+	if r := c.await(c.prompt(id, "active")); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	issue50Wait(t, entered)
+	gate.block.Store(true)
+	closing := c.send(acp.MethodSessionClose, map[string]any{"sessionId": id})
+	issue50Wait(t, gate.entered)
+	if idle := lastIdle(c.untilIdle(id)); idle.Update.StopReason != "cancelled" {
+		t.Fatal(idle)
+	}
+	resume := c.send(acp.MethodSessionResume, map[string]any{"sessionId": id, "cwd": cwd, "replayFrom": map[string]string{"type": "start"}})
+	c.ok(acp.MethodSessionList, map[string]any{}, nil)
+	unblock()
+	for _, ch := range []<-chan rpcResponse{closing, resume} {
+		if r := c.await(ch); r.Error != nil {
+			t.Fatal(r.Error)
+		}
+	}
+	if !hasKind(c.untilIdle(id), "replay_complete") {
+		t.Fatal("missing marker")
 	}
 }
 

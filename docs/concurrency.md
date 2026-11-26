@@ -21,11 +21,11 @@ together. A lock may be skipped, but never taken after a later one.
 4. `Session.mu`
 5. `mcp.Manager.mu`
 6. `mcp.server.mu` | `mcp.peer.mu`
-7. `jsonrpc.Reply.mu`
+7. `jsonrpc.Reply.mu` | `replayStreams.mu`
 8. `jsonrpc.Conn.mu`
 
 Leaves, never held while another lock is taken: the pending prompt groups mutex
-in `prompt_retries.go`, the replay registry mutex in `replay.go`, the catalog cache mutex in
+in `prompt_retries.go`, the catalog cache mutex in
 `cacheCatalog`, `calibration.mu`, `mcp.httpTransport.mu`, and outside these packages
 `tools.ShellObserver.mu` and the Windows-only `winproc.Job.mu`.
 
@@ -40,6 +40,7 @@ Where each edge comes from:
 | `Session.mu` → `Manager.mu` → `server.mu` | `turn.go`: `Session.request` → `Manager.Snapshot` |
 | `Session.mu` → `Manager.mu` → `peer.mu` | `Session.configureResume` → `Change.Commit` → `peer.fail` (`mcp/catalog.go`) |
 | `Manager.mu` → `peer.mu` | `Manager.Recover` → `peer.err` |
+| `Session.mu` → `replayStreams.mu` → `Conn.mu` | Replay registration, buffered live events, output obligations and the final enqueue check. Ordinary capacity acquisition precedes the enqueue check |
 | `Session.mu` → `Reply.mu` → `Conn.mu` | `Session.submit` and `Session.insert` settle replies under `Session.mu`; `Reply.settle` delivers under `Reply.mu`, and delivery calls `Conn.untrack` |
 
 ### What each lock guards
@@ -84,14 +85,14 @@ Not lock-guarded, by ownership instead:
 | `Session.mu` | `tools.New`, `Toolbox.Close`, `AGENTS.md` reads, model requests | `Session.configureResume`, `Session.releaseToolbox`, `Session.refreshInstructions` and `Session.converse` do this work unlocked |
 | `Agent.mu` | waiting for `Session.mu`, which a live update holds across `Conn.Notify` | `Agent.setConfigOption` reads pending setup under `Agent.mu`, releases it, then admits the change under `Session.mu` (see [Session operations](#session-operations)) |
 | `Session.mu` | writing a replay snapshot | `historyReplay.write` writes outside the lock; `Session.send` defers live updates meanwhile (see [Resume](#resume)) |
-| `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` starts cleanup on a goroutine. `Agent.open` joins cleanup after `Agent.acquire` releases both locks |
+| `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` and `Agent.acquire` start it with `go` |
 | `Agent.ownershipMu` | MCP setup, the catalog load, `restoreSession` | `Agent.open` takes the lock only in `Agent.acquire`, then waits for the catalog (up to `catalogTimeout` when none has loaded) and restores the private session; `Agent.resume` runs `Session.configureResume` before `Agent.publishRestored`. A slow provider or server cannot delay lease renewal |
 | `Manager.mu` | connecting or closing a server | `Manager.Prepare` and `Manager.Recover` connect unlocked; `Manager.closeResource` closes before locking |
 
 Live updates are the deliberate exception: `Session.send` notifies under
 `Session.mu`, so a resume snapshot and live state cannot reorder.
 `Conn.Notify` applies backpressure when the 256 ordinary slots are occupied.
-The writer needs no agent lock.
+The writer releases replay credits under the registry mutex on dequeue.
 
 ### Permission cancellation and stdout
 
@@ -135,7 +136,7 @@ Per connection:
 | Selection save, chained in request order | `Agent.rememberSelection` | its save finishes |
 | `session/new`, `session/list` work | `Agent.newSession`, `Agent.listSessions`; tracked by `Agent.jobs` | reply settled |
 | One per `sessionOperation` | `Agent.startOperation`; tracked by `Agent.jobs` | its work and `done` |
-| Session closers | `Agent.Shutdown`, `Agent.dropLocked` | `Session.Close` returns |
+| Session closers | `Agent.Shutdown`, `Agent.dropLocked`, `Agent.acquire` | `Session.Close` returns |
 
 Per session:
 
@@ -174,13 +175,13 @@ when it is answered, on `$/cancel_request`, or when `Serve` returns.
 
 | Method | Settled by |
 | --- | --- |
-| `initialize`, `session/set_config_option` | the handler's return, on the read loop |
+| `initialize`, `session/set_config_option` | the handler on the read loop, or a session operation for a config request staged during a cold response write |
 | `session/new` | the goroutine in `Agent.newSession` |
 | `session/list` | the job in `Agent.listSessions` |
 | `session/resume` | the operation goroutine (`Agent.resumeSession`) |
 | `session/close`, `session/delete` | the operation goroutine, or the close handler when there is no active session or earlier work to wait for. Close settles after cleanup even when cancelled. Delete may reject a cancelled waiter early and still runs terminal cleanup |
-| `session/prompt`, before submission | the handler when the session is unknown or lost; otherwise `Agent.startOperation`, when a prompt waiting on setup was cancelled or its generation is gone |
-| `session/prompt`, after submission | the `Session`: `Session.submit` (in-memory recorded key, closed, lost, failed setup, no model), `Session.resolveRecorded` (stored owner check), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
+| `session/prompt`, before submission | the handler when the session is unknown or lost; otherwise `Agent.startOperation`, when the prompt waited behind setup and was cancelled, setup failed, or the session is gone |
+| `session/prompt`, after submission | the `Session`: `Session.submit` (in-memory recorded key, closed, lost, no model), `Session.resolveRecorded` (stored owner check), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
 | any handler that panics or a method that does not exist | `Conn` itself |
 
 `session/cancel` is a notification. `Agent.cancelWaitingPrompts` only cancels
@@ -243,15 +244,15 @@ pending resume publishes afterwards.
 - **Prompt.** A cold resume cannot admit prompts until its successful response,
   including after its replay marker. On an active session, with nothing pending, `Agent.prompt` submits straight to the
   session queue. Otherwise it joins the chain marked `prompt` and, once
-  predecessors finish, submits to the same active session with the result of
-  the nearest non-prompt predecessor. The session checks retained keys
-  against ownership even if setup failed. A setup failure rejects new
-  insertions. An earlier prompt cancellation applies only to that prompt.
+  predecessors finish, takes the error of the nearest non-prompt
+  predecessor: failed setup rejects the prompt before insertion, while an
+  earlier cancelled prompt does not. Then it submits with the request's
+  reply, which the session owns from then on.
 - **Resume.** The reader reserves a cursor replay before starting any
   background work. A cursor received while an earlier resume or terminal
-  operation still owes session updates receives an invalid-request error.
-  The earlier operation must deliver its state snapshot or final turn
-  updates before its own response.
+  operation still owes conflicting updates receives acplause error `1001`.
+  A cursor arriving after the last update has been enqueued can wait
+  behind the operation for resource cleanup or lease release.
   Cursorless resumes continue to run in arrival order.
 - **Close and delete** interrupt active sessions and pending setup. An
   interrupting reservation cancels its predecessors and waits for them to
@@ -288,23 +289,23 @@ catalog and restoring happen after both are released.
   own binding snapshot (`modelRound`), so it is never redirected to a new
   server. Definition changes from `tools/list_changed` are revoked separately
   by `server.refresh`; there a call already admitted runs on.
-- **Replay.** The connection's `replayStreams` holds live updates by wire
-  session ID from request receipt. Its mutex protects registration and buffer
-  changes only. The worker takes the transcript cut under `Session.mu` before
-  acquisition or MCP setup. If acquisition restores another generation, its
-  private transcript supplies the cut instead. Immutable transcript entries
-  allow the worker to send history outside both locks.
-- After setup, the worker queues a current-state snapshot in live-update
-  order. It sends the selected history and one `replay_complete`, even for
-  empty history. It then drains buffered live updates and the state snapshot
-  before the response. Updates already represented by the cut are included
-  only in history. New permission requests and elicitations wait on the
-  replay's completion channel, with their turn context still cancellable.
-  Cursorless resumes send the current state directly.
-- A failed or cancelled replay returns its error and releases buffered live
-  events. It omits the marker if history delivery did not finish. A later
-  failure, such as losing ownership during cold publication, can follow a
-  successfully delivered marker.
+- **Replay.** The reader registers the cursor and reserves one ordinary writer
+  slot before looking up the session. The registry mutex orders registration
+  against the final enqueue of live updates and new permission or elicitation
+  requests. Calls relinquish unused capacity before waiting for replay. A
+  waiting live sender wakes on cursor registration and rechecks admission.
+- The worker takes a transcript cut under `Session.mu` and sends immutable
+  history entries outside that lock. Restoration replaces the cut with the
+  authoritative transcript. After setup the worker captures the current state
+  in live-event order. One reserved item commits the marker and owed live
+  updates before the resume response. Each message is a separate NDJSON
+  line. Cursorless resumes send their current state directly.
+- Overflow cancels the affected replay and uses its reserved item for the
+  error and all owed live events, including the trigger. Every history
+  enqueue checks the generation and cancellation again. The writer releases
+  charged frames, bytes and the completion reservation when it takes the
+  item. The limits and retry behavior are in
+  [ADR 0035](adr/0035-resume-write-and-replay-admission.md).
 - **Discontinuous ownership.** Acquisition marks the old session lost, cancels
   its turn and removes it from the map. The resume worker joins its cleanup outside the
   agent and session locks before queuing replacement state. With a cursor,
@@ -316,11 +317,12 @@ catalog and restoring happen after both are released.
   cancelled, the agent is shutting down or the session was lost meanwhile.
   On failure `Agent.resume` closes the restored session and releases its
   lease. Its activation stays pending while the success response waits in
-  the output queue. Immediately before its first write of that frame, the
-  single writer atomically activates the generation. This is the response
-  write boundary. The client may consume the bytes later. Close, deletion,
-  shutdown and lease loss invalidate a pending activation, so a queued
-  response cannot reactivate a detached generation.
+  the output queue. During the response's own write, prompt and config requests
+  reserve operations in reader order. Only a full successful write activates
+  the generation and releases the waiting operations. The writer only changes
+  atomic state and signals completion. Close, deletion, shutdown and lease
+  loss fence the generation. Staged key groups can be withdrawn before the
+  write finishes. Later requests can reuse a withdrawn key.
 
 ## Lease loss
 
@@ -328,16 +330,15 @@ Loss is detected at these points:
 
 - `Agent.renew`, every `store.LeaseRenewal`, under `ownershipMu`. For each
   lost ID, `Agent.dropLocked` revokes activation, records the loss under
-  `Agent.mu`, and cancels the operation chain
-  captured at the check. A resume reserved after the check is left alone so it
-  can restore the session. It then marks the session lost, drains `flushMu`
-  and closes it on a goroutine. A concurrent resume, close or shutdown can
-  still find and join that cleanup until the final update is queued.
+  `Agent.mu`, and cancels the operation chain captured at the check. A resume
+  reserved after the check can still restore the session. The agent drains
+  `flushMu` and starts close on a goroutine. Resume, close and shutdown can
+  join that cleanup until the old generation queues its final update.
 - `Session.flush`, `Session.claimTurn`, or a recorded retry receiving
   `store.ErrLost`, under `flushMu` and `Session.mu`. `Session.loseLocked`
-  atomically revokes activation, even while the session remains cached. A
-  prompt received during cold resume gets `-32002` with its session ID.
-  With no pending operation it receives the ownership error.
+  revokes activation while the session remains cached. A prompt received
+  during cold resume gets `-32002` with its session ID. With no pending
+  operation it receives the ownership error.
 - `Agent.acquire`, when the live session was not continuously owned.
 
 `Session.loseLocked` sets `lost`, cancels `Session.ctx` and closes MCP servers
@@ -355,16 +356,14 @@ process.
 `Conn.Close`. `Serve` returning cancels every pending request context, so
 queued prompts are withdrawn and waiting operations rejected. `Shutdown`:
 
-1. waits for the last queued model-selection save, which uses `Agent.ctx`;
-2. cancels `Agent.ctx`, the parent of every session context and operation;
-3. sets `shuttingDown` and empties the map under `Agent.mu`, so a
-   `session/new` or restored resume still in flight discards its session
-   instead of publishing it;
-4. closes every session and releases its lease in parallel. `Session.Close`
-   waits for the worker, so a running turn's final idle `cancelled` update is
-   queued before `Conn.Close` flushes the writer. The turn's last
-   `Session.flush` saves without cancellation;
-5. waits for `Agent.jobs`: `session/new`, `session/list`, session operations
-   and cleanup started by lease renewal.
+1. cancels `Agent.ctx`, the parent of every session context and operation;
+2. sets `shuttingDown` and empties the session map;
+3. closes sessions and releases their leases in parallel. Close joins each
+   worker and admitted save, including its final foreground updates;
+4. joins `Agent.jobs`, including cleanup started by lease renewal, then waits
+   for the last queued model-selection save.
+   Staged selection writes hold their arrival position until the config
+   operation succeeds or is withdrawn. Already accepted preferences can
+   finish saving after session cancellation.
 
 The store closes after `Shutdown` returns.

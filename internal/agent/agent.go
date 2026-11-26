@@ -111,7 +111,7 @@ func New(cfg Config, out Client, model Model, listModels ListModels) *Agent {
 	}
 	a := &Agent{
 		cfg:        cfg,
-		deps:       deps{replays: new(replayStreams), forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store, calibration: new(calibration)},
+		deps:       deps{replays: newReplayStreams(out), forms: new(atomic.Bool), out: out, model: model, maxRounds: maxRounds, readConcurrency: cfg.ReadConcurrency, mcpTimeout: mcpTimeout, turnTimeout: turnTimeout, maxTurnTokens: cfg.MaxTurnTokens, maxTurnCostUSD: cfg.MaxTurnCostUSD, tools: cfg.Tools, log: cfg.Log, store: cfg.Store, calibration: new(calibration)},
 		ctx:        ctx,
 		cancel:     cancel,
 		sessions:   make(map[string]*Session),
@@ -233,9 +233,6 @@ func (a *Agent) Methods() jsonrpc.Methods {
 
 // Shutdown cancels all work and closes every session.
 func (a *Agent) Shutdown() {
-	if saved := a.pendingSelection(); saved != nil {
-		<-saved
-	}
 	a.cancel()
 	a.mu.Lock()
 	a.shuttingDown = true
@@ -255,6 +252,9 @@ func (a *Agent) Shutdown() {
 	}
 	wg.Wait()
 	a.jobs.Wait()
+	if saved := a.pendingSelection(); saved != nil {
+		<-saved
+	}
 }
 
 // ready rejects session methods until initialize has succeeded.
@@ -364,6 +364,12 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 	return reply, nil
 }
 
+// rejectLater keeps the reader available even when ordinary output is full.
+func (a *Agent) rejectLater(reply *jsonrpc.Reply, err error) (any, error) {
+	a.jobs.Go(func() { reply.Reject(err) })
+	return reply, nil
+}
+
 func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) {
 	reply := jsonrpc.NewReply(ctx)
 	sub := &submission{ctx: ctx, prompt: req.Prompt, key: string(req.IdempotencyKey), reply: reply}
@@ -376,13 +382,15 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 	if s != nil {
 		activation = s.activation.Load()
 	}
-	if activation != activationActive || (previous != nil && previous.terminal) {
+	writing := activation == activationWriting
+	staged := writing || (previous != nil && previous.staged)
+	if (activation != activationActive && !writing) || (previous != nil && previous.terminal) {
 		lost := previous == nil && (activation == activationLost || a.lost[req.SessionID])
 		a.mu.Unlock()
 		if lost {
-			return nil, errSessionLost()
+			return a.rejectLater(reply, errSessionLost())
 		}
-		return nil, acp.ErrSessionNotFound(req.SessionID)
+		return a.rejectLater(reply, acp.ErrSessionNotFound(req.SessionID))
 	}
 	if sub.key != "" {
 		shared, group, first := a.prompts.join(ctx, promptIdentity{req.SessionID, sub.key}, reply)
@@ -391,34 +399,39 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 			return reply, nil
 		}
 		sub.ctx, sub.reply = shared, group
+		if staged {
+			group.setStaged(true)
+		}
 	}
 	a.mu.Unlock()
-	if previous == nil {
+	if previous == nil && !staged {
 		s.submit(sub, nil)
 		return reply, nil
 	}
 	op := a.reserveOperation(sub.ctx, req.SessionID, false, false)
 	op.prompt = true
+	op.staged = staged
 	op.reply = sub.reply
 	sub.ctx = op.ctx
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		if writing {
+			if err := s.awaitWritten(ctx); err != nil {
+				return err
+			}
+		}
 		// A prompt depends on the requested setup, not on whether an earlier
 		// prompt was cancelled. Failed setup must reject before insertion.
 		// The predecessor observed at receipt may have finished while the
 		// group was registered. Its result still applies to this prompt.
 		var setupErr error
 		for setup := previous; setup != nil; setup = setup.previous {
-			if !setup.prompt {
+			if !setup.prompt && !setup.config {
 				setupErr = setup.err
 				break
 			}
 		}
-		current, err := a.session(req.SessionID)
-		if err != nil {
+		if err := a.checkGeneration(s); err != nil {
 			return err
-		}
-		if current != s {
-			return errSessionLost()
 		}
 		s.submit(sub, setupErr)
 		return nil
@@ -477,26 +490,23 @@ func (a *Agent) resumeSession(ctx context.Context, req acp.ResumeSessionRequest)
 	if replay && req.ReplayFrom.Type != acp.ReplayFromStart {
 		return nil, acp.ErrInvalidParams("unsupported replayFrom type %q", req.ReplayFrom.Type)
 	}
+	var r *historyReplay
+	reply := jsonrpc.NewReply(ctx)
+	if replay {
+		var err error
+		r, err = a.deps.replays.begin(ctx, req.SessionID, reply)
+		if err != nil {
+			return a.rejectLater(reply, err)
+		}
+		ctx = r.ctx
+	}
 	a.mu.Lock()
 	live := a.sessions[req.SessionID]
-	pending := a.operations[req.SessionID]
 	a.mu.Unlock()
-	var r *historyReplay
-	if replay {
-		// A preceding resume owes its state snapshot. Close and delete can
-		// still owe the cancelled turn’s final updates before their response.
-		for op := pending; op != nil; op = op.previous {
-			if op.syncing.Load() {
-				return nil, jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "session synchronization or cleanup is pending")
-			}
-		}
-		r = a.deps.replays.begin(req.SessionID)
-		if r == nil {
-			return nil, jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "another replay is pending")
-		}
-	}
 	op := a.reserveOperation(ctx, req.SessionID, false, false)
-	op.syncing.Store(true)
+	if !replay {
+		op.owed = a.deps.replays.owe(req.SessionID)
+	}
 	op.replay = r
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		if op.replay != nil && live != nil {
@@ -521,23 +531,25 @@ func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest, op *se
 			}
 		}()
 	}
-	if err := s.syncResume(ctx, req.AdditionalDirectories, req.MCPServers, op.replay); err != nil {
+	if err := s.syncResume(ctx, req.AdditionalDirectories, req.MCPServers, op.replay, op.owed); err != nil {
 		return err
 	}
 	if r := op.replay; r != nil {
-		err = r.finish(true)
-		op.replay = nil
+		err = r.finish(ctx, nil)
 		if err != nil {
-			return jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot synchronize session: %v", err)
+			return err
 		}
+		op.replay = nil
 	}
+	op.owed.release()
 	var result any = acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()}
 	if restored {
+		s.written = make(chan struct{})
 		s.activation.Store(activationPending)
 		if err = a.publishRestored(ctx, s); err != nil {
 			return err
 		}
-		result = jsonrpc.BeforeWrite(result, s.activate)
+		result = jsonrpc.OnWrite(result, s.beginWrite, s.endWrite)
 	} else if ctx.Err() != nil || s.ctx.Err() != nil {
 		if s.isLost() {
 			return errSessionLost()
@@ -680,16 +692,17 @@ func (a *Agent) closeSession(ctx context.Context, req acp.CloseSessionRequest) (
 	if s == nil && previous == nil {
 		return acp.CloseSessionResponse{}, nil
 	}
-	if s != nil {
-		s.Cancel()
-	}
 	interrupt := s != nil || (previous != nil && !previous.terminal)
 	op := a.reserveOperation(ctx, req.SessionID, true, interrupt)
 	op.closing = true
+	a.closeAdmission(s, op)
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
 			s.Close()
+		}
+		op.owed.release()
+		if s != nil {
 			a.release(s)
 		}
 		if err := ctx.Err(); err != nil {
@@ -708,15 +721,14 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 	s := a.detachSessionLocked(req.SessionID)
 	delete(a.lost, req.SessionID)
 	a.mu.Unlock()
-	if s != nil {
-		s.Cancel()
-	}
 	op := a.reserveOperation(ctx, req.SessionID, true, true)
+	a.closeAdmission(s, op)
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		s = a.terminalSession(req.SessionID, s)
 		if s != nil {
 			s.Close()
 		}
+		op.owed.release()
 		if err := a.cfg.Store.Delete(ctx, req.SessionID); err != nil {
 			if s != nil {
 				a.release(s)
@@ -730,6 +742,18 @@ func (a *Agent) deleteSession(ctx context.Context, req acp.DeleteSessionRequest)
 		return nil
 	})
 	return op.reply, nil
+}
+
+// closeAdmission withdraws the queue on the reader. An earlier operation
+// already fences its own remaining output, even when it outlives this handler.
+func (a *Agent) closeAdmission(s *Session, op *sessionOperation) {
+	if s == nil {
+		return
+	}
+	if a.deps.replays != nil {
+		op.owed = a.deps.replays.owe(s.id)
+	}
+	s.sealOutput(op.owed)
 }
 
 // terminalSession catches a stored resume published between the handler's
@@ -754,6 +778,7 @@ func (a *Agent) detachSessionLocked(id string) *Session {
 	s := a.sessions[id]
 	if s != nil {
 		s.detachActivation()
+		s.activation.CompareAndSwap(activationActive, activationDetached)
 		delete(a.sessions, id)
 	}
 	return s
@@ -772,26 +797,63 @@ func (a *Agent) releaseID(id string) {
 	}
 }
 
-func (a *Agent) setConfigOption(_ context.Context, req acp.SetConfigOptionRequest) (any, error) {
-	s, err := a.session(req.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	// Session.mu may be held across a full writer queue, so do not wait for it
-	// under Agent.mu. Admission stays atomic: only read-loop handlers reserve
-	// setup, so none can start before Session.mu is taken, and a pending
-	// setup submits its prompts to the session queue before it leaves operations.
+func (a *Agent) setConfigOption(ctx context.Context, req acp.SetConfigOptionRequest) (any, error) {
 	a.mu.Lock()
-	setupPending := a.operations[req.SessionID] != nil
+	s := a.sessions[req.SessionID]
+	previous := a.operations[req.SessionID]
+	state := activationDetached
+	if s != nil {
+		state = s.activation.Load()
+	}
+	lost := previous == nil && (state == activationLost || a.lost[req.SessionID])
+	stage := state == activationWriting || (state == activationActive && previous != nil && previous.staged)
 	a.mu.Unlock()
-	if err = s.setConfigOption(req.ConfigID, req.Type, req.Value, setupPending); err != nil {
+	if stage {
+		op := a.reserveOperation(ctx, req.SessionID, false, false)
+		op.staged, op.config = true, true
+		var selection *modelSelection
+		if req.ConfigID == configModel || req.ConfigID == configEffort {
+			selection = new(modelSelection)
+			a.rememberSelection(op.done, selection)
+		}
+		a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+			if err := s.awaitWritten(ctx); err != nil {
+				return err
+			}
+			if err := a.checkGeneration(s); err != nil {
+				return err
+			}
+			result, err := a.applyConfigOption(ctx, s, req, false, selection)
+			if err == nil {
+				op.reply.Resolve(result)
+			}
+			return err
+		})
+		return op.reply, nil
+	}
+	if state != activationActive {
+		reply := jsonrpc.NewReply(ctx)
+		if lost {
+			return a.rejectLater(reply, errSessionLost())
+		}
+		return a.rejectLater(reply, acp.ErrSessionNotFound(req.SessionID))
+	}
+	return a.applyConfigOption(ctx, s, req, previous != nil, nil)
+}
+
+func (a *Agent) applyConfigOption(ctx context.Context, s *Session, req acp.SetConfigOptionRequest, setupPending bool, staged *modelSelection) (any, error) {
+	if err := s.setConfigOption(ctx, req.ConfigID, req.Type, req.Value, setupPending); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	model, effort := s.model, s.effort
-	s.mu.Unlock()
 	if req.ConfigID != configMode {
-		a.rememberSelection(model, effort)
+		s.mu.Lock()
+		choice := modelSelection{s.model, s.effort}
+		s.mu.Unlock()
+		if staged != nil {
+			*staged = choice
+		} else {
+			a.rememberSelection(nil, &choice)
+		}
 	}
 	return acp.SetConfigOptionResponse{ConfigOptions: s.ConfigOptions()}, nil
 }
@@ -804,9 +866,12 @@ func (a *Agent) pendingSelection() <-chan struct{} {
 	return a.selectionSaved
 }
 
+// modelSelection stays empty when a staged request is withdrawn before mutation.
+type modelSelection struct{ model, effort string }
+
 // rememberSelection queues writes in request order across all sessions.
 // Background session saves and resume never change this user preference.
-func (a *Agent) rememberSelection(model, effort string) {
+func (a *Agent) rememberSelection(ready <-chan struct{}, choice *modelSelection) {
 	done := make(chan struct{})
 	a.mu.Lock()
 	previous := a.selectionSaved
@@ -817,7 +882,13 @@ func (a *Agent) rememberSelection(model, effort string) {
 		if previous != nil {
 			<-previous
 		}
-		if err := a.cfg.Store.SetSelection(a.ctx, model, effort); err != nil {
+		if ready != nil {
+			<-ready
+		}
+		if choice.model == "" {
+			return
+		}
+		if err := a.cfg.Store.SetSelection(context.WithoutCancel(a.ctx), choice.model, choice.effort); err != nil {
 			a.cfg.Log.Warn("saving last model selection", "err", err)
 		}
 	}()
@@ -838,6 +909,15 @@ func (a *Agent) session(id string) (*Session, error) {
 		return nil, errSessionLost()
 	}
 	return nil, acp.ErrSessionNotFound(id)
+}
+
+// checkGeneration revalidates queued work before handing it to the session.
+func (a *Agent) checkGeneration(s *Session) error {
+	current, err := a.session(s.id)
+	if err == nil && current != s {
+		return errSessionLost()
+	}
+	return err
 }
 
 // Cursors are opaque to clients; inside they are list offsets.

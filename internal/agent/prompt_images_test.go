@@ -171,8 +171,11 @@ func TestImagePromptInsertion(t *testing.T) {
 			blocks := []acp.ContentBlock{imageBlock(t, img), imageBlock(t, testImage(t, 2, 3))}
 			wantText, wantTitle := "Image prompt", "Image prompt"
 			if withText {
-				text := "resource body"
-				blocks = append(blocks, acp.ContentBlock{Type: acp.ContentResource, Resource: &acp.Resource{URI: "file:///a", Text: &text}}, acp.Text("Explain these\nplease"))
+				var resource acp.ContentBlock
+				if err := json.Unmarshal([]byte(`{"type":"resource","resource":{"uri":"file:///a","text":"resource body"}}`), &resource); err != nil {
+					t.Fatal(err)
+				}
+				blocks = append(blocks, resource, acp.Text("Explain these\nplease"))
 				wantText, wantTitle = "<resource uri=\"file:///a\">\nresource body\n</resource>\n\nExplain these\nplease", "Explain these"
 			}
 			sub := &submission{ctx: context.Background(), prompt: blocks, reply: jsonrpc.NewReply(context.Background())}

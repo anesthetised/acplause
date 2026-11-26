@@ -673,3 +673,19 @@ func TestResumeAfterSavedDirectoryRemoved(t *testing.T) {
 	c.ok(acp.MethodSessionResume, resume([]string{}), nil)
 	c.untilIdle(res.SessionID)
 }
+
+// sessionAfterResponse is for internal inspection after receiving a cold
+// resume response. The pipe can deliver the bytes just before Write returns.
+func (c *acpClient) sessionAfterResponse(id string) (*Session, error) {
+	c.agent.mu.Lock()
+	s := c.agent.sessions[id]
+	c.agent.mu.Unlock()
+	if s != nil && s.written != nil {
+		select {
+		case <-s.written:
+		case <-c.t.Context().Done():
+			return nil, c.t.Context().Err()
+		}
+	}
+	return c.agent.session(id)
+}

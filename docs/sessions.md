@@ -54,6 +54,13 @@ Resuming a running session can replay partial messages and active tool calls.
 Changes to additional directories apply to subsequent tool calls; a call
 already running keeps its roots until it finishes.
 
+A cursor resume can return acplause error `1001` when an earlier operation
+still owes updates for that session. Retry after the earlier operation
+finishes. If live updates exceed the replay buffer, acplause returns a
+resume error, delivers the buffered live updates in order, and keeps the
+connection open. A fresh cursor can request history again.
+[ADR 0035](adr/0035-resume-write-and-replay-admission.md)
+
 ## Multiple windows and ownership
 
 Two editor windows can work on different sessions at the same time. Resuming

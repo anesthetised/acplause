@@ -29,6 +29,7 @@ type promptGroup struct {
 	owner      *pendingPrompts
 	id         promptIdentity
 	cancel     context.CancelFunc
+	staged     bool               // a writing cold response still owns admission
 	cancelSave context.CancelFunc // installed before insertion, guarded by owner.mu
 	waiters    []promptWaiter     // guarded by owner.mu
 }
@@ -66,8 +67,25 @@ func (g *promptGroup) cancelRequest() {
 	g.cancel()
 	g.owner.mu.Lock()
 	defer g.owner.mu.Unlock()
+	if g.staged {
+		g.detachLocked()
+	}
 	if g.cancelSave != nil {
 		g.cancelSave()
+	}
+}
+
+func (g *promptGroup) setStaged(staged bool) {
+	g.owner.mu.Lock()
+	defer g.owner.mu.Unlock()
+	g.staged = staged
+}
+
+func (g *promptGroup) detachStaged() {
+	g.owner.mu.Lock()
+	defer g.owner.mu.Unlock()
+	if g.staged {
+		g.detachLocked()
 	}
 }
 

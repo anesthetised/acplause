@@ -59,6 +59,7 @@ type Session struct {
 	cancel context.CancelFunc
 	budget *turnBudget // owned only by the worker during one accepted turn; never persisted
 
+	written       chan struct{} // closed when this cold response finishes writing
 	activation    atomic.Uint32 // cold-response delivery may race generation detachment
 	mu            sync.Mutex
 	dirs          []string
@@ -84,6 +85,8 @@ type Session struct {
 	closeOnce     sync.Once      // renewal, resume and close can join the same retiring generation
 	closed        bool
 
+	terminalOutput *outputObligation // close/delete awaits the final idle enqueue
+
 	// Private lookup and persistence indexes for inserted user messages, guarded by mu.
 	keys           map[string]string // key to client-visible message ID
 	transcriptKeys map[int]string    // transcript position to key
@@ -107,17 +110,46 @@ type Session struct {
 const (
 	activationActive uint32 = iota // new sessions and continuously owned live sessions
 	activationPending
+	activationWriting
 	activationDetached
 	activationLost
 )
 
-// activate is the successful cold response's writer callback. A close or
-// ownership loss that detached this generation makes the callback a no-op.
-func (s *Session) activate() { s.activation.CompareAndSwap(activationPending, activationActive) }
+// beginWrite permits staging against this generation while its response is in Write.
+func (s *Session) beginWrite() { s.activation.CompareAndSwap(activationPending, activationWriting) }
 
-// detachActivation invalidates any success frame still waiting in the writer.
+func (s *Session) endWrite(err error) {
+	next := activationActive
+	if err != nil {
+		next = activationDetached
+	}
+	s.activation.CompareAndSwap(activationWriting, next)
+	close(s.written)
+}
+
+func (s *Session) awaitWritten(ctx context.Context) error {
+	select {
+	case <-s.written:
+		if ctx.Err() == nil && s.activation.Load() == activationActive {
+			return nil
+		}
+	case <-s.ctx.Done():
+	case <-ctx.Done():
+	}
+	return acp.ErrRequestCancelled()
+}
+
+// detachActivation fences callbacks both before and during the response write.
 func (s *Session) detachActivation() {
-	s.activation.CompareAndSwap(activationPending, activationDetached)
+	for {
+		state := s.activation.Load()
+		if state != activationPending && state != activationWriting {
+			return
+		}
+		if s.activation.CompareAndSwap(state, activationDetached) {
+			return
+		}
+	}
 }
 
 // submission is a prompt waiting for insertion.
@@ -136,7 +168,7 @@ func newSession(parent context.Context, d deps, c *catalog, cwd string, dirs []s
 	}
 	ctx, cancel := context.WithCancel(parent)
 	if d.replays == nil {
-		d.replays = new(replayStreams)
+		d.replays = newReplayStreams(d.out)
 	}
 	s := &Session{
 		id:             newID(),
@@ -182,6 +214,9 @@ func (sub *submission) cancelled() bool {
 func (s *Session) submit(sub *submission, setupErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if g, ok := sub.reply.(*promptGroup); ok {
+		g.setStaged(false)
+	}
 	if s.closed {
 		sub.reply.Reject(acp.ErrRequestCancelled())
 		return
@@ -222,6 +257,10 @@ func (s *Session) submit(sub *submission, setupErr error) {
 func (s *Session) Cancel() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.cancelLocked()
+}
+
+func (s *Session) cancelLocked() {
 	if s.stopTurn != nil {
 		s.stopTurn()
 	}
@@ -253,6 +292,20 @@ func (s *Session) rejectQueuedLocked(queued []*submission) {
 	})
 }
 
+// sealOutput runs after detachment. Closing suppresses asynchronous save
+// notices. Only a claimed turn can still commit and publish its final updates.
+func (s *Session) sealOutput(owed *outputObligation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	s.cancelLocked()
+	if s.claimed {
+		s.terminalOutput = owed
+	} else {
+		owed.release()
+	}
+}
+
 // Close cancels all work, waits for the final updates of a running turn and
 // releases the session's resources.
 func (s *Session) Close() {
@@ -282,34 +335,38 @@ func (s *Session) close() {
 func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPServer, replay bool) error {
 	var r *historyReplay
 	if replay {
-		r = s.deps.replays.begin(s.id)
-		if r == nil {
-			return acp.ErrInvalidParams("another replay is pending")
+		var err error
+		r, err = s.deps.replays.begin(ctx, s.id, nil)
+		if err != nil {
+			return err
 		}
+		defer r.cancel()
+		ctx = r.ctx
 	}
-	err := s.syncResume(ctx, dirs, servers, r)
+	err := s.syncResume(ctx, dirs, servers, r, nil)
 	if r != nil {
-		return errors.Join(err, r.finish(err == nil))
+		return r.finish(ctx, err)
 	}
 	return err
 }
 
 // syncResume captures state in the same stream as live changes, so a newer
 // transition cannot be overwritten while the history is being delivered.
-func (s *Session) syncResume(ctx context.Context, dirs []string, servers []acp.MCPServer, r *historyReplay) error {
+func (s *Session) syncResume(ctx context.Context, dirs []string, servers []acp.MCPServer, r *historyReplay, owed *outputObligation) error {
 	if r != nil && r.session != s {
 		r.snapshot(s)
 	}
 	if err := s.configureResume(ctx, dirs, servers); err != nil {
 		return acp.ErrInvalidParams("cannot configure session: %v", err)
 	}
-	s.mu.Lock()
 	if r == nil {
+		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.notify(s.state)
+		return s.live(ctx, s.state, owed)
 	}
-	r.streams.hold(liveUpdate{session: s, update: s.state, snapshot: true})
-	s.mu.Unlock()
+	if err := r.stageState(s); err != nil {
+		return err
+	}
 	return r.write(ctx)
 }
 
@@ -403,13 +460,16 @@ func (s *Session) ConfigOptions() []acp.ConfigOption {
 // setConfigOption admits a mode change under mu, which fences queued prompts.
 // setupPending comes from Agent.mu; see Agent.setConfigOption for why the
 // two checks need not hold both locks.
-func (s *Session) setConfigOption(id, valueType string, raw json.RawMessage, setupPending bool) error {
+func (s *Session) setConfigOption(ctx context.Context, id, valueType string, raw json.RawMessage, setupPending bool) error {
 	var value string
 	if valueType != acp.ConfigValueID || json.Unmarshal(raw, &value) != nil {
 		return acp.ErrInvalidParams("%s takes an id value", id)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if ctx.Err() != nil || s.closed || s.lost || s.activation.Load() != activationActive {
+		return acp.ErrRequestCancelled()
+	}
 	switch id {
 	case configMode:
 		if value != modeBuild && value != modePlan {
@@ -479,6 +539,7 @@ func (s *Session) next() (*submission, context.Context) {
 	}
 	s.claimed = len(s.queue) > 0
 	if len(s.queue) == 0 {
+		s.terminalOutput.release() // a withdrawn claim can finish without an idle update
 		s.worker = nil
 		return nil, nil
 	}
@@ -527,7 +588,9 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	}
 	s.state = acp.StateUpdate{State: acp.StateIdle, StopReason: stop, Error: err}
 	s.claimed = false
-	s.send(s.state)
+	if err := s.live(context.Background(), s.state, s.terminalOutput); err != nil {
+		s.deps.log.Warn("dropping final state", "session", s.id, "err", err)
+	}
 	s.mu.Unlock()
 	if err != nil {
 		s.deps.log.Warn("turn failed", "session", s.id, "err", err)
@@ -625,10 +688,9 @@ func (s *Session) setState(u acp.StateUpdate) {
 // send requires s.mu so replay snapshots and live updates cannot interleave.
 // During a replay it queues u behind the snapshot instead.
 func (s *Session) send(u acp.Update) {
-	if s.deps.replays.hold(liveUpdate{session: s, update: u}) {
-		return
+	if err := s.live(context.Background(), u, nil); err != nil {
+		s.deps.log.Warn("dropping session update", "session", s.id, "err", err)
 	}
-	s.notify(u)
 }
 
 func (s *Session) notify(u acp.Update) error {

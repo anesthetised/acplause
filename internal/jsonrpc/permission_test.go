@@ -271,3 +271,28 @@ func TestWriterFailureWakesIdleReader(t *testing.T) {
 		}
 	})
 }
+
+func TestReplayDeferralReturnsUnusedQueueSlots(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, _, release := heldConn(t)
+		defer release()
+		for range 257 {
+			if err := c.Notify("fill", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := errors.New("replay won admission")
+		ctx := WithAdmission(t.Context(), func(func() error) error { return want })
+		done := permissionCall(ctx, c, "deferred")
+		synctest.Wait()
+		if len(c.cancels.slots) != 1 || len(c.calls) != 0 {
+			t.Fatal("permission was registered before ordinary capacity")
+		}
+		release()
+		expectCallError(t, done, want)
+		synctest.Wait()
+		if len(c.cancels.slots) != 0 || len(c.ordinary.slots) != 0 || len(c.calls) != 0 {
+			t.Fatal("deferral retained ordinary or cancellation capacity")
+		}
+	})
+}

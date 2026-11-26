@@ -158,7 +158,7 @@ func issue50RetakeDrainsOldSaves(t *testing.T, claim bool) {
 	if r := a.await(resumed); r.Error != nil {
 		t.Fatal(r.Error)
 	}
-	s, err := a.agent.session(old.id)
+	s, err := a.sessionAfterResponse(old.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestIssue50RetakeWaitsForRenewalResult(t *testing.T) {
 			t.Fatalf("pending renewal cancelled a later resume: %v", result.Error)
 		}
 	}
-	current, err := a.agent.session(old.id)
+	current, err := a.sessionAfterResponse(old.id)
 	if err != nil || current == old || current.isLost() {
 		t.Fatalf("old renewal result dropped the restored session: %v", err)
 	}
