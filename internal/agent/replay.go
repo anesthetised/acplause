@@ -48,6 +48,10 @@ type outputObligation struct {
 func (rs *replayStreams) owe(id string) *outputObligation {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
+	return rs.oweLocked(id)
+}
+
+func (rs *replayStreams) oweLocked(id string) *outputObligation {
 	if rs.owed == nil {
 		rs.owed = make(map[string]int)
 	}
@@ -105,9 +109,10 @@ type historyReplay struct {
 
 	// Guarded by streams.mu. err survives removal so stale workers can
 	// return the same failure without sending another response.
-	pending []liveUpdate
-	bytes   int
-	err     error
+	pending  []liveUpdate
+	bytes    int
+	err      error
+	followup *outputObligation // a successful setup warning still to be enqueued
 
 	// Only the resume worker captures and streams history.
 	session *Session
@@ -371,6 +376,30 @@ func finalUpdate(u acp.Update) bool {
 // finish commits either the marker or the request error together with all
 // owed live lines. A prior overflow already owns its response and reservation.
 func (r *historyReplay) finish(ctx context.Context, failure error) error {
+	deliver, err := r.settle(ctx, failure, nil)
+	return r.deliver(deliver, err)
+}
+
+// deliver reports synchronous client failures after the replay lock is released.
+func (r *historyReplay) deliver(deliver func() error, err error) error {
+	if deliver != nil {
+		if deliveryErr := deliver(); err == nil {
+			err = deliveryErr
+			if err != nil {
+				r.streams.mu.Lock()
+				r.err = err
+				r.followup.releaseLocked()
+				r.streams.mu.Unlock()
+			}
+		}
+	}
+	return err
+}
+
+// settle fences publication against overflow and explicit replay cancellation.
+// publish runs only for a live replay and reports whether setup owes a warning.
+// The caller delivers any in-process output after releasing its session lock.
+func (r *historyReplay) settle(ctx context.Context, failure error, publish func() (bool, error)) (func() error, error) {
 	var first liveUpdate
 	if failure == nil {
 		var err error
@@ -381,31 +410,32 @@ func (r *historyReplay) finish(ctx context.Context, failure error) error {
 	}
 	rs := r.streams
 	rs.mu.Lock()
+	defer rs.mu.Unlock()
 	if err := r.err; err != nil {
-		rs.mu.Unlock()
-		return err
+		return nil, err
 	}
 	if failure == nil && (ctx.Err() != nil || r.session.ctx.Err() != nil) {
 		failure = acp.ErrRequestCancelled()
+	}
+	if failure == nil && publish != nil {
+		var warning bool
+		warning, failure = publish()
+		if failure == nil && warning {
+			r.followup = rs.oweLocked(r.id)
+		}
 	}
 	if failure != nil {
 		r.err = failure
 		first = liveUpdate{}
 	}
 	deliver, err := r.finishLocked(first, liveUpdate{})
-	rs.mu.Unlock()
-	if deliver != nil {
-		err = deliver()
-		if err != nil {
-			rs.mu.Lock()
-			r.err = err
-			rs.mu.Unlock()
-		}
+	if err != nil {
+		r.followup.releaseLocked()
 	}
 	if failure != nil {
-		return failure
+		return deliver, failure
 	}
-	return err
+	return deliver, err
 }
 
 // finishLocked transfers tail ownership without an intervening enqueue. Only

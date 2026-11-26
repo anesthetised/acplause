@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anesthetised/acplause/internal/store"
 )
 
 func TestMCPResumeRevokesPendingPermission(t *testing.T) {
@@ -46,6 +48,43 @@ func TestMCPResumeRevokesPendingPermission(t *testing.T) {
 	msgs := llm.request(3).Messages
 	if !strings.Contains(msgs[len(msgs)-1]["content"].(string), `"label":"new"`) {
 		t.Fatal("did not use new config")
+	}
+}
+
+func TestMCPFailedReplacementRevokesPendingPermission(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(mcpCall(t, "alpha", "schedule_task", `{}`), reply("revoked"), reply("built-ins available"))
+	a := start(t, llm, askingUser)
+	a.initialize()
+	cwd := t.TempDir()
+	log := filepath.Join(cwd, "calls")
+	sid := mcpSession(t, a, cwd, mcpConfig("alpha", log, "old"))
+	a.accepted(a.prompt(sid, "call"))
+	permission := a.permissionRequest()
+	bad := mcpConfig("alpha", log, "failed replacement")
+	bad["command"] = filepath.Join(cwd, "missing-executable")
+	r := a.response(a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{bad}}))
+	if r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	a.answer(permission, selected(optionOfKind(t, permission, "allow_once")))
+	canceled := a.cancellation(permission)
+	warning := a.updateWhere(sid, func(u update) bool { return u.is("notice") })
+	const description = "Server 1 (stdio) could not launch server.\nThe session will use built-in tools."
+	if warning.seq <= r.seq || warning.Title != "MCP servers unavailable" || warning.Severity != "warning" || warning.Description != description {
+		t.Fatalf("resume warning at %d after response %d: %s %q, %q", warning.seq, r.seq, warning.Severity, warning.Title, warning.Description)
+	}
+	failed := a.updateWhere(sid, func(u update) bool { return u.Status == "failed" })
+	if canceled.seq <= permission.seq || failed.seq <= canceled.seq {
+		t.Fatalf("permission cancellation did not precede tool failure: request=%d cancel=%d failed=%d", permission.seq, canceled.seq, failed.seq)
+	}
+	a.updateWhere(sid, func(u update) bool { return u.is("state_update") && u.StopReason == "end_turn" })
+	a.accepted(a.prompt(sid, "continue"))
+	a.updateWhere(sid, func(u update) bool { return u.is("state_update") && u.StopReason == "end_turn" })
+	assertMCPSetupTools(t, llm.request(2), "")
+	if data, _ := os.ReadFile(log); len(data) != 0 {
+		t.Fatal("late approval dispatched to the old server")
 	}
 }
 
@@ -127,17 +166,26 @@ func TestMCPResumeRollbackAndOrdering(t *testing.T) {
 	cwd := t.TempDir()
 	log := filepath.Join(cwd, "calls")
 	sid := mcpSession(t, a, cwd, mcpConfig("alpha", log, "old"))
-	bad := mcpConfig("bad", log, "bad")
-	bad["command"] = filepath.Join(cwd, "missing-executable")
-	a.fails("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "additionalDirectories": []string{t.TempDir()}, "mcpServers": []any{mcpConfig("alpha", log, "candidate"), bad}}, -32602)
+	gate := filepath.Join(cwd, "gate")
+	slow := mcpConfig("slow", log, "slow")
+	slow["env"] = append(slow["env"].([]any), map[string]string{"name": "FIXTURE_GATE", "value": gate})
+	resume := a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "additionalDirectories": []string{t.TempDir()}, "mcpServers": []any{mcpConfig("alpha", log, "candidate"), slow}})
+	waitForFile(t, gate+".entered")
+	a.notify("$/cancel_request", map[string]any{"requestId": json.RawMessage(resume)})
+	if r := a.response(resume); r.Error == nil || r.Error.Code != -32800 {
+		t.Fatalf("interrupted setup did not cancel: %+v", r)
+	}
+	if err := os.WriteFile(gate, []byte("go"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	llm.enqueue(mcpCall(t, "alpha", "read_file", `{}`), reply("done"))
 	a.accepted(a.prompt(sid, "old config survived"))
 	a.untilIdle(sid)
 	msgs := llm.request(1).Messages
 	if !strings.Contains(msgs[len(msgs)-1]["content"].(string), `"label":"old"`) {
-		t.Fatal("partial setup replaced old connection")
+		t.Fatal("cancelled setup replaced old connection")
 	}
-	gate := filepath.Join(cwd, "gate")
+	gate = filepath.Join(cwd, "ordered-gate")
 	cfg := mcpConfig("alpha", log, "first")
 	cfg["env"] = append(cfg["env"].([]any), map[string]string{"name": "FIXTURE_GATE", "value": gate})
 	first := a.request("session/resume", map[string]any{"sessionId": sid, "cwd": cwd, "mcpServers": []any{cfg}})
@@ -162,6 +210,34 @@ func TestMCPResumeRollbackAndOrdering(t *testing.T) {
 	msgs = llm.request(3).Messages
 	if !strings.Contains(msgs[len(msgs)-1]["content"].(string), `"label":"last"`) {
 		t.Fatal("resume order was inverted")
+	}
+}
+
+func TestMCPResumeRejectsTakeoverDuringPreparation(t *testing.T) {
+	t.Parallel()
+	dir, cwd := t.TempDir(), t.TempDir()
+	llm := newMockLLM(t)
+	a := start(t, llm, withDataDir(dir))
+	a.initialize()
+	sid := mcpSession(t, a, cwd, mcpConfig("old", filepath.Join(cwd, "calls"), "old"))
+	resume, release := gatedReplay(t, a, sid, cwd)
+	other, err := store.Open(dir, "another-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if _, err := other.Acquire(t.Context(), sid); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	r := a.response(resume)
+	if r.Error == nil || r.Error.Code != -32603 || r.Error.Message != store.ErrLost.Error() {
+		t.Fatalf("resume after takeover: %+v", r)
+	}
+	a.expectQuiet(func(m *message) bool { return m.Method == "session/update" && sessionOf(m) == sid })
+	a.ok("session/close", map[string]any{"sessionId": sid}, nil)
+	if err := other.CheckOwner(t.Context(), sid); err != nil {
+		t.Fatalf("close affected the new owner's lease: %v", err)
 	}
 }
 

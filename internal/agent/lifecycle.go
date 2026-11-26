@@ -17,7 +17,7 @@ type sessionOperation struct {
 	previous *sessionOperation
 	done     chan struct{}
 	reply    requestReply
-	owed     *outputObligation // cursorless resume still owes its state update
+	owed     *outputObligation // state or a setup warning still needs admission
 	replay   *historyReplay    // released by the operation worker
 	staged   bool              // this admission belongs to a chain waiting on a cold write
 	config   bool

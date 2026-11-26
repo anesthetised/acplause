@@ -35,6 +35,21 @@ type preparedTool struct {
 	run            func(context.Context) toolOutput
 }
 
+// mcpPermissionContext lets JSON-RPC observe a revoked binding even when the
+// callback that wakes the permission waiter has not run yet.
+type mcpPermissionContext struct {
+	context.Context
+	binding context.Context
+	cancel  context.CancelFunc
+}
+
+func (c mcpPermissionContext) Err() error {
+	if c.binding.Err() != nil {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
 func (c *preparedTool) Preview(ctx context.Context) (*acp.ToolCallContent, error) {
 	if c.preview != nil {
 		return c.preview(ctx)
@@ -229,4 +244,26 @@ func mcpConfigs(servers []acp.MCPServer) []mcp.Config {
 		configs = append(configs, c)
 	}
 	return configs
+}
+
+// reportMCPSetup emits one live warning after the setup response has been queued.
+func (s *Session) reportMCPSetup(ctx context.Context, failures []mcp.SetupFailure, total int, owed *outputObligation) {
+	if len(failures) == 0 {
+		return
+	}
+	title := "MCP setup incomplete"
+	availability := "Connected MCP servers remain available."
+	if len(failures) == total {
+		title = "MCP servers unavailable"
+		availability = "The session will use built-in tools."
+	}
+	var detail strings.Builder
+	for _, f := range failures {
+		fmt.Fprintf(&detail, "Server %d (%s) %s.\n", f.Position, f.Transport, f.Reason)
+	}
+	detail.WriteString(availability)
+	notice := acp.Notice{Severity: "warning", Title: title, Description: detail.String()}
+	if err := s.live(ctx, notice, owed); err != nil {
+		s.deps.log.Debug("sending MCP setup notice", "err", err)
+	}
 }

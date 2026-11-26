@@ -219,9 +219,7 @@ func TestMCPHTTPDoesNotFollowRedirect(t *testing.T) {
 	defer m.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, err := m.Prepare(ctx, []Config{{Type: "http", Name: "s", URL: source.URL, Headers: map[string]string{"Authorization": "secret"}}}); err == nil {
-		t.Fatal("redirect accepted")
-	}
+	assertMCPSetupFailure(t, m, ctx, Config{Type: "http", Name: "s", URL: source.URL, Headers: map[string]string{"Authorization": "secret"}}, "could not initialize connection")
 	if leaked.Load() {
 		t.Fatal("credentials redirected")
 	}
@@ -246,9 +244,7 @@ func TestMCPHTTPRejectsSetupFailures(t *testing.T) {
 			defer m.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			if _, err := m.Prepare(ctx, []Config{{Type: "http", Name: "s", URL: srv.URL}}); err == nil {
-				t.Fatal("failed setup accepted")
-			}
+			assertMCPSetupFailure(t, m, ctx, Config{Type: "http", Name: "s", URL: srv.URL}, "could not initialize connection")
 		})
 	}
 }

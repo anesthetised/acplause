@@ -22,21 +22,36 @@ import (
 	"github.com/anesthetised/acplause/internal/store"
 )
 
-func TestFailedColdResumePreservesDirectories(t *testing.T) {
-	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
+func TestCancelledColdResumePreservesDirectories(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	peer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
 	}))
 	defer peer.Close()
+	defer close(release)
 	c := startAgent(t, t.TempDir(), make(scriptedModel), nil)
 	c.initialize()
 	cwd, oldDir, newDir := t.TempDir(), t.TempDir(), t.TempDir()
 	var created acp.NewSessionResponse
 	c.ok(acp.MethodSessionNew, map[string]any{"cwd": cwd, "additionalDirectories": []string{oldDir}}, &created)
 	c.ok(acp.MethodSessionClose, map[string]any{"sessionId": created.SessionID}, nil)
-	c.fails(acp.MethodSessionResume, map[string]any{
+	response := c.send(acp.MethodSessionResume, map[string]any{
 		"sessionId": created.SessionID, "cwd": cwd, "additionalDirectories": []string{newDir},
 		"mcpServers": []map[string]any{{"type": "http", "name": "bad", "url": peer.URL}},
-	}, -32602)
+	})
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resume did not connect to MCP peer")
+	}
+	c.notify(jsonrpc.CancelRequestMethod, map[string]any{"requestId": c.lastID()})
+	if r := c.await(response); r.Error == nil || r.Error.Code != -32800 {
+		t.Fatalf("resume did not cancel: %+v", r)
+	}
 	l, err := c.agent.cfg.Store.Acquire(context.Background(), created.SessionID)
 	if err != nil {
 		t.Fatal(err)

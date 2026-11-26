@@ -235,7 +235,17 @@ func TestReplayOverflowPreservesLiveStream(t *testing.T) {
 		}
 		s.finish("stop")
 	})
-	a, sid, cwd := started(t, llm)
+	a := start(t, llm)
+	a.initialize()
+	cwd := t.TempDir()
+	old := mcpConfig("previous", filepath.Join(cwd, "calls"), "before replay")
+	pidFile := filepath.Join(cwd, "pid")
+	old["env"] = append(old["env"].([]any), map[string]string{"name": "FIXTURE_PID", "value": pidFile})
+	sid := mcpSession(t, a, cwd, old)
+	pid, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	a.accepted(a.prompt(sid, "stream"))
 	for !a.nextUpdate(sid).is("agent_message_chunk") {
 	}
@@ -267,6 +277,9 @@ func TestReplayOverflowPreservesLiveStream(t *testing.T) {
 		t.Fatalf("live metadata after replay overflow: %+v", info)
 	}
 	a.ok("session/resume", params, nil)
+	if got, err := os.ReadFile(pidFile); err != nil || string(got) != string(pid) {
+		t.Fatalf("overflow retired the previous MCP process: pid %q -> %q, %v", pid, got, err)
+	}
 	retry := a.untilIdle(sid)
 	answers := filter(retry, "agent_message")
 	if len(filter(retry, "replay_complete")) != 1 || len(answers) != 1 || answers[0].text() != "start"+want.String() {

@@ -372,6 +372,12 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 			reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot store the session: %v", err))
 			return
 		}
+		failures := change.Failures()
+		var owed *outputObligation
+		if len(failures) != 0 {
+			owed = a.deps.replays.owe(s.id)
+			defer owed.release()
+		}
 		a.mu.Lock()
 		if a.shuttingDown || ctx.Err() != nil || a.ctx.Err() != nil {
 			a.mu.Unlock()
@@ -385,9 +391,14 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 			reply.Reject(acp.ErrRequestCancelled())
 			return
 		}
+		if owed != nil {
+			s.setupOutput.Add(1)
+			defer s.setupOutput.Done()
+		}
 		a.sessions[s.id] = s
 		a.mu.Unlock()
 		reply.Resolve(acp.NewSessionResponse{SessionID: s.id, ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()})
+		s.reportMCPSetup(a.ctx, failures, len(req.MCPServers), owed)
 	}()
 	return reply, nil
 }
@@ -560,17 +571,18 @@ func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest, op *se
 			}
 		}()
 	}
-	if err := s.syncResume(ctx, req.AdditionalDirectories, req.MCPServers, op.replay, op.owed); err != nil {
+	var guard func(func() error) error
+	if !restored {
+		guard = func(publish func() error) error { return a.publishWarm(ctx, s, publish) }
+	}
+	failures, err := s.syncResume(ctx, req.AdditionalDirectories, req.MCPServers, op.replay, op.owed, guard)
+	if err != nil {
 		return err
 	}
 	if r := op.replay; r != nil {
-		err = r.finish(ctx, nil)
-		if err != nil {
-			return err
-		}
+		op.owed = r.followup
 		op.replay = nil
 	}
-	op.owed.release()
 	var result any = acp.ResumeSessionResponse{ConfigOptions: s.ConfigOptions(), AvailableCommands: availableCommands()}
 	if restored {
 		s.written = make(chan struct{})
@@ -579,14 +591,33 @@ func (a *Agent) resume(ctx context.Context, req acp.ResumeSessionRequest, op *se
 			return err
 		}
 		result = jsonrpc.OnWrite(result, s.beginWrite, s.endWrite)
-	} else if ctx.Err() != nil || s.ctx.Err() != nil {
-		if s.isLost() {
-			return errSessionLost()
-		}
-		return acp.ErrRequestCancelled()
 	}
-	op.resolveSetup(result)
+	if len(failures) == 0 {
+		op.resolveSetup(result)
+	} else {
+		op.reply.Resolve(result)
+		s.reportMCPSetup(a.ctx, failures, len(req.MCPServers), op.owed)
+	}
 	return nil
+}
+
+// publishWarm verifies durable ownership after preparation, while renewal and
+// local reacquisition are fenced. The prepared change has no effect on loss.
+func (a *Agent) publishWarm(ctx context.Context, s *Session, publish func() error) error {
+	a.ownershipMu.Lock()
+	defer a.ownershipMu.Unlock()
+	err := a.cfg.Store.CheckOwner(ctx, s.id)
+	switch {
+	case errors.Is(err, store.ErrLost):
+		// This operation returns the ownership error itself. Keep later
+		// reservations intact so another resume can reacquire the session.
+		a.dropLocked(s.id, nil)
+		return errSessionLost()
+	case err != nil:
+		return jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot verify session ownership: %v", err)
+	default:
+		return publish()
+	}
 }
 
 // publishRestored fences publication and the first save against lease renewal.

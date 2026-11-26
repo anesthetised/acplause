@@ -96,11 +96,21 @@ func TestMCPHelper(t *testing.T) {
 }
 
 func TestMCPFailedCommitDefersProcessCleanup(t *testing.T) {
-	m := New(context.Background(), t.TempDir(), nil)
+	m := New(t.Context(), t.TempDir(), nil)
 	defer m.Close()
-	ctx, cancel := context.WithCancel(context.Background())
+	cfg := helperConfig(t, "fixture")
+	old, err := m.Prepare(t.Context(), []Config{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Discard()
+	if err := old.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	oldBinding := m.Snapshot()[0]
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	cfg := helperConfig(t, "stubborn")
+	cfg = helperConfig(t, "fixture")
 	cfg.Env["ACPLAUSE_MCP_CASE"] = "stubborn"
 	change, err := m.Prepare(ctx, []Config{cfg})
 	if err != nil {
@@ -120,6 +130,75 @@ func TestMCPFailedCommitDefersProcessCleanup(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("publication blocked on process cleanup")
 	}
+	change.Discard()
+	if got := m.Snapshot(); len(got) != 2 || got[0].Context() != oldBinding.Context() || oldBinding.Context().Err() != nil {
+		t.Fatal("cancelled commit changed the previous catalog")
+	}
+	if candidate := change.entries[0].server; candidate.peer.ctx.Err() == nil {
+		t.Fatal("discarded candidate still alive")
+	}
+}
+
+func TestMCPCommitsSuccessfulSubset(t *testing.T) {
+	m := New(t.Context(), t.TempDir(), nil)
+	defer m.Close()
+	good := helperConfig(t, "good")
+	bad := helperConfig(t, "bad")
+	bad.Env["ACPLAUSE_MCP_CASE"] = "duplicate"
+	change, err := m.Prepare(t.Context(), []Config{bad, good})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer change.Discard()
+	if len(m.Snapshot()) != 0 {
+		t.Fatal("prepare published a catalog")
+	}
+	if err := change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := change.Failures(), (SetupFailure{1, "stdio", "could not discover tools"}); len(got) != 1 || got[0] != want {
+		t.Fatalf("setup failures: %+v, want %+v", got, want)
+	}
+	tools := m.Snapshot()
+	if len(tools) != 2 || tools[0].Server != "good" || tools[1].Server != "good" {
+		t.Fatalf("published tools: %+v", tools)
+	}
+	change, err = m.Prepare(t.Context(), []Config{good, bad})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer change.Discard()
+	if err := change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Snapshot(); len(got) != len(tools) || got[0].Context() != tools[0].Context() || got[0].Context().Err() != nil {
+		t.Fatalf("unchanged healthy binding was replaced: %+v", got)
+	}
+	bad.Name = good.Name
+	assertMCPSetupFailure(t, m, t.Context(), bad, "could not discover tools")
+	if tools[0].Context().Err() == nil {
+		t.Fatal("failed replacement left the previous binding live")
+	}
+}
+
+func TestMCPDoesNotPublishConnectionLostBeforeCommit(t *testing.T) {
+	m := New(t.Context(), t.TempDir(), nil)
+	defer m.Close()
+	change, err := m.Prepare(t.Context(), []Config{helperConfig(t, "lost")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer change.Discard()
+	change.entries[0].server.peer.fail(errors.New("private connection failure"))
+	if err := change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Snapshot()) != 0 {
+		t.Fatal("commit published a disconnected candidate")
+	}
+	if got, want := change.Failures(), (SetupFailure{1, "stdio", "connection closed during setup"}); len(got) != 1 || got[0] != want {
+		t.Fatalf("setup failures: %+v, want %+v", got, want)
+	}
 }
 
 func TestMCPRejectsInvalidDiscovery(t *testing.T) {
@@ -131,13 +210,30 @@ func TestMCPRejectsInvalidDiscovery(t *testing.T) {
 			cfg.Env["ACPLAUSE_MCP_CASE"] = variant
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			if _, err := m.Prepare(ctx, []Config{cfg}); err == nil {
-				t.Fatal("invalid discovery accepted")
+			reason := "could not discover tools"
+			if variant == "version" {
+				reason = "could not initialize connection"
 			}
-			if len(m.Snapshot()) != 0 {
-				t.Fatal("failed discovery published a partial catalog")
-			}
+			assertMCPSetupFailure(t, m, ctx, cfg, reason)
 		})
+	}
+}
+
+func assertMCPSetupFailure(t *testing.T, m *Manager, ctx context.Context, cfg Config, reason string) {
+	t.Helper()
+	change, err := m.Prepare(ctx, []Config{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer change.Discard()
+	if err := change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := change.Failures(), (SetupFailure{1, cfg.Type, reason}); len(got) != 1 || got[0] != want {
+		t.Fatalf("setup failures: %+v, want %+v", got, want)
+	}
+	if len(m.Snapshot()) != 0 {
+		t.Fatal("failed setup published a catalog")
 	}
 }
 

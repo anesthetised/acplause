@@ -29,6 +29,7 @@ HTTP headers precedence over configured values.
 
 Clients that relied on silent skipping must remove unsupported peers and
 retry. The error arrives before any supported peer in the same list connects.
-Connection failures after validation follow the transactional setup policy
-in ADR 0007. Package and stdio tests exercise both setup methods and HTTP
-header precedence. [Stdio regression](../../e2e/mcp_setup_validation_test.go)
+Connection failures after validation follow the partial setup policy in
+[ADR 0038](0038-partial-mcp-setup.md). Package and stdio tests exercise both
+setup methods and HTTP header precedence.
+[Stdio regression](../../e2e/mcp_setup_validation_test.go)

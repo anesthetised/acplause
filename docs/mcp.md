@@ -84,10 +84,17 @@ replacement, session close/delete and ownership loss still stop it. Admission
 does not imply that the remote server received or completed the operation.
 
 Resume replaces the entire MCP configuration; an omitted or empty list
-removes all servers. Healthy unchanged connections are reused. Failed setup
-preserves the previous configuration; later prompts wait for setup before
-insertion. Changed/removed connections invalidate earlier model tool
-bindings, so an old approval cannot invoke a replacement endpoint. Configs,
+removes all servers. Healthy unchanged connections are reused. Both new and
+resumed sessions proceed with peers that complete setup, and built-in tools
+remain available if all peers fail. If a peer fails, the agent sends one live
+warning after successful setup, identifying failed entries by their one-based
+position and transport. The notice is excluded from history and replay.
+
+On a committed resume, removed and replaced connections are revoked and
+closed, even if a replacement fails. A pending approval for a revoked tool is
+cancelled, and a late approval cannot invoke it. Cancellation or session
+invalidation before commit preserves the prior configuration and closes
+candidates. Later prompts wait for setup before insertion. Configs,
 environment values, headers and upstream session IDs are kept in memory.
 Tool results follow the normal conversation storage policy.
 
