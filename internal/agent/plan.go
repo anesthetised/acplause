@@ -87,6 +87,29 @@ func (s *Session) updatePlan(ctx context.Context, entries []acp.PlanEntry) (stri
 	return s.planID, nil
 }
 
+// removeUnfinishedPlan saves the current turn's removal before publishing
+// it. The worker holds s.mu on entry and return, with the lock released
+// while waiting for the save.
+func (s *Session) removeUnfinishedPlan() {
+	if s.planID == "" {
+		return
+	}
+	i := s.planIndex[s.planID]
+	p := s.transcript[i].(acp.PlanUpdate)
+	if !slices.ContainsFunc(p.Plan.Entries, func(e acp.PlanEntry) bool {
+		return e.Status == "pending" || e.Status == "in_progress"
+	}) {
+		return
+	}
+	u := acp.PlanRemoved{PlanID: s.planID}
+	if !s.savePlanRemoval(i, u) {
+		return
+	}
+	s.planID = ""
+	s.transcript[i] = u
+	s.send(u)
+}
+
 // validatePlan applies ADR 0012's model-input limits, not restrictions on
 // historical ACP snapshots, which may contain future values or no entries.
 func validatePlan(entries []acp.PlanEntry) error {

@@ -147,13 +147,21 @@ At most one entry may be in progress; each entry has nonblank content of up to
 
 The agent assigns one plan ID per accepted user turn and returns it in the
 tool result. Later updates in that turn reuse it; later turns create new plans.
-Resume replays the latest snapshot of each plan at its original conversation
-position. Cancellation, errors and restarts preserve unfinished statuses.
+Explicitly cancelling a turn with `session/cancel` removes that turn's plan
+if any entry is pending or in progress and the removal saves successfully.
+The agent saves the removal before reporting it to the client. If that save
+fails, the turn still ends as cancelled and the plan stays visible. Completed
+plans and plans from earlier turns stay visible. Close, disconnect, deadlines,
+provider errors and restarts preserve the last saved plan on their own.
+History replay sends the latest snapshot or removal at the plan's original
+conversation position.
+[ADR 0041](adr/0041-remove-explicitly-cancelled-plans.md)
+
 Plans report progress without executing commands, changing files or asking
-permission, and require no optional client capability. See
-[ADR 0012](adr/0012-structured-plans.md). Automated tests cover the protocol;
-native T3 plan replacement, Plan/Build selection and plan replay after restart
-were verified in the [runtime smoke record](testing/t3-first-class-smoke.md).
+permission, and require no optional client capability. The T3 runtime smoke
+record covers native plan replacement, Plan/Build selection and plan replay
+after restart. [ADR 0012](adr/0012-structured-plans.md) ·
+[T3 runtime smoke record](testing/t3-first-class-smoke.md)
 
 ## Context compaction
 

@@ -80,7 +80,7 @@ type Session struct {
 	queue         []*submission   // prompts not yet inserted
 	worker        chan struct{}   // closed when the running worker exits; nil when idle
 	claimed       bool            // a prompt left the queue and its turn has not ended
-	stopTurn      context.CancelFunc
+	stopTurn      context.CancelCauseFunc
 	rejections    sync.WaitGroup // queued replies detached under mu, settled before Close returns
 	closeOnce     sync.Once      // renewal, resume and close can join the same retiring generation
 	closed        bool
@@ -261,16 +261,18 @@ func (s *Session) submit(sub *submission, setupErr error) {
 	}
 }
 
-// Cancel stops the running turn and drops queued prompts.
+var errSessionCancel = errors.New("explicit session cancellation")
+
+// Cancel handles session/cancel for the running turn and queued prompts.
 func (s *Session) Cancel() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cancelLocked()
+	s.cancelLocked(errSessionCancel)
 }
 
-func (s *Session) cancelLocked() {
+func (s *Session) cancelLocked(cause error) {
 	if s.stopTurn != nil {
-		s.stopTurn()
+		s.stopTurn(cause)
 	}
 	s.rejectSubmissionsLocked(acp.ErrRequestCancelled(), s.queue...)
 	s.queue = nil
@@ -316,7 +318,7 @@ func (s *Session) sealOutputLocked() {
 		s.terminalOutput = s.deps.replays.owe(s.id)
 	}
 	s.closed = true
-	s.cancelLocked()
+	s.cancelLocked(nil)
 }
 
 // Close cancels all work, waits for the final updates of a running turn and
@@ -330,9 +332,9 @@ func (s *Session) close() {
 	s.mu.Lock()
 	s.closed = true
 	worker := s.worker
+	s.cancelLocked(nil)
 	s.mu.Unlock()
 
-	s.Cancel()
 	s.mcp.Close()
 	if worker != nil {
 		<-worker
@@ -550,7 +552,7 @@ func (s *Session) next() (*submission, context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopTurn != nil {
-		s.stopTurn()
+		s.stopTurn(nil)
 		s.stopTurn = nil
 	}
 	s.claimed = len(s.queue) > 0
@@ -562,7 +564,7 @@ func (s *Session) next() (*submission, context.Context) {
 	sub := s.queue[0]
 	s.queue = s.queue[1:]
 	sub.stopWatch()
-	ctx, cancel := context.WithCancel(s.ctx)
+	ctx, cancel := context.WithCancelCause(s.ctx)
 	s.stopTurn = cancel
 	return sub, ctx
 }
@@ -595,6 +597,9 @@ func (s *Session) runTurn(ctx context.Context, sub *submission) {
 	s.mu.Lock()
 	if ctx.Err() != nil || outer.Err() != nil {
 		stop, err = acp.StopCancelled, nil
+		if context.Cause(ctx) == errSessionCancel && !s.lost {
+			s.removeUnfinishedPlan()
+		}
 		if context.Cause(ctx) == errTurnTimeout && outer.Err() == nil && !s.closed && !s.lost {
 			s.send(acp.Notice{
 				Severity: "warning", Title: "Turn time limit reached",
