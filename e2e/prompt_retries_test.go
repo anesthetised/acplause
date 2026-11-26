@@ -175,7 +175,7 @@ func TestKeyedCancellationBeforeAndAfterSettlement(t *testing.T) {
 	}
 }
 
-func TestRetainedRetrySurvivesFailedReconfiguration(t *testing.T) {
+func TestRetainedRetrySurvivesCancelledReconfiguration(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
 	llm.enqueue(reply("done"))
@@ -206,9 +206,9 @@ func TestRetainedRetrySurvivesFailedReconfiguration(t *testing.T) {
 	}
 	retry, fresh := prompt("retained"), prompt("new")
 	a.fails("_test/barrier", nil, -32601)
-	unblock()
+	a.notify("$/cancel_request", map[string]any{"requestId": requestID(t, resume)})
 	for _, id := range []string{resume, fresh} {
-		if r := a.response(id); r.Error == nil || r.Error.Code != -32602 {
+		if r := a.response(id); r.Error == nil || r.Error.Code != -32800 {
 			t.Fatalf("request %s: %+v", id, r)
 		}
 	}

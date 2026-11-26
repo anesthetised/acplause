@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -95,10 +94,24 @@ type server struct {
 
 func (s *server) close() { s.peer.fail(errClosed); _ = s.peer.t.Close() }
 
+// Only fixed setup errors may cross into user-visible warnings. Transport and
+// protocol errors can contain credentials, endpoint details or arbitrary text.
+var (
+	errSetupLaunch       = errors.New("could not launch server")
+	errSetupInitialize   = errors.New("could not initialize connection")
+	errSetupDiscovery    = errors.New("could not discover tools")
+	errSetupTimeout      = errors.New("setup timed out")
+	errSetupDisconnected = errors.New("connection closed during setup")
+)
+
 func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *slog.Logger) (*server, error) {
+	if ctx.Err() != nil {
+		return nil, errSetupTimeout
+	}
 	p := newPeer(lifetime)
-	if err := p.ctx.Err(); err != nil {
-		return nil, err
+	if p.ctx.Err() != nil {
+		p.cancel()
+		return nil, errSetupDisconnected
 	}
 	// Initialization has a setup deadline; the live connection belongs to the
 	// session context, not to the completed session/new request.
@@ -116,7 +129,7 @@ func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *s
 	}
 	if err != nil {
 		p.cancel()
-		return nil, err
+		return nil, errSetupLaunch
 	}
 	p.t = t
 	switch t := t.(type) {
@@ -127,18 +140,28 @@ func connectServer(ctx, lifetime context.Context, cfg Config, cwd string, log *s
 		t.start()
 	}
 	s := &server{cfg: cfg, peer: p, log: log}
+	failure := errSetupInitialize
 	s.hasTools, err = p.initialize(ctx)
 	if err == nil {
+		failure = errSetupDiscovery
 		discovery, cancel := context.WithTimeout(ctx, discoveryTimeout)
 		err = s.refresh(discovery)
 		cancel()
 	}
-	if err != nil {
-		s.close()
-		return nil, err
+	stop()
+	switch {
+	case ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded):
+		failure = errSetupTimeout
+	case err != nil:
+		// Keep the fixed reason for the failed setup step.
+	case p.ctx.Err() != nil:
+		failure = errSetupDisconnected
+	default:
+		go s.watch()
+		return s, nil
 	}
-	go s.watch()
-	return s, nil
+	s.close()
+	return nil, failure
 }
 func (s *server) watch() {
 	for {
@@ -275,18 +298,46 @@ func New(parent context.Context, cwd string, log *slog.Logger) *Manager {
 // Change is an unpublished configuration whose new resources must be committed
 // or discarded. Existing resources remain usable until publication.
 type Change struct {
-	manager          *Manager
-	ctx              context.Context
-	revision         uint64
-	servers, created []*server
-	settled          bool
+	manager  *Manager
+	ctx      context.Context
+	revision uint64
+	entries  []setupEntry
+	settled  bool
+}
+
+type setupEntry struct {
+	server  *server
+	config  Config
+	failure error
+	created bool
+}
+
+// SetupFailure identifies a failed peer by its one-based configuration position
+// and transport. Reason contains fixed text suitable for a client notice.
+type SetupFailure struct {
+	Position          int
+	Transport, Reason string
+}
+
+// Failures reports the omitted entries in input order after a successful commit.
+func (c *Change) Failures() []SetupFailure {
+	var failures []SetupFailure
+	for i, e := range c.entries {
+		if e.failure != nil {
+			failures = append(failures, SetupFailure{i + 1, e.config.Type, e.failure.Error()})
+		}
+	}
+	return failures
 }
 
 // Prepare connects new servers without changing the active configuration.
+// Each peer has its own result within the shared concurrency and time budget.
 func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error) {
 	requestCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	stop := context.AfterFunc(m.ctx, cancel)
+	defer stop()
 	m.mu.Lock()
 	old := slices.Clone(m.servers)
 	revision, closed := m.revision, m.closed
@@ -303,10 +354,8 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 	if len(configs) > 16 {
 		return nil, errors.New("at most 16 MCP servers are supported")
 	}
-	change := &Change{manager: m, ctx: requestCtx, revision: revision, servers: make([]*server, len(configs))}
-	var mu sync.Mutex
+	change := &Change{manager: m, ctx: requestCtx, revision: revision, entries: make([]setupEntry, len(configs))}
 	var wg sync.WaitGroup
-	var first error
 	sem := make(chan struct{}, 4)
 	for _, cfg := range configs {
 		if cfg.Type != "stdio" && cfg.Type != "http" {
@@ -314,15 +363,15 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 		}
 	}
 	for i, cfg := range configs {
-		var found *server
+		entry := &change.entries[i]
+		entry.config = cfg
 		for _, s := range old {
 			if sameConfig(cfg, s.cfg) && s.peer.ctx.Err() == nil {
-				found = s
+				entry.server = s
 				break
 			}
 		}
-		if found != nil {
-			change.servers[i] = found
+		if entry.server != nil {
 			continue
 		}
 		wg.Go(func() {
@@ -330,52 +379,45 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				mu.Lock()
-				if first == nil {
-					first = ctx.Err()
-				}
-				mu.Unlock()
+				entry.failure = errSetupTimeout
 				return
 			}
 			s, err := connectServer(ctx, m.ctx, cfg, m.cwd, m.log)
-			mu.Lock()
-			defer mu.Unlock()
 			if err != nil {
-				if first == nil {
-					first = fmt.Errorf("MCP server %q: %w", cfg.Name, err)
-					cancel()
-				}
+				entry.failure = err
 				return
 			}
 			m.mu.Lock()
 			m.resources[s] = true
 			m.mu.Unlock()
-			change.servers[i] = s
-			change.created = append(change.created, s)
+			entry.server, entry.created = s, true
 		})
 	}
 	wg.Wait()
-	if first != nil || ctx.Err() != nil {
+	if err := requestCtx.Err(); err != nil {
 		change.Discard()
-		if first != nil {
-			return nil, first
-		}
-		return nil, ctx.Err()
+		return nil, err
+	}
+	if m.ctx.Err() != nil {
+		change.Discard()
+		return nil, errClosed
 	}
 	seen := map[string]bool{}
-	for _, s := range change.servers {
+	for _, e := range change.entries {
+		s := e.server
+		if s == nil {
+			continue
+		}
 		s.mu.Lock()
 		for _, t := range s.tools {
 			if seen[t.Name] {
-				first = errors.New("MCP tool alias collision")
+				s.mu.Unlock()
+				change.Discard()
+				return nil, errors.New("MCP tool alias collision")
 			}
 			seen[t.Name] = true
 		}
 		s.mu.Unlock()
-	}
-	if first != nil {
-		change.Discard()
-		return nil, first
 	}
 	return change, nil
 }
@@ -385,35 +427,53 @@ func (m *Manager) Prepare(ctx context.Context, configs []Config) (*Change, error
 func (c *Change) Commit() error {
 	m := c.manager
 	m.mu.Lock()
-	if c.settled || m.closed || m.revision != c.revision || c.ctx.Err() != nil {
-		m.mu.Unlock()
+	defer m.mu.Unlock()
+	if c.settled || m.closed || m.revision != c.revision || m.ctx.Err() != nil || c.ctx.Err() != nil {
 		return errClosed
 	}
 	// Recovery may replace a borrowed connection during preparation without
 	// changing desired configuration. Keep its current generation, never put
 	// the retired connection back or invalidate a valid resume for recovery.
-	for i, s := range c.servers {
-		if slices.Contains(c.created, s) || slices.Contains(m.servers, s) {
-			continue
-		}
-		for _, current := range m.servers {
-			if sameConfig(current.cfg, s.cfg) {
-				c.servers[i] = current
-				break
+	next := make([]*server, 0, len(c.entries))
+	for i := range c.entries {
+		e := &c.entries[i]
+		s := e.server
+		if s == nil || s.peer.ctx.Err() != nil || (!e.created && !slices.Contains(m.servers, s)) {
+			for _, current := range m.servers {
+				if current.peer.ctx.Err() == nil && sameConfig(current.cfg, e.config) {
+					s = current
+					break
+				}
 			}
 		}
+		if s == nil {
+			continue
+		}
+		if s.peer.ctx.Err() != nil {
+			e.failure = errSetupDisconnected
+			continue
+		}
+		e.failure = nil
+		next = append(next, s)
+	}
+	if m.ctx.Err() != nil || c.ctx.Err() != nil {
+		return errClosed
 	}
 	old := m.servers
-	m.servers = c.servers
+	m.servers = next
 	m.revision++
 	c.settled = true
 	for _, s := range old {
-		if !slices.Contains(c.servers, s) {
+		if !slices.Contains(next, s) {
 			s.peer.fail(errors.New("MCP configuration changed; operation outcome may be unknown"))
 			go m.closeResource(s)
 		}
 	}
-	m.mu.Unlock()
+	for _, e := range c.entries {
+		if e.created && !slices.Contains(next, e.server) {
+			go m.closeResource(e.server)
+		}
+	}
 	return nil
 }
 
@@ -424,8 +484,10 @@ func (c *Change) Discard() {
 	}
 	c.settled = true
 	var wg sync.WaitGroup
-	for _, s := range c.created {
-		wg.Go(func() { c.manager.closeResource(s) })
+	for _, e := range c.entries {
+		if e.created {
+			wg.Go(func() { c.manager.closeResource(e.server) })
+		}
 	}
 	wg.Wait()
 }

@@ -463,10 +463,10 @@ func TestNewSessionFailures(t *testing.T) {
 		c.initialize()
 		c.fails(acp.MethodSessionNew, map[string]any{"cwd": filepath.Join(t.TempDir(), "missing"), "mcpServers": []any{}}, jsonrpc.CodeInvalidParams)
 	})
-	t.Run("mcp", func(t *testing.T) {
+	t.Run("invalid mcp config", func(t *testing.T) {
 		c := startAgent(t, t.TempDir(), make(scriptedModel), nil)
 		c.initialize()
-		servers := []any{map[string]any{"type": "stdio", "name": "gone", "command": filepath.Join(t.TempDir(), "missing"), "args": []any{}, "env": []any{}}}
+		servers := []any{map[string]any{"type": "stdio", "name": "invalid", "command": "relative-command", "args": []any{}, "env": []any{}}}
 		if e := c.fails(acp.MethodSessionNew, map[string]any{"cwd": t.TempDir(), "mcpServers": servers}, jsonrpc.CodeInvalidParams); !strings.Contains(e.Message, "MCP") {
 			t.Fatalf("MCP error: %+v", e)
 		}

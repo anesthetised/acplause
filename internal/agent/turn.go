@@ -151,13 +151,15 @@ func (s *Session) executeToolCall(ctx context.Context, call llm.ToolCall, round 
 	} else {
 		prepared, err = prepareBuiltin(toolbox, name, call.Function.Arguments)
 	}
-	permissionCtx, stopPermission := context.WithCancel(ctx)
-	defer stopPermission()
+	permissionCtx := ctx
 	if prepared != nil && prepared.binding != nil {
 		// Definition revocation stops permission waiting. The MCP transport
 		// separately admits dispatch; execution must not inherit this context.
+		wait, stopPermission := context.WithCancel(ctx)
+		defer stopPermission()
 		stopBinding := context.AfterFunc(prepared.binding, stopPermission)
 		defer stopBinding()
+		permissionCtx = mcpPermissionContext{Context: wait, binding: prepared.binding, cancel: stopPermission}
 		if prepared.binding.Err() != nil {
 			err = errors.New("MCP tool binding was revoked")
 		}

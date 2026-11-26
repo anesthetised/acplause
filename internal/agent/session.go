@@ -82,6 +82,7 @@ type Session struct {
 	claimed       bool            // a prompt left the queue and its turn has not ended
 	stopTurn      context.CancelCauseFunc
 	rejections    sync.WaitGroup // queued replies detached under mu, settled before Close returns
+	setupOutput   sync.WaitGroup // new and in-process setup warnings that Close must join
 	closeOnce     sync.Once      // renewal, resume and close can join the same retiring generation
 	closed        bool
 
@@ -340,6 +341,7 @@ func (s *Session) close() {
 		<-worker
 	}
 	s.cancel()
+	s.setupOutput.Wait()
 	s.saves.Wait()
 	s.rejections.Wait()
 	s.closeToolbox(s.toolbox)
@@ -348,7 +350,17 @@ func (s *Session) close() {
 // Resume reattaches the client: it replaces the additional directories,
 // optionally replays the history, and reports current metadata and state.
 func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPServer, replay bool) error {
+	s.mu.Lock()
+	if s.closed || s.lost {
+		s.mu.Unlock()
+		return acp.ErrInvalidParams("cannot configure session: session setup was cancelled")
+	}
+	s.setupOutput.Add(1)
+	s.mu.Unlock()
+	defer s.setupOutput.Done()
+
 	var r *historyReplay
+	var owed *outputObligation
 	if replay {
 		var err error
 		r, err = s.deps.replays.begin(ctx, s.id, nil)
@@ -357,39 +369,29 @@ func (s *Session) Resume(ctx context.Context, dirs []string, servers []acp.MCPSe
 		}
 		defer r.cancel()
 		ctx = r.ctx
+	} else {
+		owed = s.deps.replays.owe(s.id)
 	}
-	err := s.syncResume(ctx, dirs, servers, r, nil)
+	failures, err := s.syncResume(ctx, dirs, servers, r, owed, nil)
+	if r != nil && err != nil {
+		err = r.finish(ctx, err)
+	}
 	if r != nil {
-		return r.finish(ctx, err)
+		owed = r.followup
+	}
+	defer owed.release()
+	if err == nil {
+		s.reportMCPSetup(s.ctx, failures, len(servers), owed)
 	}
 	return err
 }
 
-// syncResume captures metadata and state in the same stream as live changes,
-// so newer values cannot be overwritten while history is being delivered.
-func (s *Session) syncResume(ctx context.Context, dirs []string, servers []acp.MCPServer, r *historyReplay, owed *outputObligation) error {
+// syncResume captures metadata and state in the live stream, so newer values
+// cannot be overwritten while history is being delivered.
+func (s *Session) syncResume(ctx context.Context, dirs []string, servers []acp.MCPServer, r *historyReplay, owed *outputObligation, guard func(func() error) error) ([]mcp.SetupFailure, error) {
 	if r != nil && r.session != s {
 		r.snapshot(s)
 	}
-	if err := s.configureResume(ctx, dirs, servers); err != nil {
-		return acp.ErrInvalidParams("cannot configure session: %v", err)
-	}
-	if r == nil {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if err := s.live(ctx, sessionInfoPatch(s.title, s.updatedAt), nil); err != nil {
-			return err
-		}
-		return s.live(ctx, s.state, owed)
-	}
-	if err := r.stageCurrent(s); err != nil {
-		return err
-	}
-	return r.write(ctx)
-}
-
-// configureResume replaces the workspace and MCP configuration transactionally.
-func (s *Session) configureResume(ctx context.Context, dirs []string, servers []acp.MCPServer) error {
 	s.mu.Lock()
 	changed := !slices.Equal(dirs, s.dirs)
 	s.mu.Unlock()
@@ -398,49 +400,90 @@ func (s *Session) configureResume(ctx context.Context, dirs []string, servers []
 	if changed {
 		toolbox, err = tools.New(s.cwd, dirs, s.deps.tools)
 		if err != nil {
-			return err
+			return nil, acp.ErrInvalidParams("cannot configure session: %v", err)
 		}
+		defer func() {
+			if toolbox != nil {
+				s.closeToolbox(toolbox)
+			}
+		}()
 	}
 	change, err := s.mcp.Prepare(ctx, mcpConfigs(servers))
 	if err != nil {
-		if toolbox != nil {
-			s.closeToolbox(toolbox)
-		}
-		return err
+		return nil, acp.ErrInvalidParams("cannot configure session: %v", err)
 	}
 	defer change.Discard()
-	s.mu.Lock()
-	if s.closed || s.lost || ctx.Err() != nil {
-		s.mu.Unlock()
-		if toolbox != nil {
-			s.closeToolbox(toolbox)
+	if r != nil {
+		if err := r.stageCurrent(s); err != nil {
+			return nil, err
 		}
-		return errors.New("session setup was cancelled")
+		if err := r.write(ctx); err != nil {
+			return nil, err
+		}
 	}
-	if err = change.Commit(); err != nil {
-		s.mu.Unlock()
-		if toolbox != nil {
-			s.closeToolbox(toolbox)
+
+	var failures []mcp.SetupFailure
+	var deliver func() error
+	var old *tools.Toolbox
+	publish := func() (bool, error) {
+		if s.lost {
+			return false, errSessionLost()
 		}
+		if s.closed || ctx.Err() != nil || (guard != nil && s.activation.Load() == activationDetached) {
+			return false, acp.ErrInvalidParams("cannot configure session: session setup was cancelled")
+		}
+		if err := change.Commit(); err != nil {
+			return false, acp.ErrInvalidParams("cannot configure session: %v", err)
+		}
+		if toolbox != nil {
+			old = s.toolbox
+			s.toolbox, s.dirs = toolbox, dirs
+			toolbox = nil
+			clear(s.shellDecisions)
+			s.rootsGen++
+			s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions, s.mode)
+			if old == s.activeToolbox {
+				old = nil
+			}
+			s.flushAsync()
+		}
+		failures = change.Failures()
+		return len(failures) != 0, nil
+	}
+	commit := func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if r != nil {
+			var err error
+			deliver, err = r.settle(ctx, nil, publish)
+			return err
+		}
+		_, err := publish()
 		return err
 	}
-	var old *tools.Toolbox
-	if changed {
-		old = s.toolbox
-		s.toolbox, s.dirs = toolbox, dirs
-		clear(s.shellDecisions)
-		s.rootsGen++
-		s.history[0].Content = systemPrompt(s.cwd, dirs, s.instructions, s.mode)
-		if old == s.activeToolbox {
-			old = nil
-		}
-		s.flushAsync()
+	if guard != nil {
+		err = guard(commit)
+	} else {
+		err = commit()
 	}
-	s.mu.Unlock()
 	if old != nil {
 		s.closeToolbox(old)
 	}
-	return nil
+	if r != nil {
+		return failures, r.deliver(deliver, err)
+	}
+	if err != nil {
+		return failures, err
+	}
+	if len(failures) != 0 {
+		owed = nil // setup still owes the warning after its response
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.live(ctx, sessionInfoPatch(s.title, s.updatedAt), nil); err != nil {
+		return failures, err
+	}
+	return failures, s.live(ctx, s.state, owed)
 }
 
 // acquireToolbox pins roots for one worker operation, including a read group,

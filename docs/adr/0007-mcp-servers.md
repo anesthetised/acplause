@@ -6,6 +6,7 @@
 - Supersedes: ADR 0001's MCP exclusion
 - Partly superseded: image omission in decisions 10 and 15 by [ADR 0009](0009-image-tool-results.md), implemented in #23
 - Partly superseded: unknown-transport handling in decision 3 by [ADR 0036](0036-validate-mcp-transport-at-setup.md)
+- Partly superseded: rollback for individual peer failure in decision 5 by [ADR 0038](0038-partial-mcp-setup.md)
 - ACP source: `testdata/schema/v2/schema.json` at `3be9cfc`
 - MCP sources: [2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
   [transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),

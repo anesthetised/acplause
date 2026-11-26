@@ -179,9 +179,10 @@ configured values. Tests cover both setup methods and credential handling.
   in replay.
   [ADR 0037](../adr/0037-compact-prompt-admission.md) · [Stdio tests](../../e2e/commands_test.go) · [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
 - **MCP partial setup.** The spec recommends continuing with the peers that
-  did connect and notifying the user about failures. Both setup paths currently
-  fail if a peer cannot connect. Decide how to handle partial success and test
-  it with one working and one failing peer. [MCP servers][beta-mcp]
+  did connect and notifying the user about failures. Both setup paths now
+  publish the successful subset. A session can use built-in tools when all peers
+  fail. One sanitized warning follows the setup response on the live stream.
+  [ADR 0038](../adr/0038-partial-mcp-setup.md) · [Stdio tests](../../e2e/mcp_partial_setup_test.go) · [MCP servers][beta-mcp]
 - **Configuration.** The spec recommends broadcasting the complete config when
   it changes, including client-initiated changes. [Set config](../../internal/agent/agent.go)
   now sends the complete list in a notification before the matching response
