@@ -26,7 +26,7 @@ type replayStreams struct {
 	mu                          sync.Mutex
 	wire                        *jsonrpc.Conn
 	active                      map[string]*historyReplay
-	owed                        map[string]int  // cursorless setup or terminal work with updates still due
+	owed                        map[string]int  // same-session work with output still due
 	frames, bytes, reservations int             // include completion items until dequeue
 	armed                       chan struct{}   // wakes ordinary senders waiting for capacity when a cursor arrives
 	localTail                   <-chan struct{} // delivery order for in-process Clients
@@ -37,8 +37,8 @@ func newReplayStreams(out Client) *replayStreams {
 	return &replayStreams{wire: wire, armed: make(chan struct{})}
 }
 
-// outputObligation blocks a new cursor while a setup or closing worker can
-// still publish updates. Its last enqueue releases the obligation under mu.
+// outputObligation blocks a new cursor while an operation can still publish
+// conflicting output. Its last enqueue releases the obligation under mu.
 type outputObligation struct {
 	streams  *replayStreams
 	id       string
@@ -72,6 +72,23 @@ func (o *outputObligation) release() {
 		o.streams.mu.Lock()
 		defer o.streams.mu.Unlock()
 		o.releaseLocked()
+	}
+}
+
+// sendReply waits like an ordinary reply and discharges the obligation
+// atomically with the final wire enqueue.
+func (o *outputObligation) sendReply(reply *jsonrpc.Reply, lines ...[]byte) {
+	err := o.streams.wire.SendLines(context.Background(), lines, func(commit func() error) error {
+		o.streams.mu.Lock()
+		defer o.streams.mu.Unlock()
+		err := commit()
+		o.releaseLocked()
+		return err
+	})
+	if err != nil {
+		reply.Reject(err)
+	} else {
+		reply.Delivered()
 	}
 }
 

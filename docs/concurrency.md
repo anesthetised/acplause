@@ -86,7 +86,8 @@ Not lock-guarded, by ownership instead:
 | `Session.mu` | store I/O | `Session.flush` saves after unlocking; `Session.claimTurn` unlocks around `Store.Save` while `flushMu` keeps saves ordered |
 | `Session.mu` | MCP `Prepare`, `Change.Discard`, `Manager.Close`, `Manager.Recover` | `Session.configureResume` prepares before locking and defers `Discard`; `Change.Commit` under the lock only swaps pointers. `Session.loseLocked` closes MCP on a goroutine |
 | `Session.mu` | `tools.New`, `Toolbox.Close`, `AGENTS.md` reads, model requests | `Session.configureResume`, `Session.releaseToolbox`, `Session.refreshInstructions` and `Session.converse` do this work unlocked |
-| `Agent.mu` | waiting for `Session.mu`, which a live update holds across `Conn.Notify` | `Agent.setConfigOption` reads pending setup under `Agent.mu`, releases it, then admits the change under `Session.mu` (see [Session operations](#session-operations)) |
+| `Agent.mu` | waiting for `Session.mu`, which a live update holds across `Conn.Notify` | `Agent.setConfigOption` reads pending setup under `Agent.mu` and the operation worker admits the change under `Session.mu` (see [Session operations](#session-operations)) |
+| `Session.mu` | waiting for setter output capacity | The setter captures its snapshot under the lock and enqueues output afterwards |
 | `Session.mu` | writing a replay snapshot | `historyReplay.write` writes outside the lock; `Session.send` defers live updates meanwhile (see [Resume](#resume)) |
 | `flushMu` or `Session.mu` | `Session.Close` | `Close` waits for the worker and admitted saves, which take both. `Agent.dropLocked` and `Agent.acquire` start it with `go` |
 | `Agent.ownershipMu` | MCP setup, the catalog load, `restoreSession` | `Agent.open` takes the lock only in `Agent.acquire`, then waits for the catalog (up to `catalogTimeout` when none has loaded) and restores the private session; `Agent.resume` runs `Session.configureResume` before `Agent.publishRestored`. A slow provider or server cannot delay lease renewal |
@@ -178,7 +179,8 @@ when it is answered, on `$/cancel_request`, or when `Serve` returns.
 
 | Method | Settled by |
 | --- | --- |
-| `initialize`, `session/set_config_option` | the handler on the read loop, or a session operation for a config request staged during a cold response write |
+| `initialize` | the handler on the read loop |
+| `session/set_config_option` | the session operation worker for admitted setters |
 | `session/new` | the goroutine in `Agent.newSession` |
 | `session/list` | the job in `Agent.listSessions` |
 | `session/resume` | the operation goroutine (`Agent.resumeSession`) |
@@ -239,20 +241,20 @@ pending resume publishes afterwards.
   the operation to the session's current tail (`previous`), makes it the new
   tail and adds it to `Agent.jobs`. The operation's context also ends with
   `Agent.ctx`.
-- `Agent.startOperation` waits on a goroutine for `previous.done`. If its own
-  context ends first, operations other than close reject the reply as cancelled and still wait for
-  its predecessor, so cancellation cannot let a later operation overtake
-  setup. Closing `done`, under `Agent.mu`, publishes `err` and removes the
+- `Agent.startOperation` waits on a goroutine for `previous.done`. When its
+  context ends first, prompt and setup operations can reject the reply early.
+  Every operation waits for its predecessor before closing `done`, which
+  publishes `err` under `Agent.mu` and removes the
   operation if it is still the tail.
 - **Prompt.** A cold resume cannot admit prompts until its successful response,
   including after its replay marker. On an active session, with nothing pending, `Agent.prompt` submits straight to the
   session queue. Otherwise it joins the chain marked `prompt` and, once
-  predecessors finish, takes the error of the nearest non-prompt
+  predecessors finish, takes the error of the nearest setup
   predecessor: failed setup rejects the prompt before insertion, while an
   earlier cancelled prompt does not. Then it submits with the request's
   reply, which the session owns from then on.
 - **Resume.** The reader reserves a cursor replay before starting any
-  background work. A cursor received while an earlier resume or terminal
+  background work. A cursor received while an earlier resume, setter or terminal
   operation still owes conflicting updates receives acplause error `1001`.
   A cursor arriving after the last update has been enqueued can wait
   behind the operation for resource cleanup or lease release.
@@ -267,12 +269,13 @@ pending resume publishes afterwards.
   published late, closes it and releases the lease. `delete` also removes
   the record. A cancelled close returns `-32800` after its predecessor, active
   worker and lease release finish.
-- `session/set_config_option` refuses a mode change while any operation is
-  pending or a prompt is queued or running. It reads pending setup under
-  `Agent.mu`, then checks the queue and state under `Session.mu` without
-  holding both. That stays atomic: only read-loop handlers reserve
-  operations, so none starts between the two checks, and a pending setup's
-  prompts enter the session queue before the operation leaves `operations`.
+- **Set config option.** The reader reserves ordering and an output obligation.
+  The worker waits for preceding operations, then mutates and captures the
+  complete snapshot under `Session.mu`. A mode change still checks the
+  preceding setup at receipt and the foreground queue and state at mutation.
+  The worker waits for capacity without session locks and queues the optional
+  notification and successful response in one writer item. Wire admission
+  releases the obligation under `replayStreams.mu`.
 
 ## Resume
 

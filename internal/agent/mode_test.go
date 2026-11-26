@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/anesthetised/acplause/internal/acp"
 	"github.com/anesthetised/acplause/internal/jsonrpc"
@@ -81,7 +80,7 @@ func TestModeBusyAdmissionAndIdempotence(t *testing.T) {
 	for _, busy := range []string{"claimed turn", "queue", "state", "setup"} {
 		t.Run(busy, func(t *testing.T) {
 			s, _ := testSession(t, nil)
-			a := &Agent{sessions: map[string]*Session{s.id: s}, operations: map[string]*sessionOperation{}}
+			setupPending := busy == "setup"
 			switch busy {
 			case "claimed turn":
 				s.claimed = true
@@ -89,20 +88,16 @@ func TestModeBusyAdmissionAndIdempotence(t *testing.T) {
 				s.queue = []*submission{{}}
 			case "state":
 				s.state.State = acp.StateRequiresAction
-			case "setup":
-				a.operations[s.id] = &sessionOperation{}
 			}
 			defer func() { s.claimed = false; s.queue = nil }()
-			req := acp.SetConfigOptionRequest{SessionID: s.id, ConfigID: "mode", Type: "id", Value: jsonString("plan")}
-			_, err := a.setConfigOption(context.Background(), req)
+			_, err := s.setConfigOption(context.Background(), configMode, acp.ConfigValueID, jsonString(modePlan), setupPending)
 			if err == nil || jsonrpc.AsError(err).Code != -32602 || !strings.Contains(err.Error(), "retry") {
 				t.Fatalf("busy mode accepted: %v", err)
 			}
 			if s.mode != "build" {
 				t.Fatal("busy change mutated mode")
 			}
-			req.Value = jsonString("build")
-			if _, err := a.setConfigOption(context.Background(), req); err != nil {
+			if _, err := s.setConfigOption(context.Background(), configMode, acp.ConfigValueID, jsonString(modeBuild), setupPending); err != nil {
 				t.Fatalf("same mode refused: %v", err)
 			}
 		})
@@ -120,66 +115,48 @@ func (s *renewStore) Renew(context.Context, []string) ([]string, error) {
 	return nil, nil
 }
 
-// A live update may hold Session.mu while the writer queue is full. Mode
-// admission waits for that lock, but must not hold Agent.mu meanwhile.
 func TestModeAdmissionWaitsWithoutTheAgentLock(t *testing.T) {
 	s, out := testSession(t, nil)
-	other, _ := testSession(t, nil)
 	st := &renewStore{}
 	a := &Agent{
 		cfg:        Config{Store: st},
-		ctx:        context.Background(),
-		sessions:   map[string]*Session{s.id: s, other.id: other},
-		lost:       map[string]bool{},
+		ctx:        t.Context(),
+		deps:       deps{replays: s.deps.replays},
+		sessions:   map[string]*Session{s.id: s},
 		operations: map[string]*sessionOperation{},
 	}
 	client := &slowReplayClient{recorder: out, entered: make(chan struct{}), release: make(chan struct{})}
 	s.deps.out = client
-	var release sync.Once
-	unblock := func() { release.Do(func() { close(client.release) }) }
+	unblock := sync.OnceFunc(func() { close(client.release) })
 	defer unblock()
 	go s.setState(acp.StateUpdate{State: acp.StateRunning})
-	select {
-	case <-client.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("state update did not reach the client")
-	}
-	configured := make(chan error, 1)
+	issue50Wait(t, client.entered)
+
+	// A live state update holds Session.mu while its output is blocked.
+	// Reserving the mode setter and renewing leases must still finish.
+	admitted := make(chan struct{})
 	go func() {
+		defer close(admitted)
 		req := acp.SetConfigOptionRequest{SessionID: s.id, ConfigID: configMode, Type: acp.ConfigValueID, Value: jsonString(modePlan)}
-		_, err := a.setConfigOption(context.Background(), req)
-		configured <- err
-	}()
-	select {
-	case err := <-configured:
-		t.Fatalf("set_config_option did not wait for the session lock: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	free := make(chan error, 1)
-	go func() {
-		_, err := a.session(other.id)
-		a.renew()
-		free <- err
-	}()
-	select {
-	case err := <-free:
-		if err != nil {
-			t.Fatal(err)
+		if _, err := a.setConfigOption(t.Context(), req); err != nil {
+			t.Error(err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("session lookup and lease renewal waited for the writer")
-	}
+		a.renew()
+	}()
+	issue50Wait(t, admitted)
 	if st.renewals.Load() != 1 {
 		t.Fatalf("renewals = %d, want 1", st.renewals.Load())
 	}
+	a.mu.Lock()
+	op := a.operations[s.id]
+	a.mu.Unlock()
+	if op == nil {
+		t.Fatal("mode setter settled before it could check foreground state")
+	}
 	unblock()
-	select {
-	case err := <-configured:
-		if err == nil || !strings.Contains(err.Error(), "busy") {
-			t.Fatalf("mode change during a turn: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("set_config_option did not finish")
+	issue50Wait(t, op.done)
+	if op.err == nil || !strings.Contains(op.err.Error(), "busy") {
+		t.Fatalf("mode change during a turn: %v", op.err)
 	}
 }
 
@@ -229,7 +206,8 @@ func (s modeSetupStore) Acquire(ctx context.Context, id string) (*store.Loaded, 
 
 func TestModeConfigOverWireFencesSetupAndPreservesPreferences(t *testing.T) {
 	release := make(chan struct{})
-	defer close(release)
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 	model := make(scriptedModel, 3)
 	model.callTool("blocked", testShellName(), testShellArgs(`touch changed`, `[IO.File]::WriteAllText('changed', '')`))
 	model <- func(_ context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
@@ -286,23 +264,27 @@ func TestModeConfigOverWireFencesSetupAndPreservesPreferences(t *testing.T) {
 	}
 
 	resume := c.send(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd})
-	c.fails(acp.MethodSessionSetConfig, set("build"), -32602)
-	c.ok(acp.MethodSessionSetConfig, set("plan"), nil)
+	change := c.send(acp.MethodSessionSetConfig, set("build"))
+	same := c.send(acp.MethodSessionSetConfig, set("plan"))
 	prompt := c.send(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "prompt": []acp.ContentBlock{acp.Text("after setup")}})
-	c.fails(acp.MethodSessionSetConfig, set("build"), -32602)
-	// Cancel the deferred prompt while resume still owns the reservation.
+	later := c.send(acp.MethodSessionSetConfig, set("build"))
 	c.notify(acp.MethodSessionCancel, map[string]any{"sessionId": sid})
-	// A later request is a read-loop barrier for notification processing.
-	c.ok(acp.MethodSessionSetConfig, set("plan"), nil)
-	// Let the defer release setup; verify cancellation in a separate cleanup.
-	t.Cleanup(func() {
-		if r := c.await(resume); r.Error != nil {
-			t.Errorf("resume: %+v", r.Error)
+	c.fenceReader()
+	unblock()
+	if r := c.await(resume); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	for _, pending := range []<-chan rpcResponse{change, later} {
+		if r := c.await(pending); r.Error == nil || r.Error.Code != -32602 {
+			t.Fatalf("busy mode: %+v", r)
 		}
-		if r := c.await(prompt); r.Error == nil || r.Error.Code != -32800 {
-			t.Errorf("queued prompt: %+v", r.Error)
-		}
-	})
+	}
+	if r := c.await(same); r.Error != nil {
+		t.Fatalf("same mode refused: %v", r.Error)
+	}
+	if r := c.await(prompt); r.Error == nil || r.Error.Code != -32800 {
+		t.Fatalf("queued prompt: %+v", r)
+	}
 }
 
 func TestModeChangeWhileTheFinishedTurnSaves(t *testing.T) {
