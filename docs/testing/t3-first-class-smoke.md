@@ -12,8 +12,8 @@ prove ACP behavior, not T3 rendering. Feature ordering is recorded in
 
 ## `/compact` retest: 2026-10-21
 
-**FAIL: #70 remains reproducible after rebuilding acplause.** Tested at
-00:35–00:37 UTC through the actual T3 ACP provider.
+**FAIL: #70 remains reproducible after rebuilding acplause.** Tested from
+00:35 to 00:37 through the actual T3 ACP provider.
 
 - Agent: `7ae7319b87b57b4b04f3b57ec64c0df3d27665f1`, Go 1.27.2,
   darwin/arm64, installed binary SHA-256
@@ -30,8 +30,8 @@ prove ACP behavior, not T3 rendering. Feature ordering is recorded in
 An ordinary baseline prompt returned `COMPACT_BASELINE_OK` (T3 run 22).
 In the native composer, entering `/` offered only `/model`; entering
 `/compact` displayed `No matching command.` Submitting the exact command
-without attachments failed at 00:36:29 UTC (run 23). A separate
-`t3_thread_send` of the exact command failed at 00:36:41 UTC (run 24).
+without attachments failed at 00:36:29 (run 23). A separate
+`t3_thread_send` of the exact command failed at 00:36:41 (run 24).
 Both displayed `The provider could not start this turn. Retry the turn; if
 it keeps failing, check the provider setup and server logs.` An ordinary
 follow-up returned `COMPACT_RECOVERY_OK` (run 25).
@@ -54,7 +54,7 @@ e2e tests. Keep #70, #38 and #25 open; #71 was not retested.
 
 ## Observed runtime: 2026-10-19
 
-Execution began at 21:36 UTC.
+Execution began at 21:36.
 This was the built acplause binary running as a **child ACP provider inside T3**.
 The parent's Codex tools were used to prepare fixtures, operate the client and
 inspect sanitized evidence, never as substitutes for the child's tools.

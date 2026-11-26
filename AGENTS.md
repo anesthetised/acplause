@@ -8,6 +8,11 @@ without writing a new ADR.
 
 ## Communication and decisions
 
+- Use UTC for all dates and times in user-facing text, including chat, docs,
+  reports, issues, pull requests, and release notes. Convert the date too
+  when the conversion crosses midnight. Write times in 24-hour notation
+  without time zone names, abbreviations, or offsets. Keep the timestamp
+  formats required by protocols and tooling.
 - Ask questions through `AskUserQuestion` (or the harness's equivalent
   structured user-input tool), so the user can answer in the interface.
   Include alternatives, trade-offs, and a recommendation in the question.

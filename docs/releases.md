@@ -9,11 +9,13 @@ Open **Actions → Release → Run workflow**, select **main**, and run it. Or r
 workflow on GitHub, without compiling anything locally.
 
 The workflow fixes the source commit at dispatch time and chooses
-`v0.YYYYMM.N` using the run's creation month in UTC. `N` starts at zero and
-increases within the month. It runs `just check`, enforces 80% Go coverage,
-packages macOS/Linux tarballs and Windows ZIP binaries for arm64/amd64 with GoReleaser, creates SHA256
-checksums and GitHub artifact attestations, then publishes the tag and ordinary
-GitHub Release. Finally it updates `Formula/acplause.rb` in
+`v0.YYYYMM.N` using the run's creation month under the
+[repository time convention](../AGENTS.md#communication-and-decisions).
+`N` starts at zero and increases within the month. It runs `just check`,
+enforces 80% Go coverage, packages macOS/Linux tarballs and Windows ZIP binaries
+for arm64/amd64 with GoReleaser, creates SHA256 checksums and GitHub artifact
+attestations, then publishes the tag and ordinary GitHub Release. Finally it
+updates `Formula/acplause.rb` in
 [homebrew-tap](https://github.com/anesthetised/homebrew-tap).
 
 The first release has an empty body. Later bodies come from `cliff.toml`:

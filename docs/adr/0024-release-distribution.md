@@ -12,10 +12,12 @@ be explicitly initiated and recover safely from partial failures.
 ## Decisions
 
 - Publish ordinary GitHub Releases from a manual workflow on `main`. Keep
-  experimental status visible in README. Use `v0.YYYYMM.N`, with the UTC
-  calendar month and a zero-based monthly counter. Major zero preserves the
-  current Go module path. These calendar versions do not promise compatibility;
-  breaking changes are called out explicitly.
+  experimental status visible in README. Use `v0.YYYYMM.N` with the run's
+  creation month under the
+  [repository time convention](../../AGENTS.md#communication-and-decisions)
+  and a zero-based monthly counter. Major zero preserves the current Go module
+  path. These calendar versions do not promise compatibility. Breaking changes
+  are called out explicitly.
 - Use GoReleaser to package four CGO-free binaries (macOS/Linux, arm64/amd64)
   and a source archive. Publish SHA256 checksums and free GitHub artifact
   attestations. Docker distribution is deferred.
