@@ -36,7 +36,7 @@ Where each edge comes from:
 | `ownershipMu` → `Agent.mu` | `agent.go`: `Agent.renew`, `Agent.dropLocked`, `Agent.acquire`, `Agent.publishRestored` |
 | `ownershipMu` → `flushMu` | `Agent.dropLocked` drains a save; `Agent.acquire` holds the live session's `flushMu` across `Store.Acquire`; `Agent.publishRestored` calls `Session.flush` |
 | `flushMu` → `Agent.mu` | `Agent.acquire` removes a session that lost ownership while holding its `flushMu` |
-| `flushMu` → `Session.mu` | `Session.flush`, `Session.insert` and `Agent.acquire` fence session state and ownership against store writes |
+| `flushMu` → `Session.mu` | `Session.flush`, `Session.insert`, `Session.savePlanRemoval` and `Agent.acquire` fence session state and ownership against store writes |
 | `Session.mu` → `Manager.mu` → `server.mu` | `turn.go`: `Session.request` → `Manager.Snapshot` |
 | `Session.mu` → `Manager.mu` → `peer.mu` | `Session.configureResume` → `Change.Commit` → `peer.fail` (`mcp/catalog.go`) |
 | `Manager.mu` → `peer.mu` | `Manager.Recover` → `peer.err` |
@@ -50,7 +50,7 @@ Where each edge comes from:
 | `Agent.ownershipMu` (`agent.go`) | Ownership transitions: lease renewal and its loss handling, `Store.Acquire` in `Agent.acquire`, publication and first save of a restored session | A renewal that finds a session lost must not interleave with a resume that reacquires it. Only background work takes it; turns never do |
 | `Agent.mu` (`agent.go`) | `sessions`, `lost`, `operations`, `shuttingDown`, `selectionSaved` | The session map and the `sessionOperation` chain. Held briefly; never across I/O or while waiting for `Session.mu` |
 | `pendingPrompts.mu` | Pending session/key groups and their waiters | The reader can attach a retry during setup, validation or a blocked commit. Settlement detaches the group before delivering its replies |
-| `Session.flushMu` (`session.go`, `persist.go`) | Serialises store writes: `Session.flush` and the prompt's `Session.claimTurn` | Each save takes the latest state, so saves cannot reorder. Ownership changes take it to drain an in-flight save, so an old write cannot revive this process's owner ID after a takeover |
+| `Session.flushMu` (`session.go`, `persist.go`) | Serialises session saves, prompt insertion, and plan removal | Each save takes the latest state, so saves cannot reorder. Ownership changes take it to drain an in-flight save, so an old write cannot revive this process's owner ID after a takeover |
 | `Session.mu` (`session.go`) | Every mutable `Session` field except those below: settings, `history`, `transcript`, `state`, `queue`, `worker`, `claimed`, `stopTurn`, `closed`, toolbox pins, roots, remembered shell decisions, and the persistence marks `saved`, `dirty`, `lost`, `saveWarning` | Transcript changes and their live update are one step, so a resume snapshot and live updates cannot reorder |
 | `mcp.Manager.mu` (`mcp/catalog.go`) | `servers`, `revision`, `closed`, `resources`, each server's `recoveryAttempted`; `preparing.Add` happens under it | Configuration publication is atomic; `Close` cannot miss a preparation in progress |
 | `mcp.server.mu` (`mcp/catalog.go`) | The server's `tools` | `server.refresh` revokes stale definitions under it, and `Tool.Call`'s admit check runs under it: the dispatch linearization point. A call is either admitted for the definition it was bound to or refused |
@@ -83,7 +83,7 @@ Not lock-guarded, by ownership instead:
 | Must not hold | Across | How the code avoids it |
 | --- | --- | --- |
 | any agent lock | `Conn.CallPermission`, `Conn.CallCancellable` | `Session.requestPermission` and `Session.askUser` set state, release `Session.mu`, then call |
-| `Session.mu` | store I/O | `Session.flush` saves after unlocking; `Session.claimTurn` unlocks around `Store.Save` while `flushMu` keeps saves ordered |
+| `Session.mu` | store I/O | `Session.savePending` and `Session.claimTurn` unlock around `Store.Save` while `flushMu` keeps saves ordered |
 | `Session.mu` | MCP `Prepare`, `Change.Discard`, `Manager.Close`, `Manager.Recover` | `Session.configureResume` prepares before locking and defers `Discard`; `Change.Commit` under the lock only swaps pointers. `Session.loseLocked` closes MCP on a goroutine |
 | `Session.mu` | `tools.New`, `Toolbox.Close`, `AGENTS.md` reads, model requests | `Session.configureResume`, `Session.releaseToolbox`, `Session.refreshInstructions` and `Session.converse` do this work unlocked |
 | `Agent.mu` | waiting for `Session.mu`, which a live update holds across `Conn.Notify` | `Agent.setConfigOption` reads pending setup under `Agent.mu`, releases it, then admits the change under `Session.mu` (see [Session operations](#session-operations)) |
@@ -207,7 +207,16 @@ response precedes the update on stdout. The turn's context
 derives from `Session.ctx`, not from the request, so answering the request
 does not stop the turn. `Session.runTurn` then sends exactly one idle
 `state_update` under `Session.mu`, `cancelled` whenever the turn's context
-ended.
+ended. If explicit `session/cancel` caused the interruption, the worker
+stages any unfinished plan's removal in the save batch at its original
+transcript position. The worker holds `flushMu` for the ownership-checked
+save and releases `Session.mu` during I/O. Live state remains active and
+replay can still capture the original snapshot. After commit, the worker
+replaces the in-memory snapshot and sends `plan_removed` and idle under
+one acquisition of `Session.mu`. An ordinary save failure retains the
+original snapshot and uses the usual warning before cancelled idle.
+Ownership loss follows the existing retirement and final-update rules.
+[ADR 0041](adr/0041-remove-explicitly-cancelled-plans.md)
 
 The reader groups attempts with the same session and key before reserving
 setup work or submitting to a live session. Each group occupies one queue
@@ -260,7 +269,7 @@ pending resume publishes afterwards.
 - **Close and delete** interrupt active sessions and pending setup. An
   interrupting reservation cancels its predecessors and waits for them to
   finish. The handler first removes the session from the map and calls
-  `Session.Cancel`, so later messages see it gone and the running turn
+  `Session.sealOutput`, so later messages see it gone and the running turn
   stops at once. Closing an absent or inactive session succeeds. A close
   behind pending terminal cleanup waits for that cleanup without cancelling
   it. `Agent.terminalSession` catches a session that a cancelled resume

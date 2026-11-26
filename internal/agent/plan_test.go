@@ -150,6 +150,39 @@ func TestStoredPlanPreservesFutureFields(t *testing.T) {
 	}
 }
 
+func TestStoredPlanRemovalReadsAsEmptySnapshotOnOlderAgents(t *testing.T) {
+	want := acp.PlanRemoved{PlanID: "removed-id"}
+	row, err := encodeEntry(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeEntry(row)
+	if err != nil || got != want {
+		t.Fatalf("stored removal = %#v, %v", got, err)
+	}
+	// Read through the old envelope and plan decoder, including its raw
+	// round trip. An empty snapshot without the marker is ordinary history.
+	var old struct {
+		Kind   string          `json:"kind"`
+		Update json.RawMessage `json:"update"`
+	}
+	if err := json.Unmarshal(row, &old); err != nil || old.Kind != "plan_update" {
+		t.Fatalf("old envelope = %+v, %v", old, err)
+	}
+	legacyRow, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := decodeEntry(legacyRow)
+	plan, ok := u.(acp.PlanUpdate)
+	if err != nil || !ok || plan.Plan.Type != "items" || plan.Plan.PlanID != want.PlanID || plan.Plan.Entries == nil || len(plan.Plan.Entries) != 0 {
+		t.Fatalf("empty legacy plan = %#v, %v", u, err)
+	}
+	if _, err := decodeEntry([]byte(`{"kind":"plan_update","update":{"plan":{"type":"items","entries":[]}},"planRemoved":true}`)); err == nil {
+		t.Fatal("decoded a removal without an ID")
+	}
+}
+
 // replayPlanClient pauses replay inside Notify, while Session.mu is held.
 type replayPlanClient struct {
 	recorder
@@ -218,52 +251,340 @@ func TestPlanResumePrecedesCompetingLiveUpdate(t *testing.T) {
 	}
 }
 
-func TestPlanUnfinishedOnTurnFailureOrCancellation(t *testing.T) {
-	for _, cancelled := range []bool{false, true} {
-		t.Run(map[bool]string{false: "failure", true: "cancelled"}[cancelled], func(t *testing.T) {
+func TestPlanRemovalRequiresExplicitCancellationOfUnfinishedWork(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		stop         acp.StopReason
+		remove       bool
+	}{
+		{"cancel pending", "pending", acp.StopCancelled, true},
+		{"cancel in progress", "in_progress", acp.StopCancelled, true},
+		{"cancel completed", "completed", acp.StopCancelled, false},
+		{"provider failure", "in_progress", acp.StopError, false},
+		{"close", "in_progress", acp.StopCancelled, false},
+		{"disconnect", "in_progress", acp.StopCancelled, false},
+		{"ownership loss", "in_progress", acp.StopCancelled, false},
+		{"deadline", "in_progress", acp.StopCancelled, false},
+		{"cancel after deadline", "in_progress", acp.StopCancelled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var s *Session
+			expired, release := make(chan struct{}), make(chan struct{})
+			defer close(release)
 			model := fakeModel(func(ctx context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
-				if _, err := s.updatePlan(ctx, []acp.PlanEntry{{Content: "unfinished", Priority: "high", Status: "in_progress"}}); err != nil {
+				if _, err := s.updatePlan(ctx, []acp.PlanEntry{{Content: "work", Priority: "high", Status: tc.status}}); err != nil {
 					return nil, err
 				}
-				if cancelled {
-					<-ctx.Done()
-					return nil, ctx.Err()
+				if tc.stop == acp.StopError {
+					return nil, errors.New("provider failed")
 				}
-				return nil, errors.New("provider failed")
+				<-ctx.Done()
+				if tc.name == "cancel after deadline" {
+					close(expired)
+					<-release
+				}
+				return nil, ctx.Err()
 			})
 			var out recorder
 			s, out = testSession(t, model)
 			s.deps.log = slog.New(slog.DiscardHandler)
+			if strings.Contains(tc.name, "deadline") {
+				s.deps.turnTimeout = time.Second
+			}
 			s.Submit(context.Background(), []acp.ContentBlock{acp.Text("work")})
-			if cancelled {
-			waitPlan:
-				for {
-					select {
-					case u := <-out:
-						if _, ok := u.(acp.PlanUpdate); ok {
-							s.Cancel()
-							break waitPlan
-						}
-					case <-time.After(5 * time.Second):
-						t.Fatal("turn did not publish a plan")
-					}
+			plan := waitPlan(t, out)
+			switch tc.name {
+			case "cancel pending", "cancel in progress", "cancel completed":
+				s.Cancel()
+				s.Cancel()
+			case "close":
+				s.Close()
+			case "disconnect":
+				s.cancel()
+			case "ownership loss":
+				s.markLost()
+			case "cancel after deadline":
+				select {
+				case <-expired:
+				case <-time.After(5 * time.Second):
+					t.Fatal("deadline did not expire")
 				}
+				s.Cancel()
+				release <- struct{}{}
 			}
 			updates := out.untilIdle(t)
 			idle := updates[len(updates)-1].(acp.StateUpdate)
-			want := acp.StopError
-			if cancelled {
-				want = acp.StopCancelled
-			}
-			if idle.StopReason != want {
+			if idle.StopReason != tc.stop {
 				t.Fatalf("idle: %+v", idle)
 			}
+			removed := 0
+			for _, u := range updates {
+				if r, ok := u.(acp.PlanRemoved); ok {
+					removed++
+					if r.PlanID != plan.Plan.PlanID {
+						t.Fatalf("removed another plan: %+v", r)
+					}
+				}
+			}
 			s.mu.Lock()
-			plan := s.transcript[s.planIndex[s.planID]].(acp.PlanUpdate)
+			snapshot := s.transcript[s.planIndex[plan.Plan.PlanID]]
 			s.mu.Unlock()
-			if plan.Plan.Entries[0].Status != "in_progress" {
-				t.Fatalf("turn ending completed an unfinished plan: %+v", plan)
+			if tc.remove {
+				if removed != 1 || snapshot != (acp.PlanRemoved{PlanID: plan.Plan.PlanID}) {
+					t.Fatalf("removals = %d, current transcript slot = %#v", removed, snapshot)
+				}
+			} else if removed != 0 || !reflect.DeepEqual(snapshot, plan) {
+				t.Fatalf("removals = %d, preserved snapshot = %#v", removed, snapshot)
+			}
+		})
+	}
+}
+
+func waitPlan(t *testing.T, out recorder) acp.PlanUpdate {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case u := <-out:
+			if p, ok := u.(acp.PlanUpdate); ok {
+				return p
+			}
+		case <-deadline:
+			t.Fatal("turn did not publish a plan")
+		}
+	}
+}
+
+func TestPlanRemovalAcrossReplayCut(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		removeBefore bool
+	}{
+		{"before replay cut", true},
+		{"after replay cut", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			model := make(scriptedModel, 4)
+			request := make(chan llm.Request, 1)
+			const args = `{"entries":[{"content":"work","priority":"low","status":"pending"}]}`
+			model.callTool("prior", "update_plan", args)
+			model.reply("last turn", llm.FinishStop, nil)
+			model.callTool("current", "update_plan", args)
+			model <- func(ctx context.Context, req llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
+				request <- req
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			s, out := testSession(t, model)
+			s.Submit(ctx, []acp.ContentBlock{acp.Text("prior")})
+			prior := waitPlan(t, out)
+			out.untilIdle(t)
+			s.Submit(ctx, []acp.ContentBlock{acp.Text("current")})
+			current := waitPlan(t, out)
+			if current.Plan.PlanID == prior.Plan.PlanID {
+				t.Fatal("accepted turn reused the prior plan ID")
+			}
+			select {
+			case req := <-request:
+				assertToolPairs(t, req.Messages)
+			case <-time.After(5 * time.Second):
+				t.Fatal("model did not receive the current plan tool result")
+			}
+			r, err := s.deps.replays.begin(ctx, s.id, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.cancel()
+			s.mu.Lock()
+			worker := s.worker
+			s.mu.Unlock()
+			if !tc.removeBefore {
+				r.snapshot(s)
+			}
+			s.Cancel()
+			select {
+			case <-worker:
+			case <-time.After(5 * time.Second):
+				t.Fatal("cancelled worker did not finish")
+			}
+			if tc.removeBefore {
+				r.snapshot(s)
+			}
+			if err := r.write(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.finish(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, u := range out.untilIdle(t) {
+				switch v := u.(type) {
+				case acp.PlanUpdate:
+					got = append(got, "plan "+v.Plan.PlanID)
+				case acp.PlanRemoved:
+					got = append(got, "removed "+v.PlanID)
+				case acp.ReplayComplete:
+					got = append(got, "marker")
+				case acp.StateUpdate:
+					if v.State == acp.StateIdle {
+						got = append(got, string(v.StopReason))
+					}
+				}
+			}
+			want := []string{"plan " + prior.Plan.PlanID}
+			if tc.removeBefore {
+				want = append(want, "removed "+current.Plan.PlanID, "marker")
+			} else {
+				want = append(want, "plan "+current.Plan.PlanID, "marker", "removed "+current.Plan.PlanID)
+			}
+			want = append(want, string(acp.StopCancelled))
+			if !slices.Equal(got, want) || len(out) != 0 {
+				t.Fatalf("replay order = %v, want %v (tail: %d)", got, want, len(out))
+			}
+		})
+	}
+}
+
+func TestPlanRemovalWhileSavePending(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"commit", nil},
+		{"ordinary failure", errors.New("refused plan removal")},
+		{"ownership loss", store.ErrLost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			var s *Session
+			model := fakeModel(func(ctx context.Context, _ llm.Request, _ func(llm.Delta)) (*llm.Completion, error) {
+				if _, err := s.updatePlan(ctx, []acp.PlanEntry{{Content: "work", Priority: "low", Status: "pending"}}); err != nil {
+					return nil, err
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			})
+			s, out := testSession(t, model)
+			s.saves.Wait()
+			s.deps.log = slog.New(slog.DiscardHandler)
+			entered, release := make(chan store.Session, 1), make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			attempts, idleSaves := 0, 0
+			s.deps.store = saveStore{save: func(ctx context.Context, sess store.Session, _ []store.Row, transcript []store.Row) error {
+				hasPlan := false
+				for _, row := range transcript {
+					got, err := decodeEntry(row.Data)
+					if err != nil {
+						t.Error(err)
+					}
+					switch got.(type) {
+					case acp.PlanRemoved:
+						attempts++
+						if row.Seq != 1 || row.Key != "" || ctx.Err() != nil {
+							t.Errorf("incorrect plan removal row or context: %+v, %v", row, ctx.Err())
+						}
+						entered <- sess
+						<-release
+						return tc.err
+					case acp.PlanUpdate:
+						hasPlan = true
+					}
+				}
+				if sess.State == string(acp.StateIdle) {
+					idleSaves++
+					if hasPlan != (tc.err != nil) {
+						t.Errorf("idle save wrote original plan = %t after removal save returned %v", hasPlan, tc.err)
+					}
+				}
+				return nil
+			}}
+			s.Submit(ctx, []acp.ContentBlock{acp.Text("work")})
+			plan := waitPlan(t, out)
+			s.mu.Lock()
+			worker := s.worker
+			s.mu.Unlock()
+			s.Cancel()
+			select {
+			case sess := <-entered:
+				if sess.State != string(acp.StateRunning) {
+					t.Fatalf("pending removal save described session state %q", sess.State)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("removal did not reach the store")
+			}
+			for len(out) != 0 {
+				u := <-out
+				if _, ok := u.(acp.SessionInfoUpdate); !ok {
+					t.Fatalf("published %#v while removal save was blocked", u)
+				}
+			}
+
+			// The running state and original snapshot remain visible, and a
+			// repeated cancellation can be handled while SQLite is blocked.
+			resumed := make(chan error, 1)
+			go func() {
+				s.Cancel()
+				resumed <- s.Resume(ctx, nil, nil, true)
+			}()
+			select {
+			case err := <-resumed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("session handlers blocked on plan removal persistence")
+			}
+			var replay []acp.Update
+			for len(out) != 0 {
+				u := <-out
+				if _, ok := u.(acp.SessionInfoUpdate); !ok {
+					replay = append(replay, u)
+				}
+			}
+			if len(replay) != 4 || !reflect.DeepEqual(replay[1], plan) ||
+				replay[2] != (acp.ReplayComplete{}) || replay[3] != (acp.StateUpdate{State: acp.StateRunning}) {
+				t.Fatalf("replay while the removal save was pending: %#v", replay)
+			}
+			unblock()
+
+			updates := out.untilIdle(t)
+			if got := updates[len(updates)-1]; got != (acp.StateUpdate{State: acp.StateIdle, StopReason: acp.StopCancelled}) {
+				t.Fatalf("final update = %#v", got)
+			}
+			select {
+			case <-worker:
+			case <-time.After(5 * time.Second):
+				t.Fatal("cancelled worker did not finish")
+			}
+			var want acp.Update = plan
+			wantIdleSaves := 1
+			switch tc.err {
+			case nil:
+				want = acp.PlanRemoved{PlanID: plan.Plan.PlanID}
+				if len(updates) != 2 || updates[0] != want {
+					t.Fatalf("want one removal before idle: %#v", updates)
+				}
+			case store.ErrLost:
+				wantIdleSaves = 0
+				if len(updates) != 1 || !s.isLost() {
+					t.Fatalf("lost session final updates: %#v", updates)
+				}
+			default:
+				if len(updates) != 2 {
+					t.Fatalf("want one save warning before idle: %#v", updates)
+				}
+				notice, ok := updates[0].(acp.Notice)
+				if !ok || notice.Severity != "warning" {
+					t.Fatalf("invalid save warning: %#v", updates[0])
+				}
+			}
+			got := s.transcript[s.planIndex[plan.Plan.PlanID]]
+			if !reflect.DeepEqual(got, want) || attempts != 1 || idleSaves != wantIdleSaves || len(out) != 0 {
+				t.Fatalf("transcript slot = %#v, removal saves = %d, idle saves = %d, extra updates = %d",
+					got, attempts, idleSaves, len(out))
 			}
 		})
 	}
@@ -320,7 +641,7 @@ func TestPlanSnapshotsReplaceAtFirstPosition(t *testing.T) {
 	s.mu.Lock()
 	s.transcript = append(s.transcript, acp.AgentMessage{MessageID: "a", Content: []acp.ContentBlock{acp.Text("progress")}})
 	s.dirty[2] = true
-	_, _, _, _, err = s.pending()
+	_, _, _, _, err = s.pending(nil)
 	s.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +660,7 @@ func TestPlanSnapshotsReplaceAtFirstPosition(t *testing.T) {
 	if len(s.transcript) != 3 || got.Plan.PlanID != id || !reflect.DeepEqual(got.Plan.Entries, entries) || len(s.history) != 2 {
 		t.Fatalf("replacement changed position/history: %+v", s.transcript)
 	}
-	_, _, rows, _, err := s.pending()
+	_, _, rows, _, err := s.pending(nil)
 	if err != nil || len(rows) != 1 || rows[0].Seq != 1 {
 		t.Fatalf("replacement was not dirty at original position: %+v, %v", rows, err)
 	}

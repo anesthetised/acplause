@@ -31,6 +31,13 @@ type PlanUpdate struct {
 
 func (PlanUpdate) sessionUpdate() string { return "plan_update" }
 
+// PlanRemoved clears the plan identified by PlanID.
+type PlanRemoved struct {
+	PlanID string `json:"planId"`
+}
+
+func (PlanRemoved) sessionUpdate() string { return "plan_removed" }
+
 // MarshalJSON implements json.Marshaler.
 func (u PlanUpdate) MarshalJSON() ([]byte, error) {
 	if u.raw != nil {

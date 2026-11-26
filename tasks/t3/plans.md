@@ -101,7 +101,9 @@ is advertised yet; their dependent activation issue supplies protocol e2e covera
 go test -race ./internal/agent && just e2e -run Plan
 ```
 
-E2E asserts full replacement entries rather than append semantics; failed/cancelled turns retain unfinished plan statuses.
+E2E asserts full replacement of plan entries. [ADR 0041](../../docs/adr/0041-remove-explicitly-cancelled-plans.md)
+later added removal of the current turn's unfinished plan on explicit
+`session/cancel`. Tests cover removal and preservation under other interruptions.
 
 Then run the shared check/coverage gate. For groundwork issues, no public feature
 is advertised yet; their dependent activation issue supplies protocol e2e coverage.

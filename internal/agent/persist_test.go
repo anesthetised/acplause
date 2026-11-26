@@ -93,7 +93,7 @@ func TestRestoreRepairsInterruptedTools(t *testing.T) {
 			if got.Status != acp.ToolFailed || got.Name != "bash" || string(got.RawOutput) != string(jsonString(interrupted)) {
 				t.Fatalf("recovered replay: %+v", got)
 			}
-			_, history, transcript, _, err := s.pending()
+			_, history, transcript, _, err := s.pending(nil)
 			if err != nil || len(history) != 1 || len(transcript) != 1 {
 				t.Fatalf("repair not queued for persistence: %v, %v, %v", history, transcript, err)
 			}
@@ -272,7 +272,7 @@ func TestRestoreRepairsInterruptedCompaction(t *testing.T) {
 	if c.Status != acp.CompactionFailed || c.Error == "" || c.CompactionID != "c" || len(s.history) != 2 || s.history[1].Content != "keep this" {
 		t.Fatalf("interrupted compaction: %+v, %+v", c, s.history)
 	}
-	_, history, transcript, _, err := s.pending()
+	_, history, transcript, _, err := s.pending(nil)
 	if err != nil || len(history) != 0 || len(transcript) != 1 {
 		t.Fatalf("repair was not queued: %v, %v, %v", history, transcript, err)
 	}
