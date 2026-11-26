@@ -20,7 +20,8 @@ import (
 // (ADRs 0004 and 0005).
 type Store interface {
 	Create(ctx context.Context, sess store.Session) error
-	Save(ctx context.Context, sess store.Session, history, transcript []store.Row) error
+	Save(ctx context.Context, sess store.Session, history, transcript []store.Row, cancelled func() bool) error
+	CheckOwner(ctx context.Context, id string) error
 	Acquire(ctx context.Context, id string) (*store.Loaded, error)
 	Renew(ctx context.Context, ids []string) (lost []string, err error)
 	Release(ctx context.Context, id string) error
@@ -162,7 +163,7 @@ func (s *Session) flush() {
 	sess, history, transcript, undo, err := s.pending()
 	s.mu.Unlock()
 	if err == nil {
-		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript)
+		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript, nil)
 	}
 	if err == nil {
 		s.mu.Lock()
@@ -193,6 +194,35 @@ func (s *Session) warnSave(err error) {
 			Description: "Work continues in memory. Recent changes may be lost if acplause exits. Saving will be retried automatically.",
 		})
 		s.saveWarning = true
+	}
+}
+
+// resolveRecorded verifies an already-inserted message against the current owner.
+// flushMu orders the check and its result with a local reacquisition. Close waits
+// for this admitted lookup before releasing the lease.
+func (s *Session) resolveRecorded(reply requestReply, id string) {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	// SQLite can transfer an idle session immediately after the read. Cover
+	// only retries already admitted by the time we make that observation.
+	if g, ok := reply.(*promptGroup); ok {
+		g.owner.mu.Lock()
+		g.detachLocked()
+		g.owner.mu.Unlock()
+	}
+	err := s.deps.store.CheckOwner(context.WithoutCancel(s.ctx), s.id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.lost:
+		reply.Reject(errSessionLost())
+	case errors.Is(err, store.ErrLost):
+		s.loseLocked()
+		reply.Reject(errSessionLost())
+	case err != nil:
+		reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot verify session ownership: %v", err))
+	default:
+		reply.Resolve(acp.PromptResponse{MessageID: id})
 	}
 }
 
@@ -331,7 +361,7 @@ func (s *Session) claimTurn(ctx context.Context, sub *submission, msg acp.UserMe
 				sess.Title = title(msg.Content)
 			}
 			s.mu.Unlock()
-			err = s.deps.store.Save(ctx, sess, history, transcript)
+			err = s.deps.store.Save(ctx, sess, history, transcript, sub.cancelled)
 			s.mu.Lock()
 		}
 	}

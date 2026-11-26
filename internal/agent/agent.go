@@ -346,6 +346,14 @@ func (a *Agent) newSession(ctx context.Context, req acp.NewSessionRequest) (any,
 }
 
 func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) {
+	a.mu.Lock()
+	previous := a.operations[req.SessionID]
+	a.mu.Unlock()
+	// A terminal operation has detached the old activation. Until a resume
+	// is reserved, retries have no live session or setup to join.
+	if previous != nil && previous.terminal {
+		return nil, acp.ErrSessionNotFound(req.SessionID)
+	}
 	reply := jsonrpc.NewReply(ctx)
 	sub := &submission{ctx: ctx, prompt: req.Prompt, key: string(req.IdempotencyKey), reply: reply}
 	if sub.key != "" {
@@ -355,10 +363,7 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 		}
 		sub.ctx, sub.reply = shared, group
 	}
-	a.mu.Lock()
-	pending := a.operations[req.SessionID] != nil
-	a.mu.Unlock()
-	if !pending {
+	if previous == nil {
 		s, err := a.session(req.SessionID)
 		if err != nil {
 			sub.reply.Reject(err)
@@ -374,7 +379,9 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
 		// A prompt depends on the requested setup, not on whether an earlier
 		// prompt was cancelled. Failed setup must reject before insertion.
-		for setup := op.previous; setup != nil; setup = setup.previous {
+		// The predecessor observed at receipt may have finished while the
+		// group was registered. Its result still applies to this prompt.
+		for setup := previous; setup != nil; setup = setup.previous {
 			if !setup.prompt {
 				if setup.err != nil {
 					return setup.err

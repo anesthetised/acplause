@@ -26,10 +26,11 @@ type pendingPrompts struct {
 }
 
 type promptGroup struct {
-	owner   *pendingPrompts
-	id      promptIdentity
-	cancel  context.CancelFunc
-	waiters []promptWaiter // guarded by owner.mu
+	owner      *pendingPrompts
+	id         promptIdentity
+	cancel     context.CancelFunc
+	cancelSave context.CancelFunc // installed before insertion, guarded by owner.mu
+	waiters    []promptWaiter     // guarded by owner.mu
 }
 
 type promptWaiter struct {
@@ -45,16 +46,37 @@ func (p *pendingPrompts) join(ctx context.Context, id promptIdentity, reply *jso
 	defer p.mu.Unlock()
 	g := p.groups[id]
 	if g != nil {
+		reply.OnCancelRequest(g.cancelRequest)
 		g.waiters = append(g.waiters, promptWaiter{ctx, reply, context.AfterFunc(ctx, g.cancel)})
 		return nil, g, false
 	}
 	if p.groups == nil {
 		p.groups = make(map[promptIdentity]*promptGroup)
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	shared, cancel := context.WithCancel(ctx)
 	g = &promptGroup{owner: p, id: id, cancel: cancel, waiters: []promptWaiter{{ctx: ctx, reply: reply}}}
 	p.groups[id] = g
-	return ctx, g, true
+	reply.OnCancelRequest(g.cancelRequest)
+	return shared, g, true
+}
+
+// cancelRequest reaches the current save before the reader handles the next
+// message. Only the worker can tell whether that save has already committed.
+func (g *promptGroup) cancelRequest() {
+	g.cancel()
+	g.owner.mu.Lock()
+	defer g.owner.mu.Unlock()
+	if g.cancelSave != nil {
+		g.cancelSave()
+	}
+}
+
+// bindSave installs the in-flight signal. An earlier cancellation is visible
+// to the worker's admission checks through the group context.
+func (g *promptGroup) bindSave(cancel context.CancelFunc) {
+	g.owner.mu.Lock()
+	defer g.owner.mu.Unlock()
+	g.cancelSave = cancel
 }
 
 // detach fences a terminal operation. New requests must pass through it.
@@ -77,12 +99,18 @@ func (g *promptGroup) cancelled() bool {
 	return false
 }
 
+// detachLocked ends admission to this group without disturbing a newer group
+// for the same key. The current waiters still receive this group's result.
+func (g *promptGroup) detachLocked() {
+	if g.owner.groups[g.id] == g {
+		delete(g.owner.groups, g.id)
+	}
+}
+
 func (g *promptGroup) takeWaiters() []promptWaiter {
 	p := g.owner
 	p.mu.Lock()
-	if p.groups[g.id] == g {
-		delete(p.groups, g.id)
-	}
+	g.detachLocked()
 	waiters := g.waiters
 	g.waiters = nil
 	p.mu.Unlock()

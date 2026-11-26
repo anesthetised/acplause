@@ -74,11 +74,11 @@ func TestSaveAndAcquireRoundTrip(t *testing.T) {
 	}
 	sess := session("s1", "running")
 	sess.Title, sess.Cost, sess.Dirs = "renamed", 0.25, nil
-	if err := a.Save(ctx, sess, rows(`"h0"`, `"h1"`), rows(`"t0"`)); err != nil {
+	if err := a.Save(ctx, sess, rows(`"h0"`, `"h1"`), rows(`"t0"`), nil); err != nil {
 		t.Fatal(err)
 	}
 	// Later saves replace entries at the same position.
-	if err := a.Save(ctx, sess, nil, []Row{{Seq: 0, Data: []byte(`"t0'"`)}, {Seq: 1, Data: []byte(`"t1"`)}}); err != nil {
+	if err := a.Save(ctx, sess, nil, []Row{{Seq: 0, Data: []byte(`"t0'"`)}, {Seq: 1, Data: []byte(`"t1"`)}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Release(ctx, "s1"); err != nil {
@@ -107,13 +107,13 @@ func TestSaveReplacesHistorySuffix(t *testing.T) {
 	if err := s.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save(ctx, sess, rows(`"old"`, `"answer"`, `"prompt"`, `"result"`), rows(`"original replay"`)); err != nil {
+	if err := s.Save(ctx, sess, rows(`"old"`, `"answer"`, `"prompt"`, `"result"`), rows(`"original replay"`), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save(ctx, sess, rows(`"summary"`, `"latest prompt"`), nil); err != nil {
+	if err := s.Save(ctx, sess, rows(`"summary"`, `"latest prompt"`), nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save(ctx, sess, []Row{{Seq: 2, Data: []byte(`"new answer"`)}}, nil); err != nil {
+	if err := s.Save(ctx, sess, []Row{{Seq: 2, Data: []byte(`"new answer"`)}}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	l, err := s.Acquire(ctx, "s")
@@ -142,13 +142,13 @@ func TestOwnershipBetweenProcesses(t *testing.T) {
 	}
 
 	// Idle in a: b takes it over, and a finds out.
-	if err := a.Save(ctx, session("s1", "idle"), nil, nil); err != nil {
+	if err := a.Save(ctx, session("s1", "idle"), nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.Acquire(ctx, "s1"); err != nil {
 		t.Fatalf("takeover: %v", err)
 	}
-	if err := a.Save(ctx, session("s1", "running"), rows(`"late"`), nil); !errors.Is(err, ErrLost) {
+	if err := a.Save(ctx, session("s1", "running"), rows(`"late"`), nil, nil); !errors.Is(err, ErrLost) {
 		t.Fatalf("save after takeover: %v", err)
 	}
 	if lost, err := a.Renew(ctx, []string{"s1"}); err != nil || !slices.Equal(lost, []string{"s1"}) {
@@ -165,7 +165,7 @@ func TestOwnershipBetweenProcesses(t *testing.T) {
 	}
 
 	// A lease left to expire is taken in any state.
-	if err := b.Save(ctx, session("s1", "running"), nil, nil); err != nil {
+	if err := b.Save(ctx, session("s1", "running"), nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	a.now = func() time.Time { return time.Now().Add(leaseTTL + time.Second) }
@@ -187,7 +187,7 @@ func TestDelete(t *testing.T) {
 	if err := a.Create(ctx, session("s1", "running")); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Save(ctx, session("s1", "running"), rows(`1`), rows(`2`)); err != nil {
+	if err := a.Save(ctx, session("s1", "running"), rows(`1`), rows(`2`), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Delete(ctx, "s1"); err != nil {
@@ -326,7 +326,7 @@ func TestTakeoverRacesNewTurn(t *testing.T) {
 	}
 	for i := range 50 {
 		turn, takeover := make(chan error, 1), make(chan error, 1)
-		go func() { turn <- a.Save(ctx, session("s1", "running"), nil, nil) }()
+		go func() { turn <- a.Save(ctx, session("s1", "running"), nil, nil, nil) }()
 		go func() {
 			_, err := b.Acquire(ctx, "s1")
 			takeover <- err
@@ -347,7 +347,7 @@ func TestTakeoverRacesNewTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := a.Save(ctx, session("s1", "idle"), nil, nil); err != nil {
+		if err := a.Save(ctx, session("s1", "idle"), nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -406,11 +406,11 @@ func TestModeIsSessionOwnedAndTransactional(t *testing.T) {
 		}
 	}
 	plan.Mode = "build"
-	if err := a.Save(ctx, plan, rows("stale"), nil); !errors.Is(err, ErrLost) {
+	if err := a.Save(ctx, plan, rows("stale"), nil, nil); !errors.Is(err, ErrLost) {
 		t.Fatalf("stale save: %v", err)
 	}
 	plan.Mode = "invalid"
-	if err := b.Save(ctx, plan, rows("invalid"), nil); err == nil {
+	if err := b.Save(ctx, plan, rows("invalid"), nil, nil); err == nil {
 		t.Fatal("invalid mode saved")
 	}
 	l, err := b.Acquire(ctx, "plan")
@@ -418,7 +418,7 @@ func TestModeIsSessionOwnedAndTransactional(t *testing.T) {
 		t.Fatalf("failed saves mutated session: %+v %v", l, err)
 	}
 	plan.Mode = "build"
-	if err := b.Save(ctx, plan, rows("kept"), nil); err != nil {
+	if err := b.Save(ctx, plan, rows("kept"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	l, err = b.Acquire(ctx, "plan")
@@ -463,11 +463,11 @@ func TestTranscriptKeyIdentity(t *testing.T) {
 		for i, key := range []string{"k", "K", "é", "e\u0301", "k\x00tail"} {
 			tr[i].Key = key
 		}
-		if err := s.Save(ctx, sess, rows("original"), tr); err != nil {
+		if err := s.Save(ctx, sess, rows("original"), tr, nil); err != nil {
 			t.Fatal(err)
 		}
 		// Dirty snapshots may rewrite the same immutable user message.
-		if err := s.Save(ctx, sess, nil, tr); err != nil {
+		if err := s.Save(ctx, sess, nil, tr, nil); err != nil {
 			t.Fatal(err)
 		}
 		for _, conflict := range []Row{
@@ -476,7 +476,7 @@ func TestTranscriptKeyIdentity(t *testing.T) {
 			{Seq: 0, Data: []byte("unkeyed")},
 			{Seq: 0, Data: []byte("original"), Key: "other"},
 		} {
-			if err := s.Save(ctx, sess, rows("rolled back"), []Row{conflict}); !errors.Is(err, ErrKeyConflict) {
+			if err := s.Save(ctx, sess, rows("rolled back"), []Row{conflict}, nil); !errors.Is(err, ErrKeyConflict) {
 				t.Fatalf("expected identity conflict, got %v", err)
 			}
 		}

@@ -82,4 +82,63 @@ func TestPromptRetryAfterLostResponseAndCompaction(t *testing.T) {
 		}
 		private(raw)
 	}
+
+	// A live process still has its restored message indexed when a third
+	// process takes over the idle session.
+	c := start(t, llm, withDataDir(dir))
+	c.initialize()
+	c.ok("session/resume", map[string]any{"sessionId": sid, "cwd": cwd}, nil)
+	c.untilIdle(sid)
+	if err := b.fails("session/prompt", params(sid, "stale retry"), -32603); err.Message != "session was resumed in another acplause process" {
+		t.Fatalf("old owner retry: %+v", err)
+	}
+	if got, _ := c.accepted(c.request("session/prompt", params(sid, "current owner retry"))); got != original {
+		t.Fatalf("current owner retry = %q, want %q", got, original)
+	}
+	if got := llm.requestCount(); got != 3 {
+		t.Fatalf("ownership checks issued another model request: %d", got)
+	}
+}
+
+func TestKeyedCancellationBeforeAndAfterSettlement(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	queue, turn := make(chan struct{}), make(chan struct{})
+	llm.enqueue(waitFor(queue, nil), waitFor(turn, nil))
+	a, sid, _ := started(t, llm)
+	a.accepted(a.prompt(sid, "hold the worker"))
+	a.updateWhere(sid, func(u update) bool { return u.is("agent_message_chunk") })
+	params := map[string]any{"sessionId": sid, "idempotencyKey": "k", "prompt": []any{map[string]any{"type": "text", "text": "queued"}}}
+	pair := func() []string {
+		return []string{a.request("session/prompt", params), a.request("session/prompt", params)}
+	}
+	cancel := func(id string) { a.notify("$/cancel_request", map[string]any{"requestId": requestID(t, id)}) }
+	for member := range 2 {
+		ids := pair()
+		cancel(ids[member])
+		for _, id := range ids {
+			if e := a.response(id).Error; e == nil || e.Code != -32800 {
+				t.Fatalf("queued request %s, cancelled %s: %+v", id, ids[member], e)
+			}
+		}
+	}
+	ids := pair()
+	a.ok("session/list", map[string]any{}, nil) // Both requests joined the queue.
+	close(queue)
+	a.untilIdle(sid)
+	one, _ := a.accepted(ids[0])
+	two, _ := a.accepted(ids[1])
+	if one != two {
+		t.Fatalf("joined requests received %q and %q", one, two)
+	}
+	for _, id := range ids {
+		cancel(id)
+	}
+	a.ok("session/list", map[string]any{}, nil) // Both cancellations reached the reader.
+	close(turn)
+	updates := a.untilIdle(sid)
+	echoes := filter(updates, "user_message")
+	if len(echoes) != 1 || echoes[0].MessageID != one || updates[len(updates)-1].StopReason != "end_turn" || llm.requestCount() != 2 {
+		t.Fatalf("settled turn after cancellation: %v, model calls %d", kinds(updates), llm.requestCount())
+	}
 }

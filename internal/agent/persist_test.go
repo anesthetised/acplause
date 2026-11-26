@@ -112,7 +112,7 @@ type gatedStore struct {
 	release chan struct{}
 }
 
-func (g *gatedStore) Save(ctx context.Context, sess store.Session, _, _ []store.Row) error {
+func (g *gatedStore) Save(ctx context.Context, sess store.Session, _, _ []store.Row, _ func() bool) error {
 	if sess.State == string(acp.StateRunning) {
 		close(g.entered)
 		<-g.release
@@ -211,7 +211,7 @@ func TestQueuedPromptReportsLossNotCancellation(t *testing.T) {
 	}
 }
 
-func (s saveStore) Save(ctx context.Context, sess store.Session, h, t []store.Row) error {
+func (s saveStore) Save(ctx context.Context, sess store.Session, h, t []store.Row, _ func() bool) error {
 	return s.save(ctx, sess, h, t)
 }
 

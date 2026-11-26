@@ -172,7 +172,11 @@ func (s *Session) submit(sub *submission) {
 		return
 	}
 	if id, ok := s.keys[sub.key]; ok {
-		sub.reply.Resolve(acp.PromptResponse{MessageID: id})
+		if s.deps.store == nil {
+			sub.reply.Resolve(acp.PromptResponse{MessageID: id})
+		} else {
+			s.saves.Go(func() { s.resolveRecorded(sub.reply, id) })
+		}
 		return
 	}
 	if sub.cancelled() {
@@ -482,6 +486,9 @@ func (s *Session) insert(ctx context.Context, sub *submission) bool {
 	// Validation runs on the session worker, never the protocol read loop.
 	// Keep both cancellation sources live while decoding and claiming the turn.
 	saveCtx, cancel := context.WithCancel(ctx)
+	if group, ok := sub.reply.(*promptGroup); ok {
+		group.bindSave(cancel)
+	}
 	stop := context.AfterFunc(sub.ctx, cancel)
 	defer stop()
 	defer cancel()
