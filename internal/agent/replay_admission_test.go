@@ -363,8 +363,8 @@ func TestDecliningReplayWithFullOutputKeepsReading(t *testing.T) {
 		a := &Agent{ctx: t.Context(), deps: deps{replays: newReplayStreams(conn)}}
 		seen := make(chan struct{})
 		methods := jsonrpc.Methods{
-			acp.MethodSessionResume: jsonrpc.Handle(a.resumeSession),
-			"seen":                  func(context.Context, json.RawMessage) (any, error) { close(seen); return nil, nil },
+			Requests:      map[string]jsonrpc.Handler{acp.MethodSessionResume: jsonrpc.Handle(a.resumeSession)},
+			Notifications: map[string]jsonrpc.Handler{"seen": func(context.Context, json.RawMessage) (any, error) { close(seen); return nil, nil }},
 		}
 		go func() { _ = conn.Serve(t.Context(), methods) }()
 		for range 257 {

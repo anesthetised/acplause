@@ -25,7 +25,10 @@ func settledReply(t *testing.T, reply requestReply) (json.RawMessage, *jsonrpc.E
 	t.Helper()
 	var output bytes.Buffer
 	conn := jsonrpc.NewConn(bytes.NewBufferString("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"test\"}\n"), &output, slog.New(slog.DiscardHandler))
-	if err := conn.Serve(context.Background(), jsonrpc.Methods{"test": func(context.Context, json.RawMessage) (any, error) { return reply, nil }}); err != nil {
+	methods := jsonrpc.Methods{Requests: map[string]jsonrpc.Handler{
+		"test": func(context.Context, json.RawMessage) (any, error) { return reply, nil },
+	}}
+	if err := conn.Serve(context.Background(), methods); err != nil {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
@@ -321,10 +324,10 @@ func TestCancelledCloseWaitsForPredecessorAndLeaseRelease(t *testing.T) {
 		var out bytes.Buffer
 		conn := jsonrpc.NewConn(in, &out, slog.New(slog.DiscardHandler))
 		go func() {
-			_ = conn.Serve(t.Context(), jsonrpc.Methods{
+			_ = conn.Serve(t.Context(), jsonrpc.Methods{Requests: map[string]jsonrpc.Handler{
 				acp.MethodSessionClose: jsonrpc.Handle(a.closeSession),
 				"fence":                func(context.Context, json.RawMessage) (any, error) { return true, nil },
-			})
+			}})
 		}()
 		_, err = fmt.Fprintf(peer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/close\",\"params\":{\"sessionId\":%q}}\n", s.id)
 		if err != nil {

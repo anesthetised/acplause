@@ -21,9 +21,9 @@ type peer struct {
 	conn  *Conn
 }
 
-func newPeer(t *testing.T, methods Methods) *peer {
+func newPeer(t *testing.T, requests map[string]Handler) *peer {
 	t.Helper()
-	return newPeerLimit(t, methods, maxLine)
+	return newPeerLimit(t, Methods{Requests: requests}, maxLine)
 }
 
 func newPeerLimit(t *testing.T, methods Methods, limit int) *peer {
@@ -104,14 +104,14 @@ func assertJSON(t *testing.T, got, want string) {
 func echo(_ context.Context, params json.RawMessage) (any, error) { return params, nil }
 
 func TestErrorsForMalformedInput(t *testing.T) {
-	p := newPeer(t, Methods{"echo": echo})
+	p := newPeer(t, map[string]Handler{"echo": echo})
 	tests := []struct {
 		name, line, want string
 	}{
 		{"parse error", `{"jsonrpc":`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}`},
 		{"malformed array", `[{"jsonrpc":"2.0"},]`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}`},
 		{"not an object", `42`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request: json: cannot unmarshal number into Go value of type jsonrpc.inbound"}}`},
-		{"bad id", `{"jsonrpc":"2.0","id":{},"method":"echo"}`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request: id must be a string, a number or null"}}`},
+		{"bad id", `{"jsonrpc":"2.0","id":{},"method":"echo"}`, `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request: id must be a string or an integer"}}`},
 		{"wrong version", `{"jsonrpc":"1.0","id":1,"method":"echo"}`, `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request: want jsonrpc \"2.0\" and a method"}}`},
 		{"unknown method", `{"jsonrpc":"2.0","id":2,"method":"nope"}`, `{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"method not found: nope"}}`},
 	}
@@ -125,7 +125,7 @@ func TestErrorsForMalformedInput(t *testing.T) {
 }
 
 func TestOverlongLineIsRejectedAndServingContinues(t *testing.T) {
-	p := newPeerLimit(t, Methods{"echo": echo}, 256)
+	p := newPeerLimit(t, Methods{Requests: map[string]Handler{"echo": echo}}, 256)
 	// Larger than the limit and than bufio's buffer, so it spans several reads.
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"echo","params":"` + strings.Repeat("x", 10_000) + `"}`)
 	p.expect(`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"line too long"}}`)
@@ -134,21 +134,23 @@ func TestOverlongLineIsRejectedAndServingContinues(t *testing.T) {
 }
 
 func TestEchoesIDsVerbatim(t *testing.T) {
-	p := newPeer(t, Methods{"echo": echo})
-	for _, id := range []string{`7`, `"req-7"`, `null`, `12345678901234567890`} {
+	p := newPeer(t, map[string]Handler{"echo": echo})
+	for _, id := range []string{`7`, `"req-7"`, `12345678901234567890`, `1.2e2`, `-1.0`, `-0e-99999999999999999999`, `1e308`} {
 		p.send(`{"jsonrpc":"2.0","id":` + id + `,"method":"echo","params":{"x":1}}`)
-		p.expect(`{"jsonrpc":"2.0","id":` + id + `,"result":{"x":1}}`)
+		if got, want := p.recv(), `{"jsonrpc":"2.0","id":`+id+`,"result":{"x":1}}`; got != want {
+			t.Fatalf("got %s, want %s", got, want)
+		}
 	}
 }
 
 func TestNotificationsGetNoResponse(t *testing.T) {
 	got := make(chan json.RawMessage, 1)
-	p := newPeer(t, Methods{
+	p := newPeerLimit(t, Methods{Notifications: map[string]Handler{
 		"note": func(_ context.Context, params json.RawMessage) (any, error) {
 			got <- params
 			return nil, errors.New("ignored")
 		},
-	})
+	}}, maxLine)
 	p.send(`{"jsonrpc":"2.0","method":"note","params":{"a":true}}`)
 	p.send(`{"jsonrpc":"2.0","method":"unknown"}`)
 	p.expectSilence()
@@ -157,7 +159,7 @@ func TestNotificationsGetNoResponse(t *testing.T) {
 
 func TestDeferredReplyIsWrittenBeforeLaterNotifications(t *testing.T) {
 	var conn *Conn
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"later": func(ctx context.Context, _ json.RawMessage) (any, error) {
 			reply := NewReply(ctx)
 			go func() {
@@ -174,7 +176,7 @@ func TestDeferredReplyIsWrittenBeforeLaterNotifications(t *testing.T) {
 }
 
 func TestReplySettledBeforeHandlerReturns(t *testing.T) {
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"now": func(ctx context.Context, _ json.RawMessage) (any, error) {
 			reply := NewReply(ctx)
 			reply.Reject(NewError(-32002, "gone"))
@@ -188,7 +190,7 @@ func TestReplySettledBeforeHandlerReturns(t *testing.T) {
 
 func TestCancelRequestCancelsDeferredRequestContext(t *testing.T) {
 	admitted := make(chan context.Context, 1)
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
 			admitted <- ctx
 			reply := NewReply(ctx)
@@ -208,7 +210,7 @@ func TestCancelRequestCancelsDeferredRequestContext(t *testing.T) {
 }
 
 func TestHandlerErrors(t *testing.T) {
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"plain": func(context.Context, json.RawMessage) (any, error) { return nil, errors.New("boom") },
 		"panic": func(context.Context, json.RawMessage) (any, error) { panic("oops") },
 		"typed": Handle(func(_ context.Context, p validated) (any, error) { return p, nil }),
@@ -240,7 +242,7 @@ const rejectedArray = `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"messag
 
 func TestRejectsArraysBeforeDispatch(t *testing.T) {
 	calls := 0
-	p := newPeer(t, Methods{"count": func(context.Context, json.RawMessage) (any, error) {
+	p := newPeer(t, map[string]Handler{"count": func(context.Context, json.RawMessage) (any, error) {
 		calls++
 		return calls, nil
 	}})
@@ -281,7 +283,7 @@ func TestSendAfterCloseFails(t *testing.T) {
 }
 
 func TestCallRoutesResponsesByID(t *testing.T) {
-	p := newPeer(t, Methods{})
+	p := newPeer(t, map[string]Handler{})
 	type result struct {
 		N int `json:"n"`
 	}
@@ -316,11 +318,16 @@ func TestCallRoutesResponsesByID(t *testing.T) {
 	p.expect(rejectedArray)
 	// Answer out of order, plus a response nobody awaits.
 	p.send(`{"jsonrpc":"2.0","id":999,"result":{"n":0}}`)
-	p.send(`{"jsonrpc":"2.0","id":` + ids[1] + `,"error":{"code":-32603,"message":"no"}}`)
+	p.send(`{"jsonrpc":"2.0","id":` + ids[1] + `,"error":{"code":-32603.0,"CODE":-32000,"message":"no","MESSAGE":"ignored"}}`)
 	p.send(`{"jsonrpc":"2.0","id":` + ids[0] + `,"result":{"n":7}}`)
 	var got []outcome
 	for range 2 {
-		got = append(got, <-outcomes)
+		select {
+		case o := <-outcomes:
+			got = append(got, o)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only received %d of 2 call outcomes", len(got))
+		}
 	}
 	var ok, failed int
 	for _, o := range got {
@@ -337,7 +344,7 @@ func TestCallRoutesResponsesByID(t *testing.T) {
 }
 
 func TestCallIgnoresNullError(t *testing.T) {
-	p := newPeer(t, Methods{})
+	p := newPeer(t, map[string]Handler{})
 	var r struct{ N int }
 	errs := make(chan error, 1)
 	go func() { errs <- p.conn.CallPermission(context.Background(), "ask", nil, &r) }()
@@ -355,9 +362,9 @@ func TestCallIgnoresNullError(t *testing.T) {
 
 func TestDuplicateRequestIDStaysCancellable(t *testing.T) {
 	release := make(chan struct{})
-	p := newPeer(t, Methods{"wait": func(ctx context.Context, params json.RawMessage) (any, error) {
+	p := newPeer(t, map[string]Handler{"wait": func(ctx context.Context, params json.RawMessage) (any, error) {
 		reply := NewReply(ctx)
-		first := string(params) == `"first"`
+		first := string(params) == `["first"]`
 		go func() {
 			select {
 			case <-release:
@@ -372,8 +379,8 @@ func TestDuplicateRequestIDStaysCancellable(t *testing.T) {
 		}()
 		return reply, nil
 	}})
-	p.send(`{"jsonrpc":"2.0","id":7,"method":"wait","params":"first"}`)
-	p.send(`{"jsonrpc":"2.0","id":7,"method":"wait","params":"second"}`)
+	p.send(`{"jsonrpc":"2.0","id":7,"method":"wait","params":["first"]}`)
+	p.send(`{"jsonrpc":"2.0","id":7,"method":"wait","params":["second"]}`)
 	close(release)
 	p.expect(`{"jsonrpc":"2.0","id":7,"result":"released"}`)
 	p.send(`{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":7}}`)
@@ -381,13 +388,13 @@ func TestDuplicateRequestIDStaysCancellable(t *testing.T) {
 }
 
 func TestNilReplyIsAnInternalError(t *testing.T) {
-	p := newPeer(t, Methods{"nil": func(context.Context, json.RawMessage) (any, error) { return (*Reply)(nil), nil }})
+	p := newPeer(t, map[string]Handler{"nil": func(context.Context, json.RawMessage) (any, error) { return (*Reply)(nil), nil }})
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"nil"}`)
 	p.expect(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"internal error"}}`)
 }
 
 func TestCallReturnsWhenContextEnds(t *testing.T) {
-	p := newPeer(t, Methods{"echo": echo})
+	p := newPeer(t, map[string]Handler{"echo": echo})
 	ctx, cancel := context.WithCancel(context.Background())
 	errs := make(chan error, 1)
 	go func() { errs <- p.conn.CallPermission(ctx, "ask", nil, &struct{}{}) }()

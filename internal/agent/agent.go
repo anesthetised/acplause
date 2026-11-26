@@ -219,15 +219,19 @@ func (a *Agent) dropLocked(id string, pending *sessionOperation) {
 // Methods returns the agent's JSON-RPC handlers.
 func (a *Agent) Methods() jsonrpc.Methods {
 	return jsonrpc.Methods{
-		acp.MethodInitialize:       jsonrpc.Handle(a.initialize),
-		acp.MethodSessionNew:       a.ready(jsonrpc.Handle(a.newSession)),
-		acp.MethodSessionPrompt:    a.ready(jsonrpc.Handle(a.prompt)),
-		acp.MethodSessionCancel:    a.ready(jsonrpc.Handle(a.cancelSession)),
-		acp.MethodSessionList:      a.ready(jsonrpc.Handle(a.listSessions)),
-		acp.MethodSessionResume:    a.ready(jsonrpc.Handle(a.resumeSession)),
-		acp.MethodSessionClose:     a.ready(jsonrpc.Handle(a.closeSession)),
-		acp.MethodSessionDelete:    a.ready(jsonrpc.Handle(a.deleteSession)),
-		acp.MethodSessionSetConfig: a.ready(jsonrpc.Handle(a.setConfigOption)),
+		Requests: map[string]jsonrpc.Handler{
+			acp.MethodInitialize:       jsonrpc.Handle(a.initialize),
+			acp.MethodSessionNew:       a.ready(jsonrpc.Handle(a.newSession)),
+			acp.MethodSessionPrompt:    a.ready(jsonrpc.Handle(a.prompt)),
+			acp.MethodSessionList:      a.ready(jsonrpc.Handle(a.listSessions)),
+			acp.MethodSessionResume:    a.ready(jsonrpc.Handle(a.resumeSession)),
+			acp.MethodSessionClose:     a.ready(jsonrpc.Handle(a.closeSession)),
+			acp.MethodSessionDelete:    a.ready(jsonrpc.Handle(a.deleteSession)),
+			acp.MethodSessionSetConfig: a.ready(jsonrpc.Handle(a.setConfigOption)),
+		},
+		Notifications: map[string]jsonrpc.Handler{
+			acp.MethodSessionCancel: a.ready(jsonrpc.Handle(a.cancelSession)),
+		},
 	}
 }
 

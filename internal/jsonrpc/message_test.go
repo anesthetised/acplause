@@ -21,7 +21,7 @@ func TestBeforeWriteRunsOnlyForEncodableSuccess(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			p := newPeer(t, Methods{"resume": func(context.Context, json.RawMessage) (any, error) {
+			p := newPeer(t, map[string]Handler{"resume": func(context.Context, json.RawMessage) (any, error) {
 				return OnWrite(tc.result, func() { calls.Add(1) }, nil), tc.err
 			}})
 			p.send(`{"jsonrpc":"2.0","id":1,"method":"resume"}`)

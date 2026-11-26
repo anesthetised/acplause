@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // Version is the only protocol version spoken.
@@ -44,9 +46,8 @@ func AsError(err error) *Error {
 	return &Error{Code: CodeInternalError, Message: err.Error()}
 }
 
-// ID is a request id held as its raw JSON text, so numbers and strings are
-// echoed back exactly as received and ids can key maps. The zero value
-// marshals as null.
+// ID is an RPC id held as raw JSON text so replies can echo the original
+// spelling. The zero value marshals as null.
 type ID string
 
 // NullID is the id used when a request's own id cannot be determined.
@@ -60,40 +61,112 @@ func (id ID) MarshalJSON() ([]byte, error) {
 	return []byte(id), nil
 }
 
-// UnmarshalJSON implements json.Unmarshaler. Only strings, numbers and null
-// are valid ids.
+// UnmarshalJSON implements json.Unmarshaler. Null is reserved for error
+// responses whose request ID is unknown.
 func (id *ID) UnmarshalJSON(b []byte) error {
-	var v any
-	if err := json.Unmarshal(b, &v); err != nil {
-		return err
+	b = bytes.TrimSpace(b)
+	if bytes.Equal(b, []byte("null")) {
+		*id = NullID
+		return nil
 	}
-	switch v.(type) {
-	case string, float64, nil:
-	default:
-		return errors.New("id must be a string, a number or null")
+	if !json.Valid(b) {
+		return errors.New("invalid JSON id")
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, b); err != nil {
-		return err
+	wire, _ := requestID(b)
+	if wire == "" {
+		return errors.New("id must be a string or an integer")
 	}
-	*id = ID(compact.String())
+	*id = wire
 	return nil
+}
+
+// requestID takes a JSON token and returns its original spelling and a key
+// for matching equivalent JSON values. An empty pair means no valid ID.
+func requestID(raw json.RawMessage) (wire, key ID) {
+	if len(raw) == 0 {
+		return "", ""
+	}
+	if raw[0] == '"' {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return "", ""
+		}
+		return ID(raw), ID(strconv.Quote(value))
+	}
+	if key = integerKey(string(raw)); key == "" {
+		return "", ""
+	}
+	return ID(raw), key
+}
+
+// integerKey normalizes integral numbers without rounding. The old decoder
+// accepted finite float64 values, which have at most 309 integer digits.
+// Keep that width for compatibility and check it before expanding exponents.
+func integerKey(number string) ID {
+	const maxDigits = 309
+	if number == "" || (number[0] != '-' && (number[0] < '0' || number[0] > '9')) {
+		return ""
+	}
+	mantissa, exponent := number, "0"
+	if i := strings.IndexAny(number, "eE"); i >= 0 {
+		mantissa, exponent = number[:i], number[i+1:]
+	}
+	whole, fraction, _ := strings.Cut(mantissa, ".")
+	unsigned, negative := strings.CutPrefix(whole, "-")
+	significant := strings.TrimRight(unsigned+fraction, "0")
+	if significant == "" {
+		return "0"
+	}
+	scale := int64(len(unsigned) - len(significant))
+	digits := strings.TrimLeft(significant, "0")
+	exp, err := strconv.ParseInt(exponent, 10, 64)
+	if err != nil || exp < -scale || exp > int64(maxDigits-len(digits))-scale {
+		return ""
+	}
+	if negative {
+		digits = "-" + digits
+	}
+	return ID(digits + strings.Repeat("0", int(exp+scale)))
 }
 
 // inbound is any message read from the peer.
 type inbound struct {
-	JSONRPC string          `json:"jsonrpc"`
+	JSONRPC json.RawMessage `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
-	Method  string          `json:"method"`
+	Method  json.RawMessage `json:"method"`
 	Params  json.RawMessage `json:"params"`
 	Result  json.RawMessage `json:"result"`
 	Error   json.RawMessage `json:"error"`
+
+	peerError *Error
 }
 
-func (m *inbound) isResponse() bool { return m.Method == "" && (m.Result != nil || m.failed()) }
+func (m *inbound) isResponse() bool { return m.Method == nil && (m.Result != nil || m.Error != nil) }
 
 // failed treats "error": null as absent: some peers send it next to a result.
 func (m *inbound) failed() bool { return m.Error != nil && string(m.Error) != "null" }
+
+// parseResponse checks the envelope and decodes any error before a peer can
+// consume a pending call. Delivery separately checks the response ID.
+func (m *inbound) parseResponse() bool {
+	if m.Result != nil {
+		return !m.failed()
+	}
+	var e struct {
+		Code    json.RawMessage `json:"code,case:strict"`
+		Message *string         `json:"message,case:strict"`
+		Data    any             `json:"data,case:strict"`
+	}
+	if !m.failed() || json.Unmarshal(m.Error, &e) != nil || e.Message == nil {
+		return false
+	}
+	code, err := strconv.ParseInt(string(integerKey(string(e.Code))), 10, 32)
+	if err != nil {
+		return false
+	}
+	m.peerError = &Error{Code: int(code), Message: *e.Message, Data: e.Data}
+	return true
+}
 
 type resultWithWriteHooks struct {
 	result      any

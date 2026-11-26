@@ -45,7 +45,7 @@ func TestIssue54EarlyPromptResponsePrecedesUserMessage(t *testing.T) {
 	})
 	notified := make(chan struct{})
 	s.deps.out = issue54Client{Client: conn, notified: notified}
-	methods := jsonrpc.Methods{
+	methods := jsonrpc.Methods{Requests: map[string]jsonrpc.Handler{
 		acp.MethodSessionPrompt: func(ctx context.Context, _ json.RawMessage) (any, error) {
 			reply := s.Submit(ctx, []acp.ContentBlock{acp.Text("early worker")})
 			// Hold the handler until Session.insert has called Resolve and
@@ -57,7 +57,7 @@ func TestIssue54EarlyPromptResponsePrecedesUserMessage(t *testing.T) {
 			}
 			return reply, nil
 		},
-	}
+	}}
 	if err := conn.Serve(context.Background(), methods); err != nil {
 		t.Fatal(err)
 	}
