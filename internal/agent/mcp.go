@@ -219,9 +219,6 @@ func projectMCPResult(result mcp.Result, vision bool) toolOutput {
 func mcpConfigs(servers []acp.MCPServer) []mcp.Config {
 	var configs []mcp.Config
 	for _, s := range servers {
-		if s.Type != "stdio" && s.Type != "http" {
-			continue
-		}
 		c := mcp.Config{Type: s.Type, Name: s.Name, Command: s.Command, Args: s.Args, URL: s.URL, Env: map[string]string{}, Headers: map[string]string{}}
 		for _, v := range s.Env {
 			c.Env[v.Name] = v.Value

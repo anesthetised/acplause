@@ -136,6 +136,12 @@ permission requests by ID. The stdio tests cover late replies, session
 isolation and close ordering. The transport tests saturate both queues and
 exercise response races and shutdown. [ADR 0034](../adr/0034-permission-request-cancellation.md) · [Cancellation][beta-cancel]
 
+Initialization rejects other requests with `-32600` before dispatch and
+allows repeats until a valid non-initialize request arrives. The agent reads
+the version first and ignores unreadable fields during downgrade. Stdio tests
+cover the repeat window, including unknown requests and invalid parameters.
+[Stdio tests](../../e2e/protocol_test.go) · [Initialization guard][beta-init] · [Version negotiation][beta-version]
+
 JSON-RPC dispatch rejects invalid request IDs and request or notification
 forms before invoking a handler. It echoes valid IDs in their original spelling
 and uses `id: null` when an error cannot identify a request. Invalid responses
@@ -149,13 +155,13 @@ its opaque fields in echo and replay. Stored opaque block types remain replayabl
 Empty prompt arrays remain accepted as permitted by beta.4.
 [Stdio coverage](../../e2e/prompt_content_test.go) · [Prompt contents][beta-prompt]
 
-Initialization rejects other requests with `-32600` before dispatch and
-allows repeats until a valid non-initialize request arrives. The agent reads
-the version first and ignores unreadable fields during downgrade. Stdio tests
-cover the repeat window, including unknown requests and invalid parameters.
-[Stdio tests](../../e2e/protocol_test.go) · [Initialization guard][beta-init] · [Version negotiation][beta-version]
+MCP setup rejects unsupported transports and duplicate names before connecting
+peers. The streamable HTTP transport applies its own headers in preference to
+configured values. Tests cover both setup methods and credential handling.
+[ADR 0036](../adr/0036-validate-mcp-transport-at-setup.md) · [Stdio coverage](../../e2e/mcp_setup_validation_test.go) · [MCP servers][beta-mcp]
 
 ### Other follow-ups
+
 - **Mixed-content command dispatch.** Alpha.9 already allowed commands to
   accompany other content. Beta.4
   specifies how to recognize a command in the first text block.
@@ -163,15 +169,10 @@ cover the repeat window, including unknown requests and invalid parameters.
   text block. Define and test how argument-free `/compact` should handle
   accompanying content.
   [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
-- **MCP setup.** Agents must reject unsupported transports and duplicate names,
-  and transport-owned HTTP headers use transport values. [MCP validation](../../internal/acp/mcp.go)
-  skips unrecognized transports and rejects transport-owned headers. Add setup
-  tests for unsupported transports and reserved headers. The spec also
-  recommends continuing with the peers that did connect and notifying the user
-  about failures. [New](../../internal/agent/agent.go) and
-  [resume](../../internal/agent/session.go) currently fail setup if a peer cannot
-  connect. Decide how to handle partial success and test it with one working
-  and one failing peer. [MCP servers][beta-mcp]
+- **MCP partial setup.** The spec recommends continuing with the peers that
+  did connect and notifying the user about failures. Both setup paths currently
+  fail if a peer cannot connect. Decide how to handle partial success and test
+  it with one working and one failing peer. [MCP servers][beta-mcp]
 - **Configuration.** The spec recommends broadcasting the complete config when
   it changes, including client-initiated changes. [Set config](../../internal/agent/agent.go)
   only returns the response. Expand the scope of [#144](https://github.com/anesthetised/acplause/issues/144)

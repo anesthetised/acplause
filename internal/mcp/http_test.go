@@ -13,6 +13,67 @@ import (
 	"time"
 )
 
+func TestMCPHTTPOwnedHeaders(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	transport := newHTTP(nil, Config{URL: srv.URL, Headers: map[string]string{
+		"aCCePt":               "text/plain",
+		"coNTenT-TypE":         "text/plain",
+		"mCP-pROTOcOL-veRSION": "configured-version",
+		"mcP-sESSion-ID":       "configured-session",
+		"lASt-eVENt-ID":        "configured-cursor",
+		"hOST":                 "configured-host",
+		"cONteNT-LeNGth":       "9999",
+		"tRaNSFEr-eNCODInG":    "chunked",
+		"cONNeCTiON":           "close",
+		"aUTHoRIZaTiON":        "Bearer fixture",
+		"x-aPI-kEY":            "fixture-key",
+	}})
+	t.Cleanup(transport.client.CloseIdleConnections)
+
+	for _, tt := range []struct {
+		name, method, version, session, cursor, accept, contentType string
+		body                                                        []byte
+	}{
+		{name: "initialize", method: http.MethodPost, accept: "application/json, text/event-stream", contentType: "application/json", body: []byte("{}")},
+		{name: "stateless GET", method: http.MethodGet, version: "2025-06-18", accept: "text/event-stream"},
+		{name: "reconnect GET", method: http.MethodGet, version: "2025-06-18", session: "server-session", cursor: "event-cursor", accept: "text/event-stream"},
+		{name: "close DELETE", method: http.MethodDelete, version: "2025-06-18", session: "server-session", accept: "application/json, text/event-stream"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport.Initialized(tt.version)
+			transport.sessionID = tt.session
+			resp, err := transport.request(t.Context(), tt.method, tt.body, tt.cursor, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			r := <-requests
+			for name, want := range map[string]string{
+				"Accept":               tt.accept,
+				"Content-Type":         tt.contentType,
+				"MCP-Protocol-Version": tt.version,
+				"Mcp-Session-Id":       tt.session,
+				"Last-Event-ID":        tt.cursor,
+				"Connection":           "",
+				"Authorization":        "Bearer fixture",
+				"X-API-Key":            "fixture-key",
+			} {
+				if got := r.Header.Get(name); got != want {
+					t.Errorf("%s = %q, want %q", name, got, want)
+				}
+			}
+			if r.Host != strings.TrimPrefix(srv.URL, "http://") || r.ContentLength != int64(len(tt.body)) || len(r.TransferEncoding) != 0 {
+				t.Errorf("request framing changed: host=%q length=%d transfer=%v", r.Host, r.ContentLength, r.TransferEncoding)
+			}
+		})
+	}
+}
+
 func TestMCPHTTPDroppedResultNeverRepeatsCall(t *testing.T) {
 	for _, cursor := range []bool{true, false} {
 		t.Run(fmt.Sprint("cursor=", cursor), func(t *testing.T) {

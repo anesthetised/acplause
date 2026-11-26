@@ -3,7 +3,6 @@ package acp
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 
@@ -17,7 +16,7 @@ type MCPVariable struct {
 }
 
 // MCPServer is a configured stdio or HTTP server. Unknown transport payloads
-// are retained verbatim and ignored, as required by ACP extensibility.
+// are retained verbatim during decoding and rejected by setup validation.
 type MCPServer struct {
 	Type    string        `json:"type"`
 	Name    string        `json:"name"`
@@ -32,7 +31,7 @@ type MCPServer struct {
 // UnmarshalJSON decodes only fields belonging to a known variant.
 func (s *MCPServer) UnmarshalJSON(b []byte) error {
 	var tag struct {
-		Type string `json:"type"`
+		Type string `json:"type,case:strict"`
 	}
 	if err := json.Unmarshal(b, &tag); err != nil {
 		return err
@@ -78,7 +77,7 @@ func validateMCPServers(servers []MCPServer) error {
 			return fmt.Errorf("mcpServers.type is required")
 		}
 		if s.Type != "stdio" && s.Type != "http" {
-			continue
+			return fmt.Errorf("unsupported MCP transport")
 		}
 		if s.Name == "" || names[s.Name] {
 			return fmt.Errorf("MCP server names must be nonempty and unique")
@@ -109,10 +108,6 @@ func validateMCPServers(servers []MCPServer) error {
 			for _, h := range s.Headers {
 				if !validHeaderName(h.Name) || strings.ContainsAny(h.Value, "\r\n\x00") {
 					return fmt.Errorf("invalid MCP HTTP header")
-				}
-				switch http.CanonicalHeaderKey(h.Name) {
-				case "Host", "Accept", "Content-Type", "Content-Length", "Transfer-Encoding", "Connection", "Mcp-Session-Id", "Mcp-Protocol-Version":
-					return fmt.Errorf("MCP protocol headers cannot be overridden")
 				}
 			}
 		}

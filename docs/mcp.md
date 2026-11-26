@@ -25,6 +25,11 @@ Both transports use the same discovery, permissions and tool history:
 }
 ```
 
+Session setup returns `-32602` before connecting any peer if the list contains
+an unsupported transport or duplicate server names. For HTTP, the transport
+sets or omits its own headers regardless of casing in the supplied list.
+Other validated headers are forwarded. [ADR 0036](adr/0036-validate-mcp-transport-at-setup.md)
+
 ## Credentials
 
 The client supplies any server credentials through the stdio `env` or HTTP
