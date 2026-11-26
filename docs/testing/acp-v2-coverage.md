@@ -115,6 +115,11 @@ values acplause emits. System prompts, individual tool and terminal
 cancellation, subagents and background work have no advertised producer or
 capability here. [Upstream schema changelog][beta-changelog]
 
+Both setup methods reject an unsupported non-null `systemPrompt` with `-32602`
+before starting session setup or MCP connections. Tests cover cold and active
+resumes, replay ordering, and omitted or null prompts.
+[Stdio coverage](../../e2e/system_prompt_test.go) · [System prompt][beta-system-prompt]
+
 Prompt retries share one insertion and retain the original message ID across
 compaction and restart. Coverage includes validation, pending setup, cancellation
 during commit, and retry after a lost response. [ADR 0033](../adr/0033-prompt-idempotency-keys.md) · [Retrying prompts][beta-retry]
@@ -162,12 +167,6 @@ Empty prompt arrays remain accepted as permitted by beta.4.
   text block. Define and test how argument-free `/compact` should handle
   accompanying content.
   [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
-- **Unsupported system prompts.** Beta.4 requires `-32602` when the agent
-  cannot apply a supplied `systemPrompt` because its value uses an unsupported
-  mode or content type. [Both setup request types](../../internal/acp/session.go)
-  silently drop the field. Add focused tests that an unsupported prompt
-  leaves the session uncreated or unresumed in `session/new` and
-  `session/resume`. [System prompt][beta-system-prompt]
 - **MCP setup.** Agents must reject unsupported transports and duplicate names,
   and transport-owned HTTP headers use transport values. [MCP validation](../../internal/acp/mcp.go)
   skips unrecognized transports and rejects transport-owned headers. Add setup
