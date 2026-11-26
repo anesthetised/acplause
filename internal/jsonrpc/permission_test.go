@@ -254,7 +254,7 @@ func TestWriterFailureWakesIdleReader(t *testing.T) {
 		output := stoppedWriter{release: make(chan struct{}), fail: true}
 		c := NewConn(in, output, slog.New(slog.DiscardHandler))
 		served := make(chan error, 1)
-		go func() { served <- c.Serve(t.Context(), nil) }()
+		go func() { served <- c.Serve(t.Context(), Methods{}) }()
 		synctest.Wait() // Serve's line reader is inside Read on a quiet pipe.
 		if err := c.Notify("fail", nil); err != nil {
 			t.Fatal(err)

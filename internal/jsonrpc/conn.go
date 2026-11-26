@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -29,8 +30,11 @@ var ErrClosed = errors.New("jsonrpc: connection closed")
 // or the connection stops serving. For notifications the result is ignored.
 type Handler func(ctx context.Context, params json.RawMessage) (any, error)
 
-// Methods maps method names to handlers.
-type Methods map[string]Handler
+// Methods registers handlers in the forms in which peers may invoke them.
+type Methods struct {
+	Requests      map[string]Handler
+	Notifications map[string]Handler
+}
 
 // Handle adapts a function of decoded params into a Handler; see
 // DecodeParams.
@@ -169,12 +173,8 @@ func (c *Conn) callPeer(ctx context.Context, method string, params, result any, 
 		return outcome.err
 	}
 	msg := outcome.msg
-	if msg.failed() {
-		var e Error
-		if err := json.Unmarshal(msg.Error, &e); err != nil {
-			return fmt.Errorf("jsonrpc: decode error of %s: %w", method, err)
-		}
-		return &e
+	if msg.peerError != nil {
+		return msg.peerError
 	}
 	if err := json.Unmarshal(msg.Result, result); err != nil {
 		return fmt.Errorf("jsonrpc: decode result of %s: %w", method, err)
@@ -207,8 +207,10 @@ func (c *Conn) cancelCallLocked(id ID, call pendingCall, err error) {
 // deliver hands a response to the call awaiting it. Responses nobody awaits,
 // such as late answers to abandoned calls, are dropped.
 func (c *Conn) deliver(msg *inbound) {
-	var id ID
-	_ = json.Unmarshal(msg.ID, &id)
+	_, id := requestID(msg.ID)
+	if id == "" || !msg.parseResponse() {
+		return
+	}
 	c.mu.Lock()
 	call, ok := c.calls[id]
 	if ok {
@@ -346,35 +348,56 @@ func (c *Conn) handleLine(ctx context.Context, methods Methods, line []byte) {
 
 func (c *Conn) dispatch(ctx context.Context, methods Methods, raw []byte) {
 	var msg inbound
-	if err := json.Unmarshal(raw, &msg); err != nil {
+	if err := jsonv2.Unmarshal(raw, &msg, json.DefaultOptionsV1(), jsonv2.MatchCaseInsensitiveNames(false)); err != nil {
 		c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid request: %v", err)))
 		return
 	}
+	var version string
+	_ = json.Unmarshal(msg.JSONRPC, &version)
 	if msg.isResponse() {
-		c.deliver(&msg)
+		if version == Version {
+			c.deliver(&msg)
+		}
 		return
 	}
 
-	var id ID
-	if msg.ID != nil {
-		if err := json.Unmarshal(msg.ID, &id); err != nil {
-			c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid request: %v", err)))
-			return
-		}
+	id, key := requestID(msg.ID)
+	if msg.ID != nil && id == "" {
+		c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "invalid request: id must be a string or an integer")))
+		return
 	}
-	if msg.JSONRPC != Version || msg.Method == "" {
+	var method string
+	_ = json.Unmarshal(msg.Method, &method)
+	if version != Version || method == "" {
 		c.respond(errorResponse(id, NewError(CodeInvalidRequest, "invalid request: want jsonrpc %q and a method", Version)))
+		return
+	}
+	if msg.Result != nil || msg.Error != nil {
+		c.respond(errorResponse(id, NewError(CodeInvalidRequest, "invalid request: unexpected result or error")))
+		return
+	}
+	// Keep accepting explicit null params as absent for existing clients.
+	if len(msg.Params) != 0 && string(msg.Params) != "null" && msg.Params[0] != '{' && msg.Params[0] != '[' {
+		c.respond(errorResponse(id, NewError(CodeInvalidRequest, "invalid request: params must be an object or an array")))
 		return
 	}
 
 	if msg.ID == nil {
-		c.notify(ctx, methods, msg.Method, msg.Params)
+		if _, ok := methods.Requests[method]; ok {
+			c.respond(errorResponse(NullID, NewError(CodeInvalidRequest, "method %s requires a request id", method)))
+			return
+		}
+		c.notify(ctx, methods.Notifications, method, msg.Params)
 		return
 	}
-	c.call(ctx, methods, id, msg.Method, msg.Params)
+	if _, ok := methods.Notifications[method]; ok || method == CancelRequestMethod {
+		c.respond(errorResponse(id, NewError(CodeInvalidRequest, "method %s is a notification", method)))
+		return
+	}
+	c.call(ctx, methods.Requests, id, key, method, msg.Params)
 }
 
-func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, params json.RawMessage) {
+func (c *Conn) call(ctx context.Context, methods map[string]Handler, id, key ID, method string, params json.RawMessage) {
 	handler, ok := methods[method]
 	if !ok {
 		c.respond(errorResponse(id, NewError(CodeMethodNotFound, "method not found: %s", method)))
@@ -383,14 +406,14 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 
 	ctx, cancel := context.WithCancel(ctx)
 	reply := &Reply{id: id}
-	tracked := c.track(id, func() {
+	tracked := c.track(key, func() {
 		cancel()
 		if reply.onCancelRequest != nil {
 			reply.onCancelRequest()
 		}
 	})
 	reply.bind(func(result any, err error) {
-		c.untrack(id, tracked)
+		c.untrack(key, tracked)
 		cancel()
 		if _, alreadySent := result.(sentResponse); !alreadySent {
 			c.respond(newResponse(id, result, err))
@@ -412,7 +435,7 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 	reply.settle(result, err)
 }
 
-func (c *Conn) notify(ctx context.Context, methods Methods, method string, params json.RawMessage) {
+func (c *Conn) notify(ctx context.Context, methods map[string]Handler, method string, params json.RawMessage) {
 	if method == CancelRequestMethod {
 		c.cancelRequest(params)
 		return
@@ -441,14 +464,19 @@ func (c *Conn) invoke(ctx context.Context, method string, handler Handler, param
 
 func (c *Conn) cancelRequest(params json.RawMessage) {
 	var p struct {
-		RequestID ID `json:"requestId"`
+		RequestID json.RawMessage `json:"requestId,case:strict"`
 	}
-	if err := DecodeParams(params, &p); err != nil || p.RequestID == "" {
-		c.log.Warn("malformed cancel request", "params", string(params))
+	if err := DecodeParams(params, &p); err != nil {
+		c.log.Warn("malformed cancel request")
+		return
+	}
+	_, key := requestID(p.RequestID)
+	if key == "" {
+		c.log.Warn("malformed cancel request")
 		return
 	}
 	c.mu.Lock()
-	cancel := c.inflight[p.RequestID]
+	cancel := c.inflight[key]
 	c.mu.Unlock()
 	if cancel != nil {
 		(*cancel)()

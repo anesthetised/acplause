@@ -22,7 +22,7 @@ func TestIssue54EarlyReplyPrecedesNotification(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			var conn *Conn
-			p := newPeer(t, Methods{
+			p := newPeer(t, map[string]Handler{
 				"early": func(ctx context.Context, _ json.RawMessage) (any, error) {
 					reply := NewReply(ctx)
 					notified := make(chan error, 1)
@@ -65,7 +65,7 @@ func TestIssue54SettlementWinsOverHandlerCompletion(t *testing.T) {
 				want = `{"jsonrpc":"2.0","id":1,"error":{"code":-32800,"message":"first"}}`
 			}
 			t.Run(name+completion, func(t *testing.T) {
-				p := newPeer(t, Methods{
+				p := newPeer(t, map[string]Handler{
 					"first": func(ctx context.Context, _ json.RawMessage) (any, error) {
 						reply := NewReply(ctx)
 						if reject {
@@ -86,8 +86,8 @@ func TestIssue54SettlementWinsOverHandlerCompletion(t *testing.T) {
 				})
 				p.send(`{"jsonrpc":"2.0","id":1,"method":"first"}`)
 				p.expect(want)
-				p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":"next"}`)
-				p.expect(`{"jsonrpc":"2.0","id":2,"result":"next"}`)
+				p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":["next"]}`)
+				p.expect(`{"jsonrpc":"2.0","id":2,"result":["next"]}`)
 				p.conn.mu.Lock()
 				defer p.conn.mu.Unlock()
 				if len(p.conn.inflight) != 0 {
@@ -102,7 +102,7 @@ func TestIssue54HandlerCompletionWinsOverLateSettlement(t *testing.T) {
 	for _, completion := range []string{"return", "error", "panic"} {
 		t.Run(completion, func(t *testing.T) {
 			replies := make(chan *Reply, 1)
-			p := newPeer(t, Methods{
+			p := newPeer(t, map[string]Handler{
 				"first": func(ctx context.Context, _ json.RawMessage) (any, error) {
 					replies <- NewReply(ctx)
 					switch completion {
@@ -128,14 +128,14 @@ func TestIssue54HandlerCompletionWinsOverLateSettlement(t *testing.T) {
 			reply := <-replies
 			reply.Resolve("ignored")
 			reply.Reject(NewError(-32800, "ignored"))
-			p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":"next"}`)
-			p.expect(`{"jsonrpc":"2.0","id":2,"result":"next"}`)
+			p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":["next"]}`)
+			p.expect(`{"jsonrpc":"2.0","id":2,"result":["next"]}`)
 		})
 	}
 }
 
 func TestIssue54SynchronousResolveKeepsFirstSettlement(t *testing.T) {
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"now": func(ctx context.Context, _ json.RawMessage) (any, error) {
 			derived, cancel := context.WithCancel(ctx)
 			defer cancel()
@@ -152,14 +152,14 @@ func TestIssue54SynchronousResolveKeepsFirstSettlement(t *testing.T) {
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"now"}`)
 	p.expect(`{"jsonrpc":"2.0","id":1,"result":"first"}`)
 	// A second request fences delivery, including any duplicate settlement.
-	p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":"next"}`)
-	p.expect(`{"jsonrpc":"2.0","id":2,"result":"next"}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":["next"]}`)
+	p.expect(`{"jsonrpc":"2.0","id":2,"result":["next"]}`)
 }
 
 func TestIssue54StandaloneReplyStoresSettlement(t *testing.T) {
 	reply := NewReply(context.Background())
 	reply.Resolve("stored")
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"stored": func(context.Context, json.RawMessage) (any, error) { return reply, nil },
 	})
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"stored"}`)
@@ -167,23 +167,25 @@ func TestIssue54StandaloneReplyStoresSettlement(t *testing.T) {
 }
 
 func TestIssue54NotificationReplyProducesNoResponse(t *testing.T) {
-	p := newPeer(t, Methods{
-		"notice": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			reply := NewReply(ctx)
-			reply.Resolve("ignored")
-			return reply, nil
+	p := newPeerLimit(t, Methods{
+		Requests: map[string]Handler{"echo": echo},
+		Notifications: map[string]Handler{
+			"notice": func(ctx context.Context, _ json.RawMessage) (any, error) {
+				reply := NewReply(ctx)
+				reply.Resolve("ignored")
+				return reply, nil
+			},
 		},
-		"echo": echo,
-	})
+	}, maxLine)
 	p.send(`{"jsonrpc":"2.0","method":"notice"}`)
-	p.send(`{"jsonrpc":"2.0","id":1,"method":"echo","params":"next"}`)
-	p.expect(`{"jsonrpc":"2.0","id":1,"result":"next"}`)
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"echo","params":["next"]}`)
+	p.expect(`{"jsonrpc":"2.0","id":1,"result":["next"]}`)
 }
 
 func TestIssue54PendingReplyAllowsUnrelatedOutput(t *testing.T) {
 	var conn *Conn
 	var reply *Reply
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
 			reply = NewReply(ctx)
 			notified := make(chan error, 1)
@@ -207,14 +209,14 @@ func TestIssue54PendingReplyAllowsUnrelatedOutput(t *testing.T) {
 	conn = p.conn
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"wait"}`)
 	p.expect(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other"}}`)
-	p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":"other session"}`)
-	p.expect(`{"jsonrpc":"2.0","id":2,"result":"other session"}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":["other session"]}`)
+	p.expect(`{"jsonrpc":"2.0","id":2,"result":["other session"]}`)
 	reply.Resolve("finished")
 	p.expect(`{"jsonrpc":"2.0","id":1,"result":"finished"}`)
 }
 
 func TestIssue54ServeExitCancelsPendingReply(t *testing.T) {
-	p := newPeer(t, Methods{
+	p := newPeer(t, map[string]Handler{
 		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
 			reply := NewReply(ctx)
 			context.AfterFunc(ctx, func() { reply.Reject(NewError(-32800, "cancelled")) })
@@ -223,8 +225,8 @@ func TestIssue54ServeExitCancelsPendingReply(t *testing.T) {
 		"echo": echo,
 	})
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"wait"}`)
-	p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":"admitted"}`)
-	p.expect(`{"jsonrpc":"2.0","id":2,"result":"admitted"}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"echo","params":["admitted"]}`)
+	p.expect(`{"jsonrpc":"2.0","id":2,"result":["admitted"]}`)
 	if err := p.in.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -238,12 +240,12 @@ func TestIssue54ReplyPreservesBackpressureAndClose(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		conn, out, release := heldConn(t)
 		var reply *Reply
-		conn.handleLine(context.Background(), Methods{
+		conn.handleLine(context.Background(), Methods{Requests: map[string]Handler{
 			"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
 				reply = NewReply(ctx)
 				return reply, nil
 			},
-		}, []byte(`{"jsonrpc":"2.0","id":1,"method":"wait"}`))
+		}}, []byte(`{"jsonrpc":"2.0","id":1,"method":"wait"}`))
 		_ = conn.Notify("block_writer", nil)
 		synctest.Wait()
 		for range cap(conn.ordinary.lines) {

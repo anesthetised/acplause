@@ -116,7 +116,6 @@ func TestCallCancellableResponseWins(t *testing.T) {
 		{name: "success", result: `{"n":7}`},
 		{name: "peer error", rpcError: `{"code":-32603,"message":"no"}`, wantError: "jsonrpc error -32603: no"},
 		{name: "bad result", result: `[]`, wantError: "decode result of ask"},
-		{name: "bad error", rpcError: `[]`, wantError: "decode error of ask"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -127,7 +126,10 @@ func TestCallCancellableResponseWins(t *testing.T) {
 				errs := make(chan error, 1)
 				go func() { errs <- c.CallCancellable(ctx, "ask", nil, &result) }()
 				synctest.Wait()
-				msg := &inbound{ID: []byte(`1`), Result: []byte(tt.result)}
+				msg := &inbound{ID: []byte(`1`)}
+				if tt.result != "" {
+					msg.Result = []byte(tt.result)
+				}
 				if tt.rpcError != "" {
 					msg.Error = []byte(tt.rpcError)
 				}
@@ -209,7 +211,7 @@ func TestCallCancellableNotEnqueued(t *testing.T) {
 }
 
 func TestCallCancellableConcurrentRequests(t *testing.T) {
-	p := newPeer(t, Methods{})
+	p := newPeer(t, map[string]Handler{})
 	const count = 12
 	cancels := make([]context.CancelFunc, count)
 	errs := make([]chan error, count)

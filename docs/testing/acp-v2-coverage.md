@@ -131,6 +131,13 @@ permission requests by ID. The stdio tests cover late replies, session
 isolation and close ordering. The transport tests saturate both queues and
 exercise response races and shutdown. [ADR 0034](../adr/0034-permission-request-cancellation.md) · [Cancellation][beta-cancel]
 
+JSON-RPC dispatch rejects invalid request IDs and request or notification
+forms before invoking a handler. It echoes valid IDs in their original spelling
+and uses `id: null` when an error cannot identify a request. Invalid responses
+leave pending calls available for valid replies. Explicit `params: null` remains
+equivalent to omitted parameters for existing clients.
+[Transport tests](../../internal/jsonrpc/envelope_test.go) · [Stdio tests](../../e2e/envelope_test.go) · [Communication model][beta-envelope] · [Beta.4 schema][beta-schema]
+
 Prompt validation rejects unadvertised content types and malformed known fields,
 including negative resource link sizes, before insertion. Accepted content keeps
 its opaque fields in echo and replay. Stored opaque block types remain replayable.
@@ -139,13 +146,6 @@ Empty prompt arrays remain accepted as permitted by beta.4.
 
 ### Other follow-ups
 
-- **Request envelopes.** Request IDs must be strings or integers, with
-  `null` reserved for errors where the request ID cannot be determined.
-  [ID decoding](../../internal/jsonrpc/message.go) accepts fractions and nulls,
-  and [dispatch](../../internal/jsonrpc/conn.go) uses the same method table for
-  requests and notifications. Validate request IDs and known method envelopes
-  at ingress. Test that error responses can still use `id: null`.
-  [Communication model][beta-envelope] · [Beta.4 schema][beta-schema]
 - **Initialization.** Before initialization any other request must get
   `-32600`. A repeat after another request must also get `-32600`. Version
   negotiation must read the version first and ignore unreadable fields when

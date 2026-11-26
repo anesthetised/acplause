@@ -290,7 +290,10 @@ func TestInstructionsRefreshLeavesProtocolReaderResponsive(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("worker did not reach instruction read barrier")
 	}
-	c.ok(acp.MethodSessionCancel, map[string]any{"sessionId": sid}, nil)
+	c.notify(acp.MethodSessionCancel, acp.CancelSessionNotification{SessionID: sid})
+	// The list response confirms the reader dispatched the preceding
+	// notification while the instruction read was still blocked.
+	c.ok(acp.MethodSessionList, acp.ListSessionsRequest{}, nil)
 	barrier.release <- struct{}{}
 	if idle := lastIdle(c.untilIdle(sid)); idle.Update.StopReason != "cancelled" || idle.Update.Error != nil {
 		t.Fatalf("refresh cancellation: %+v", idle)

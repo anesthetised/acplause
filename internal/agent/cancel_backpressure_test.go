@@ -53,8 +53,8 @@ func TestCancelDispatchesNextSessionWithFullOutput(t *testing.T) {
 		out := &pausedOutput{release: releaseOutput}
 		conn := jsonrpc.NewConn(in, out, slog.New(slog.DiscardHandler))
 		methods := jsonrpc.Methods{
-			acp.MethodSessionPrompt: jsonrpc.Handle(a.prompt),
-			acp.MethodSessionCancel: jsonrpc.Handle(a.cancelSession),
+			Requests:      map[string]jsonrpc.Handler{acp.MethodSessionPrompt: jsonrpc.Handle(a.prompt)},
+			Notifications: map[string]jsonrpc.Handler{acp.MethodSessionCancel: jsonrpc.Handle(a.cancelSession)},
 		}
 		served := make(chan struct{})
 		go func() {
