@@ -24,7 +24,7 @@ type benchClient struct{}
 
 func (benchClient) Notify(string, any) error { return nil }
 
-func (benchClient) Call(context.Context, string, any, any) error { return nil }
+func (benchClient) CallPermission(context.Context, string, any, any) error { return nil }
 
 func (benchClient) CallCancellable(context.Context, string, any, any) error { return nil }
 

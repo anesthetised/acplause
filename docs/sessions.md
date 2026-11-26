@@ -43,6 +43,8 @@ See [ADR 0033](adr/0033-prompt-idempotency-keys.md).
 `session/list` includes stored sessions from every process using that data
 directory. `session/resume` restores their conversation history and settings.
 `session/close` cancels work and releases the session in this process. Its
+pending permission cancellations and final foreground updates precede the reply.
+A cancelled close replies with `-32800` after cleanup and lease release. The
 history stays listed and can be resumed. Closing a missing or inactive session
 succeeds. `session/delete` cancels local work and removes the session and its
 stored history. Deleting an unknown or already deleted session succeeds.

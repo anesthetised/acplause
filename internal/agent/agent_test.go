@@ -30,8 +30,8 @@ func (r recorder) Notify(_ string, params any) error {
 	return nil
 }
 
-// Call allows every permission request.
-func (r recorder) Call(_ context.Context, _ string, _, result any) error {
+// CallPermission allows every permission request.
+func (r recorder) CallPermission(_ context.Context, _ string, _, result any) error {
 	resp := result.(*acp.RequestPermissionResponse)
 	resp.Outcome.Outcome, resp.Outcome.OptionID = acp.OutcomeSelected, optionAllow
 	return nil
@@ -277,9 +277,9 @@ func (c *cancellingClient) Notify(method string, params any) error {
 	return c.recorder.Notify(method, params)
 }
 
-func (c *cancellingClient) Call(ctx context.Context, method string, params, result any) error {
+func (c *cancellingClient) CallPermission(ctx context.Context, method string, params, result any) error {
 	c.calls++
-	return c.recorder.Call(ctx, method, params, result)
+	return c.recorder.CallPermission(ctx, method, params, result)
 }
 
 func TestNoPermissionRequestAfterCancellation(t *testing.T) {

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,6 +39,17 @@ func decodePermission(t *testing.T, m *message) permission {
 
 func selected(option string) map[string]any {
 	return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": option}}
+}
+
+// cancellation takes the next cancellation and checks which request it targets.
+func (a *agent) cancellation(req *message) *message {
+	a.t.Helper()
+	m := a.take(func(m *message) bool { return m.Method == "$/cancel_request" })
+	var p struct{ RequestID json.RawMessage }
+	if err := json.Unmarshal(m.Params, &p); err != nil || string(p.RequestID) != string(req.ID) {
+		a.t.Fatalf("cancellation %s for request %s: %v", m.Params, req.ID, err)
+	}
+	return m
 }
 
 func TestPermissionAllowsFileWrite(t *testing.T) {
@@ -155,7 +167,8 @@ func TestPermissionErrorResponseIsNotApproval(t *testing.T) {
 func TestCancelWhileAwaitingPermission(t *testing.T) {
 	t.Parallel()
 	llm := newMockLLM(t)
-	llm.enqueue(callTool(testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`)), reply("next"))
+	run := callTool(testShellName(), testShellArgs(`touch ran`, `[IO.File]::WriteAllText('ran', '')`))
+	llm.enqueue(run, run, reply("next"))
 	a, sid, cwd := started(t, llm, askingUser)
 	a.accepted(a.prompt(sid, "run"))
 	req := a.permissionRequest()
@@ -172,20 +185,94 @@ func TestCancelWhileAwaitingPermission(t *testing.T) {
 	// The client never answers: cancellation must not wait for it, and the
 	// turn ends without reporting running again.
 	a.notify("session/cancel", map[string]any{"sessionId": sid})
+	cancel := a.cancellation(req)
 	after := slices.DeleteFunc(a.untilIdle(sid), func(u update) bool { return u.seq < snapshot.seq })
 	if got := kinds(after); !slices.Equal(got, []string{"tool_call_update cancelled", "state_update idle cancelled"}) {
 		t.Fatalf("updates after cancel: %v", got)
 	}
 
-	// A late answer does not resume the cancelled call.
-	a.answer(req, selected(optionOfKind(t, req, "allow_once")))
-	a.expectQuiet(func(m *message) bool { return m.Method == "session/update" })
-	if _, err := os.Stat(filepath.Join(cwd, "ran")); !os.IsNotExist(err) {
-		t.Fatal("cancelled command ran")
+	if cancel.seq >= after[0].seq {
+		t.Fatal("cancelled tool update preceded cancellation of its permission")
 	}
+
+	// A late always-allow neither executes the command nor authorizes a retry.
+	a.answer(req, selected(optionOfKind(t, req, "allow_always")))
 	a.accepted(a.prompt(sid, "again"))
+	retry := a.permissionRequest()
+	a.answer(retry, selected(optionOfKind(t, retry, "reject_once")))
 	if idle := a.untilIdle(sid); idle[len(idle)-1].StopReason != "end_turn" {
 		t.Fatalf("next turn: %v", kinds(idle))
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ran")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled command ran: %v", err)
+	}
+	var results []string
+	for _, m := range llm.request(1).Messages {
+		if m["role"] == "tool" && m["tool_call_id"] == "call_"+testShellName() {
+			results = append(results, m["content"].(string))
+		}
+	}
+	if !slices.Equal(results, []string{"Cancelled by the user."}) {
+		t.Fatalf("cancelled tool history: %v", results)
+	}
+}
+
+func TestCancelAndAllowInOneWrite(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	llm.enqueue(callTool("write_file", `{"path":"ran","content":"allowed"}`))
+	a, sid, cwd := started(t, llm, askingUser)
+	a.accepted(a.prompt(sid, "write"))
+	req := a.permissionRequest()
+	a.send(fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":%q}}
+{"jsonrpc":"2.0","id":%s,"result":{"outcome":{"outcome":"selected","optionId":%q}}}`,
+		sid, req.ID, optionOfKind(t, req, "allow_once")))
+	updates := a.untilIdle(sid)
+	cancelled := filter(updates, "tool_call_update")
+	if idle := updates[len(updates)-1]; idle.StopReason != "cancelled" || len(cancelled) == 0 || cancelled[len(cancelled)-1].Status != "cancelled" {
+		t.Fatalf("turn after cancellation and allow: %v", kinds(updates))
+	}
+	if a.cancellation(req).seq >= cancelled[len(cancelled)-1].seq {
+		t.Fatal("tool cancellation preceded permission cancellation")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ran")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled permission allowed a write: %v", err)
+	}
+}
+
+func TestCloseCancelsOnlyItsPendingPermission(t *testing.T) {
+	t.Parallel()
+	llm := newMockLLM(t)
+	write := callTool("write_file", `{"path":"ran","content":"allowed"}`)
+	llm.enqueue(write, write, reply("done"))
+	a, sid, cwd := started(t, llm, askingUser)
+	otherDir := t.TempDir()
+	other := a.newSession(otherDir).SessionID
+	a.ok("session/set_config_option", map[string]any{"sessionId": other, "configId": "model", "type": "id", "value": "test/model"}, nil)
+	a.accepted(a.prompt(sid, "write"))
+	req := a.permissionRequest()
+	a.accepted(a.prompt(other, "write"))
+	stillPending := a.permissionRequest()
+
+	closed := a.ok("session/close", map[string]any{"sessionId": sid}, nil)
+	cancel := a.cancellation(req)
+	updates := a.untilIdle(sid)
+	idle := updates[len(updates)-1]
+	calls := filter(updates, "tool_call_update")
+	if cancel.seq >= closed.seq || idle.seq >= closed.seq || idle.StopReason != "cancelled" ||
+		len(calls) != 2 || calls[1].Status != "cancelled" {
+		t.Fatalf("cancel line %d, updates %v, idle line %d, close line %d", cancel.seq, kinds(updates), idle.seq, closed.seq)
+	}
+	a.answer(req, selected(optionOfKind(t, req, "allow_once")))
+	a.answer(stillPending, selected(optionOfKind(t, stillPending, "allow_once")))
+	if updates := a.untilIdle(other); updates[len(updates)-1].StopReason != "end_turn" {
+		t.Fatalf("other session: %v", kinds(updates))
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ran")); !os.IsNotExist(err) {
+		t.Fatalf("closed session ran its tool: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(otherDir, "ran")); err != nil || string(got) != "allowed" {
+		t.Fatalf("other session's file: %q, %v", got, err)
 	}
 }
 
@@ -207,4 +294,36 @@ func TestFailingCallIsNotAskedAbout(t *testing.T) {
 		t.Fatalf("asked about a failing call: %v", kinds(updates))
 	}
 	a.expectQuiet(func(m *message) bool { return m.Method == "session/request_permission" })
+}
+
+func TestCancelledCloseRepliesAfterPermissionCleanup(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	llm := newMockLLM(t)
+	llm.enqueue(callTool("write_file", `{"path":"ran","content":"bad"}`))
+	a, sid, _ := started(t, llm, askingUser, withDataDir(dir))
+	a.accepted(a.prompt(sid, "write"))
+	req := a.permissionRequest()
+	unlock := holdStoreWriter(t, dir)
+
+	// The first close must finish saving the turn and releasing its lease.
+	// The duplicate close has to wait for that predecessor, even if cancelled.
+	first := a.request("session/close", map[string]any{"sessionId": sid})
+	second := a.request("session/close", map[string]any{"sessionId": sid})
+	for _, id := range []string{first, second} {
+		a.notify("$/cancel_request", map[string]any{"requestId": json.RawMessage(id)})
+	}
+	// An absent session closes immediately, fencing both cancellations on
+	// the reader while this session still owns its cleanup.
+	a.ok("session/close", map[string]any{"sessionId": "absent"}, nil)
+	cancel := a.cancellation(req)
+	unlock()
+	updates := a.untilIdle(sid)
+	idle := updates[len(updates)-1]
+	one, two := a.response(first), a.response(second)
+	if idle.StopReason != "cancelled" || cancel.seq >= idle.seq || idle.seq >= one.seq || one.seq >= two.seq ||
+		one.Error == nil || one.Error.Code != -32800 || two.Error == nil || two.Error.Code != -32800 {
+		t.Fatalf("cancel line %d, idle %+v, close responses %+v and %+v", cancel.seq, idle, one, two)
+	}
+	a.ok("session/close", map[string]any{"sessionId": sid}, nil)
 }

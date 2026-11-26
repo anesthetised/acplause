@@ -1,6 +1,7 @@
 # ADR 0003: Ask permission before changing files or running commands
 
 - Status: accepted; decision 2 narrowed for `bash` by [ADR 0029](0029-session-remembered-permissions.md)
+- Decision 7 superseded by [ADR 0034](0034-permission-request-cancellation.md).
 - Date: 2026-10-19
 - Issue: #3
 - Source: ACP spec at `3be9cfc` (`testdata/schema/v2/VERSION`):

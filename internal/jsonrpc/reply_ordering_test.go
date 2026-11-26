@@ -246,7 +246,7 @@ func TestIssue54ReplyPreservesBackpressureAndClose(t *testing.T) {
 		}, []byte(`{"jsonrpc":"2.0","id":1,"method":"wait"}`))
 		_ = conn.Notify("block_writer", nil)
 		synctest.Wait()
-		for range cap(conn.queue) {
+		for range cap(conn.ordinary.lines) {
 			_ = conn.Notify("filler", nil)
 		}
 		settled := make(chan struct{})

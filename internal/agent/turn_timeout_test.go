@@ -172,18 +172,12 @@ func TestTurnTimeoutInterruptsPermissionAndFormOverProtocol(t *testing.T) {
 			if idle := lastIdle(updates); idle.Update.StopReason != "cancelled" || idle.Update.Error != nil || idles != 1 || notices != 1 || len(requests) != 0 {
 				t.Fatalf("timeout protocol: %+v", updates)
 			}
-			if form {
-				select {
-				case <-c.cancellations:
-				case <-time.After(5 * time.Second):
-					t.Fatal("form did not use cancellable request")
-				}
-			} else {
-				select {
-				case <-c.cancellations:
-					t.Fatal("permission sent form-style cancellation")
-				default:
-				}
+			select {
+			case <-c.cancellations:
+			default:
+				t.Fatal("timed-out request was not cancelled before idle")
+			}
+			if !form {
 				release <- struct{}{}
 			}
 			c.await(c.prompt(sid, "continue"))

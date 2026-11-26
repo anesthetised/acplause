@@ -19,6 +19,7 @@ type sessionOperation struct {
 	reply    requestReply
 	prompt   bool
 	terminal bool
+	closing  bool  // close owns its reply until all terminal cleanup has finished
 	err      error // published by closing done
 }
 
@@ -63,8 +64,10 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			select {
 			case <-op.previous.done:
 			case <-op.ctx.Done():
-				op.err = acp.ErrRequestCancelled()
-				op.reply.Reject(op.err)
+				if !op.closing {
+					op.err = acp.ErrRequestCancelled()
+					op.reply.Reject(op.err)
+				}
 				<-op.previous.done
 				if !op.terminal {
 					return

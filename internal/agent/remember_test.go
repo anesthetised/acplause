@@ -149,21 +149,32 @@ func TestOtherToolsOfferOnceOptionsOnly(t *testing.T) {
 	}
 }
 
+func TestCancelledPermissionCannotReplaceRememberedDecision(t *testing.T) {
+	s, _ := testSession(t, nil)
+	s.remember(t.Context(), "command", false, 0)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	s.remember(ctx, "command", true, 0)
+	if allow, ok := s.remembered("command"); !ok || allow {
+		t.Fatal("cancelled approval replaced an existing rejection")
+	}
+}
+
 func TestRememberedDecisionBoundAndRootsReset(t *testing.T) {
 	s, _ := testSession(t, fakeModel(func(context.Context, llm.Request, func(llm.Delta)) (*llm.Completion, error) {
 		return &llm.Completion{}, nil
 	}))
 	for i := range maxRemembered {
-		s.remember(strings.Repeat("x", i+1), true, 0)
+		s.remember(t.Context(), strings.Repeat("x", i+1), true, 0)
 	}
 	if ok, _ := s.canRemember(); ok {
 		t.Fatal("always options offered at the bound")
 	}
-	s.remember("one more", true, 0)
+	s.remember(t.Context(), "one more", true, 0)
 	if _, ok := s.remembered("one more"); ok {
 		t.Fatal("decision stored beyond the bound")
 	}
-	s.remember("x", false, 0) // replacing at the bound is allowed
+	s.remember(t.Context(), "x", false, 0) // replacing at the bound is allowed
 	if allow, ok := s.remembered("x"); !ok || allow {
 		t.Fatal("replacement lost")
 	}

@@ -33,7 +33,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | `session/request_permission` | agent→client | Covered | `e2e/permission_test.go`, `e2e/remembered_permission_test.go`; all four option kinds for `bash` (ADR 0029), once-only elsewhere |
 | `elicitation/create` | agent→client | Covered for tool-call scope | `e2e/elicitation_test.go`, `e2e/form_constraints_test.go`; session/request scope Deferred #139 |
 | `elicitation/complete` | agent→client | Deferred #140 | no non-auth producer |
-| `$/cancel_request` | both | Covered | `internal/jsonrpc/cancellable_test.go`, `internal/jsonrpc/conn_test.go` |
+| `$/cancel_request` | both | Covered | `internal/jsonrpc/cancellable_test.go`, `internal/jsonrpc/permission_test.go`, `internal/jsonrpc/conn_test.go` |
 | `auth/login`, `auth/logout` | client→agent | Excluded | ADR 0023 |
 | [JSON-RPC batch rejection][beta-batches] | inbound | Covered | `internal/jsonrpc/conn_test.go`, `e2e/protocol_test.go`, `e2e/prompt_response_order_test.go` |
 
@@ -119,6 +119,11 @@ Prompt retries share one insertion and retain the original message ID across
 compaction and restart. Coverage includes validation, pending setup, cancellation
 during commit, and retry after a lost response. [ADR 0033](../adr/0033-prompt-idempotency-keys.md) · [Retrying prompts][beta-retry]
 
+Foreground cancellation, deadline expiry and session close cancel pending
+permission requests by ID. The stdio tests cover late replies, session
+isolation and close ordering. The transport tests saturate both queues and
+exercise response races and shutdown. [ADR 0034](../adr/0034-permission-request-cancellation.md) · [Cancellation][beta-cancel]
+
 ### Tracked follow-ups
 
 - **Replay boundary.** Cursor-based resumes must mark completed history
@@ -129,12 +134,6 @@ during commit, and retry after a lost response. [ADR 0033](../adr/0033-prompt-id
   and the live-update cut point, including empty replay. Its tests should also
   exercise slow resume setup while live updates and client requests are pending.
   [Replay completion][beta-replay]
-- **Permission cancellation.** Session cancel and close must cancel the
-  pending permission requests they stop. [The permission handler](../../internal/agent/turn.go)
-  uses `Call`, which abandons the wait without sending `$/cancel_request`.
-  [#221](https://github.com/anesthetised/acplause/issues/221) covers cancellation
-  on the wire, close ordering and late replies. Add a deadline case for
-  permissions abandoned after a timeout. [Cancellation][beta-cancel]
 - **Inactive and missing sessions.** [#222](https://github.com/anesthetised/acplause/issues/222)
   adds the requested `data.sessionId` to applicable `-32002` responses and
   makes closing a missing or inactive session succeed. The agent still queues
