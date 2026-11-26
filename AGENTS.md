@@ -82,7 +82,7 @@ testdata/schema/v2 pinned ACP schema; see VERSION
   docs at the commit in `testdata/schema/v2/VERSION`. acp-bridge is a
   reference for behaviour (tool loop, limits, error classes), never for wire
   shapes.
-- ACP v2 is a draft. Update the pinned schema in its own change, refresh
+- ACP v2 is in Preview. Update the pinned schema in its own change, refresh
   `VERSION`, and fix whatever the e2e schema validation then reports.
 
 ## Invariants

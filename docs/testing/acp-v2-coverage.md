@@ -6,11 +6,13 @@ at commit `840484ff`. See the [schema pin](../../testdata/schema/v2/VERSION)
 and the beta.4 audit below. The [T3 smoke record](t3-first-class-smoke.md)
 tracks actual client rendering.
 
-Method: the e2e harness (`e2e/`) validates every message the agent writes
-against the schema, so a surface "covered by e2e" is also schema-validated.
-Test names are file pointers, not an exhaustive list. Compiled 2026-10-22 from
-the schema's `x-method` values, `SessionUpdate` variants and the Go types in
-`internal/acp`.
+The e2e harness (`e2e/`) validates each individual message the agent writes
+against the schema. The reader unwraps batch arrays before validation, so
+these checks do not detect a prohibited array on stdout.
+[#220](https://github.com/anesthetised/acplause/issues/220) covers validation
+of complete output lines. The test references point to relevant files. The
+matrix was first compiled on 2026-10-22 from the schema's `x-method` values,
+`SessionUpdate` variants and the Go types in `internal/acp`.
 
 Legend: **Covered** = implemented and tested; **Deferred #N** = not
 implemented, parked by the maintainer (needs a design decision first);
@@ -178,11 +180,18 @@ capability here. [Upstream schema changelog][beta-changelog]
   The schema now requires a nonempty prompt and the protocol permits agents
   to reject the empty arrays the decoder currently accepts. Check validation
   of known block fields too, including the new nonnegative `resource_link.size`.
-  The command text now describes invocation using the
-  first text block, including mixed-content prompts, while [ADR 0015's parser](../../internal/agent/commands.go)
-  requires a single text block. Define and test how argument-free `/compact`
-  should handle a command followed by additional content.
-  [Prompt contents][beta-prompt] · [Running commands][beta-commands]
+  Alpha.9 already allowed commands to accompany other content. Beta.4
+  specifies how to recognize a command in the first text block.
+  [The parser](../../internal/agent/commands.go) still requires a single
+  text block. Define and test how argument-free `/compact` should handle
+  accompanying content.
+  [Prompt contents][beta-prompt] · [Alpha.9 commands][alpha-commands] · [Beta.4 commands][beta-commands]
+- **Unsupported system prompts.** Beta.4 requires `-32602` when the agent
+  cannot apply a supplied `systemPrompt` because its value uses an unsupported
+  mode or content type. [Both setup request types](../../internal/acp/session.go)
+  silently drop the field. Add focused tests that an unsupported prompt
+  leaves the session uncreated or unresumed in `session/new` and
+  `session/resume`. [System prompt][beta-system-prompt]
 - **MCP setup.** Agents must reject unsupported transports and duplicate names,
   and transport-owned HTTP headers use transport values. [MCP validation](../../internal/acp/mcp.go)
   skips unrecognized transports and rejects transport-owned headers. Add setup
@@ -195,11 +204,12 @@ capability here. [Upstream schema changelog][beta-changelog]
 - **Configuration.** The spec recommends broadcasting the complete config when
   it changes, including client-initiated changes. [Set config](../../internal/agent/agent.go)
   only returns the response. Expand the scope of [#144](https://github.com/anesthetised/acplause/issues/144)
-  to cover this and check ordering. The spec also requires a usable
-  `currentValue`. [The model selector](../../internal/agent/catalog.go) offers
+  to cover this and check ordering. Alpha.9 already required usable
+  defaults. Beta.4 expresses that requirement through `currentValue`.
+  [The model selector](../../internal/agent/catalog.go) offers
   an empty placeholder for a fresh session, and [prompt admission](../../internal/agent/session.go)
   requires a model selection. Resolve the default contract with ADR 0002
-  before changing model selection. [Config changes][beta-config] · [Defaults][beta-defaults]
+  before changing model selection. [Config changes][beta-config] · [Alpha.9 defaults][alpha-defaults] · [Beta.4 defaults][beta-defaults]
 - **Session info.** Resume should send a current `session_info_update` even
   without replay, and active sessions should get updates when metadata
   changes. [The session](../../internal/agent/session.go) sends state on
@@ -230,9 +240,12 @@ been done beyond the pointers above; file a focused issue for any gap found.
 [beta-envelope]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/overview.mdx#communication-model
 [beta-init]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/initialization.mdx#before-initialization-completes
 [beta-version]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/initialization.mdx#version-negotiation
+[alpha-commands]: https://github.com/agentclientprotocol/agent-client-protocol/blob/3be9cfc8ea2dfe5a28973b461fd956b4045f24d3/docs/protocol/v2/slash-commands.mdx#running-commands
 [beta-commands]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/slash-commands.mdx#running-commands
+[beta-system-prompt]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/session-setup.mdx#system-prompt
 [beta-mcp]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/session-setup.mdx#mcp-servers
 [beta-config]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/session-config-options.mdx#from-the-agent
+[alpha-defaults]: https://github.com/agentclientprotocol/agent-client-protocol/blob/3be9cfc8ea2dfe5a28973b461fd956b4045f24d3/docs/protocol/v2/session-config-options.mdx#default-values-and-graceful-degradation
 [beta-defaults]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/session-config-options.mdx#default-values-and-graceful-degradation
 [beta-sync]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/session-setup.mdx#current-state-synchronization
 [beta-list]: https://github.com/agentclientprotocol/agent-client-protocol/blob/840484ff59b3deb1314d1a74e351cd16ef052b30/docs/protocol/v2/session-list.mdx#updating-session-metadata
