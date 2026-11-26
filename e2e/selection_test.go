@@ -207,6 +207,12 @@ func TestRememberLastSelection(t *testing.T) {
 	if len(latest.ConfigOptions) != 2 || latest.ConfigOptions[0].CurrentValue != "test/plain" {
 		t.Fatalf("last selection was overwritten: %+v", latest.ConfigOptions)
 	}
+	// Re-selecting the model already in use still remembers that choice.
+	b.ok("session/set_config_option", configRequest(restarted.SessionID, "model", "test/model"), nil)
+	if fresh := b.newSession(cwd); configByID(t, fresh.ConfigOptions, "model").CurrentValue != "test/model" ||
+		configByID(t, fresh.ConfigOptions, "reasoning_effort").CurrentValue != "high" {
+		t.Fatalf("same-value selection was not remembered: %+v", fresh.ConfigOptions)
+	}
 }
 
 func TestModelListRecoversWithoutRestart(t *testing.T) {

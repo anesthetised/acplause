@@ -17,7 +17,7 @@ type sessionOperation struct {
 	previous *sessionOperation
 	done     chan struct{}
 	reply    requestReply
-	owed     *outputObligation // state or a setup warning still needs admission
+	owed     *outputObligation // resume or setter still owes output
 	replay   *historyReplay    // released by the operation worker
 	staged   bool              // this admission belongs to a chain waiting on a cold write
 	config   bool
@@ -25,6 +25,22 @@ type sessionOperation struct {
 	terminal bool
 	closing  bool  // close owns its reply until all terminal cleanup has finished
 	err      error // published by closing done
+
+	// Setters inherit the nearest preceding non-setter operation so other
+	// setters alone do not make a mode change busy.
+	modeBarrier *sessionOperation
+}
+
+func (op *sessionOperation) pending() bool {
+	if op == nil {
+		return false
+	}
+	select {
+	case <-op.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // reserveOperation records ACP arrival order before any off-loop work. An
@@ -70,12 +86,12 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 			select {
 			case <-op.previous.done:
 			case <-op.ctx.Done():
-				if !op.closing {
+				if !op.closing && !op.config {
 					op.err = acp.ErrRequestCancelled()
 					op.reject()
 				}
 				<-op.previous.done
-				if !op.terminal {
+				if !op.terminal && !op.config {
 					return
 				}
 			}
@@ -100,6 +116,14 @@ func (a *Agent) startOperation(id string, op *sessionOperation, work func(contex
 // reject ends an incomplete replay with its error before releasing live events,
 // including when a cancelled operation must still wait for its predecessor.
 func (op *sessionOperation) reject() {
+	if op.config && op.owed.streams.wire != nil {
+		reply := op.reply.(*jsonrpc.Reply)
+		line, err := reply.ErrorLine(op.err)()
+		if err == nil {
+			op.owed.sendReply(reply, line)
+			return
+		}
+	}
 	if r := op.replay; r != nil {
 		op.err = r.finish(op.ctx, op.err)
 		op.replay = nil

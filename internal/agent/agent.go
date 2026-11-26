@@ -431,6 +431,15 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 		}
 		return a.rejectLater(reply, acp.ErrSessionNotFound(req.SessionID))
 	}
+	// A setter or another prompt can keep a completed setup in the chain.
+	// Only setup still in progress at receipt can fail this prompt.
+	setup := previous
+	for setup != nil && (setup.prompt || setup.config) {
+		setup = setup.previous
+	}
+	if !setup.pending() {
+		setup = nil
+	}
 	if sub.key != "" {
 		shared, group, first := a.prompts.join(ctx, promptIdentity{req.SessionID, sub.key}, reply)
 		if !first {
@@ -458,16 +467,9 @@ func (a *Agent) prompt(ctx context.Context, req acp.PromptRequest) (any, error) 
 				return err
 			}
 		}
-		// A prompt depends on the requested setup, not on whether an earlier
-		// prompt was cancelled. Failed setup must reject before insertion.
-		// The predecessor observed at receipt may have finished while the
-		// group was registered. Its result still applies to this prompt.
 		var setupErr error
-		for setup := previous; setup != nil; setup = setup.previous {
-			if !setup.prompt && !setup.config {
-				setupErr = setup.err
-				break
-			}
+		if setup != nil {
+			setupErr = setup.err
 		}
 		if err := a.checkGeneration(s); err != nil {
 			return err
@@ -869,56 +871,81 @@ func (a *Agent) setConfigOption(ctx context.Context, req acp.SetConfigOptionRequ
 		state = s.activation.Load()
 	}
 	lost := previous == nil && (state == activationLost || a.lost[req.SessionID])
-	stage := state == activationWriting || (state == activationActive && previous != nil && previous.staged)
-	a.mu.Unlock()
-	if stage {
-		op := a.reserveOperation(ctx, req.SessionID, false, false)
-		op.staged, op.config = true, true
-		var selection *modelSelection
-		if req.ConfigID == configModel || req.ConfigID == configEffort {
-			selection = new(modelSelection)
-			a.rememberSelection(op.done, selection)
-		}
-		a.startOperation(req.SessionID, op, func(ctx context.Context) error {
-			if err := s.awaitWritten(ctx); err != nil {
-				return err
-			}
-			if err := a.checkGeneration(s); err != nil {
-				return err
-			}
-			result, err := a.applyConfigOption(ctx, s, req, false, selection)
-			if err == nil {
-				op.reply.Resolve(result)
-			}
-			return err
-		})
-		return op.reply, nil
+	writing := state == activationWriting
+	staged := writing || (previous != nil && previous.staged)
+	barrier := previous
+	if barrier != nil && barrier.config {
+		barrier = barrier.modeBarrier
 	}
-	if state != activationActive {
-		reply := jsonrpc.NewReply(ctx)
+	setupPending := state == activationActive && barrier.pending()
+	a.mu.Unlock()
+	reply := jsonrpc.NewReply(ctx)
+	if state != activationActive && !writing {
 		if lost {
 			return a.rejectLater(reply, errSessionLost())
 		}
 		return a.rejectLater(reply, acp.ErrSessionNotFound(req.SessionID))
 	}
-	return a.applyConfigOption(ctx, s, req, previous != nil, nil)
+	op := a.reserveOperation(ctx, req.SessionID, false, false)
+	op.staged, op.config, op.modeBarrier = staged, true, barrier
+	op.reply = reply
+	op.owed = a.deps.replays.owe(req.SessionID)
+	var selection *modelSelection
+	if req.ConfigID == configModel || req.ConfigID == configEffort {
+		selection = new(modelSelection)
+		a.rememberSelection(op.done, selection)
+	}
+	a.startOperation(req.SessionID, op, func(ctx context.Context) error {
+		if writing {
+			if err := s.awaitWritten(ctx); err != nil {
+				return err
+			}
+		}
+		if err := a.checkGeneration(s); err != nil {
+			return err
+		}
+		snapshot, err := s.setConfigOption(ctx, req.ConfigID, req.Type, req.Value, setupPending)
+		if err != nil {
+			return err
+		}
+		if selection != nil {
+			*selection = snapshot.selection
+		}
+		s.publishConfigOption(reply, snapshot, op.owed)
+		return nil
+	})
+	return reply, nil
 }
 
-func (a *Agent) applyConfigOption(ctx context.Context, s *Session, req acp.SetConfigOptionRequest, setupPending bool, staged *modelSelection) (any, error) {
-	if err := s.setConfigOption(ctx, req.ConfigID, req.Type, req.Value, setupPending); err != nil {
-		return nil, err
-	}
-	if req.ConfigID != configMode {
-		s.mu.Lock()
-		choice := modelSelection{s.model, s.effort}
-		s.mu.Unlock()
-		if staged != nil {
-			*staged = choice
-		} else {
-			a.rememberSelection(nil, &choice)
+// publishConfigOption completes committed work even if the request or session
+// was cancelled in the meantime. The operation chain keeps later snapshots
+// behind this one, and the replay obligation covers the wait for output capacity.
+func (s *Session) publishConfigOption(reply *jsonrpc.Reply, snapshot configSnapshot, owed *outputObligation) {
+	result := acp.SetConfigOptionResponse{ConfigOptions: snapshot.options}
+	update := acp.ConfigOptionUpdate{ConfigOptions: snapshot.options}
+	if owed.streams.wire == nil {
+		if snapshot.changed {
+			_ = s.notify(update)
 		}
+		reply.Resolve(result)
+		return
 	}
-	return acp.SetConfigOptionResponse{ConfigOptions: s.ConfigOptions()}, nil
+	var lines [][]byte
+	if snapshot.changed {
+		line, err := jsonrpc.NotificationLine(acp.MethodSessionUpdate, acp.SessionNotification{SessionID: s.id, Update: update})
+		if err != nil {
+			reply.Reject(err)
+			return
+		}
+		lines = append(lines, line)
+	}
+	line, err := reply.ResultLine(result)
+	if err != nil {
+		reply.Reject(err)
+		return
+	}
+	// Enqueue both lines at once so a cursor cannot split the pair.
+	owed.sendReply(reply, append(lines, line)...)
 }
 
 // pendingSelection fences earlier client choices without waiting on the
@@ -929,7 +956,7 @@ func (a *Agent) pendingSelection() <-chan struct{} {
 	return a.selectionSaved
 }
 
-// modelSelection stays empty when a staged request is withdrawn before mutation.
+// modelSelection stays empty when a setter fails before mutation.
 type modelSelection struct{ model, effort string }
 
 // rememberSelection queues writes in request order across all sessions.

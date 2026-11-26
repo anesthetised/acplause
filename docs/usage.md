@@ -29,6 +29,11 @@ cold resumes after a successful reload see the new list. Open sessions keep
 their list and selected model. A failed reload keeps the previous list and
 logs a warning.
 
+When a client changes a setting, it receives a `config_option_update` followed
+by the setter response. Both carry the same complete list, including reasoning
+effort options for the selected model. Selecting the current value returns the
+complete list with no new notification. See [ADR 0040](adr/0040-client-configuration-updates.md).
+
 ## Plan and Build modes
 
 The `mode` session config option selects **Build** (the default) or **Plan**.

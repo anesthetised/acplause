@@ -46,6 +46,13 @@ type ReplayComplete struct{}
 
 func (ReplayComplete) sessionUpdate() string { return "replay_complete" }
 
+// ConfigOptionUpdate replaces the client's complete configuration snapshot.
+type ConfigOptionUpdate struct {
+	ConfigOptions []ConfigOption `json:"configOptions"`
+}
+
+func (ConfigOptionUpdate) sessionUpdate() string { return "config_option_update" }
+
 // UserMessage creates or replaces a user message.
 type UserMessage struct {
 	MessageID string         `json:"messageId"`

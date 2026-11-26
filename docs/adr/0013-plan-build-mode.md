@@ -12,7 +12,7 @@ T3's Plan/Build toggle maps to ACP config options in category mode. acplause exp
 
 ## Decisions
 
-1. Add configId:'mode', type:'select', category:'mode', values 'build' and 'plan'; default new sessions to build. Return it in new/resume and the full set_config_option response. Do not add v1 session/set_mode or send redundant config_option_update for client-originated changes (ADR 0001).
+1. Add configId:'mode', type:'select', category:'mode', values 'build' and 'plan'; default new sessions to build. Return it in new/resume and the full set_config_option response. The original notification policy is superseded by [ADR 0040](0040-client-configuration-updates.md), which also publishes changed mode selections. The v1 session/set_mode method remains out of scope.
 
 2. Persist mode on the session using one appended SQLite migration with default 'build'. Old sessions load build. Do not include mode in globally remembered model/effort preferences. Reject invalid values without mutation.
 

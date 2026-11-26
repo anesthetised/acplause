@@ -518,54 +518,61 @@ func (s *Session) ConfigOptions() []acp.ConfigOption {
 	return s.catalog.options(s.model, s.effort, s.mode)
 }
 
-// setConfigOption admits a mode change under mu, which fences queued prompts.
-// setupPending comes from Agent.mu; see Agent.setConfigOption for why the
-// two checks need not hold both locks.
-func (s *Session) setConfigOption(ctx context.Context, id, valueType string, raw json.RawMessage, setupPending bool) error {
+type configSnapshot struct {
+	options   []acp.ConfigOption
+	selection modelSelection
+	changed   bool
+}
+
+// setConfigOption captures the full advertised snapshot at the mutation.
+// The caller owns the operation reservation and publishes outside mu.
+func (s *Session) setConfigOption(ctx context.Context, id, valueType string, raw json.RawMessage, setupPending bool) (configSnapshot, error) {
 	var value string
 	if valueType != acp.ConfigValueID || json.Unmarshal(raw, &value) != nil {
-		return acp.ErrInvalidParams("%s takes an id value", id)
+		return configSnapshot{}, acp.ErrInvalidParams("%s takes an id value", id)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ctx.Err() != nil || s.closed || s.lost || s.activation.Load() != activationActive {
-		return acp.ErrRequestCancelled()
+		return configSnapshot{}, acp.ErrRequestCancelled()
 	}
+	old := modelSelection{s.model, s.effort}
+	oldMode := s.mode
 	switch id {
 	case configMode:
 		if value != modeBuild && value != modePlan {
-			return acp.ErrInvalidParams("unknown execution mode %q", value)
+			return configSnapshot{}, acp.ErrInvalidParams("unknown execution mode %q", value)
 		}
-		if s.mode == value {
-			return nil
+		if s.mode != value {
+			// The worker outlives the turn while it saves; only a claimed turn is busy.
+			if setupPending || s.claimed || len(s.queue) > 0 || s.state.State != acp.StateIdle {
+				return configSnapshot{}, acp.ErrInvalidParams("cannot change mode while the session is busy; cancel or wait for work and setup to finish, then retry")
+			}
+			s.mode = value
+			s.history[0].Content = systemPrompt(s.cwd, s.dirs, s.instructions, s.mode)
 		}
-		// The worker outlives the turn while it saves; only a claimed turn is busy.
-		if setupPending || s.claimed || len(s.queue) > 0 || s.state.State != acp.StateIdle {
-			return acp.ErrInvalidParams("cannot change mode while the session is busy; cancel or wait for work and setup to finish, then retry")
-		}
-		if s.closed || s.lost {
-			return acp.ErrInvalidParams("cannot change mode on a closed or lost session")
-		}
-		s.mode = value
-		s.history[0].Content = systemPrompt(s.cwd, s.dirs, s.instructions, s.mode)
 	case configModel:
 		if !s.catalog.has(value) {
-			return acp.ErrInvalidParams("unknown model %q", value)
+			return configSnapshot{}, acp.ErrInvalidParams("unknown model %q", value)
 		}
 		s.model = value
 	case configEffort:
 		if !s.catalog.reasons(s.model) {
-			return acp.ErrInvalidParams("model %s does not take a reasoning effort", s.model)
+			return configSnapshot{}, acp.ErrInvalidParams("model %s does not take a reasoning effort", s.model)
 		}
 		if !validEffort(value) {
-			return acp.ErrInvalidParams("unknown reasoning effort %q", value)
+			return configSnapshot{}, acp.ErrInvalidParams("unknown reasoning effort %q", value)
 		}
 		s.effort = value
 	default:
-		return acp.ErrInvalidParams("unknown config option %q", id)
+		return configSnapshot{}, acp.ErrInvalidParams("unknown config option %q", id)
 	}
-	s.flushAsync()
-	return nil
+	selection := modelSelection{s.model, s.effort}
+	changed := selection != old || s.mode != oldMode
+	if changed || id != configMode {
+		s.flushAsync()
+	}
+	return configSnapshot{s.catalog.options(s.model, s.effort, s.mode), selection, changed}, nil
 }
 
 // withdraw drops a prompt whose request was cancelled before insertion.
