@@ -29,6 +29,15 @@ the next prompt or cancellation while a reply is pending. An accepted prompt's
 A top-level array receives one `-32600` error with `id: null`. None of its
 entries run. [ADR 0032](adr/0032-reject-jsonrpc-batches.md)
 
+A client can send an optional `idempotencyKey` with `session/prompt`. Use the
+same key for each attempt at one submission. Pending retries share the result,
+and a retry after insertion returns the original `messageId` without another
+turn. Cancelling any pending attempt withdraws the whole submission before
+insertion. The key is private to the session and survives restart and context
+compaction with its user message. If a save warning preceded a restart, both
+the unsaved message and its key may have been lost.
+See [ADR 0033](adr/0033-prompt-idempotency-keys.md).
+
 ## List, resume, close and delete
 
 `session/list` includes stored sessions from every process using that data

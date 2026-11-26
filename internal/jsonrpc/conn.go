@@ -329,7 +329,12 @@ func (c *Conn) call(ctx context.Context, methods Methods, id ID, method string, 
 
 	ctx, cancel := context.WithCancel(ctx)
 	reply := &Reply{}
-	tracked := c.track(id, cancel)
+	tracked := c.track(id, func() {
+		cancel()
+		if reply.onCancelRequest != nil {
+			reply.onCancelRequest()
+		}
+	})
 	reply.bind(func(result any, err error) {
 		c.untrack(id, tracked)
 		cancel()

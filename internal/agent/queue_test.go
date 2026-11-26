@@ -115,3 +115,38 @@ func TestPromptWaitsForPendingResume(t *testing.T) {
 		})
 	}
 }
+
+func (c *acpClient) promptWithKey(sid, key, text string) <-chan rpcResponse {
+	return c.send(acp.MethodSessionPrompt, map[string]any{"sessionId": sid, "idempotencyKey": key, "prompt": []acp.ContentBlock{acp.Text(text)}})
+}
+
+func TestKeyedPromptCancellationDuringSetup(t *testing.T) {
+	gate := &gatedAcquireStore{entered: make(chan struct{}, 1), release: make(chan error, 1)}
+	model := make(scriptedModel, 1)
+	model.reply("done", llm.FinishStop, nil)
+	c := startAgent(t, t.TempDir(), model, nil, func(st Store) Store { gate.Store = st; return gate })
+	c.initialize()
+	cwd := t.TempDir()
+	sid := c.newSession(cwd)
+	c.selectModel(sid, "m")
+	resume := c.send(acp.MethodSessionResume, map[string]any{"sessionId": sid, "cwd": cwd})
+	<-gate.entered
+	defer close(gate.release)
+	first := c.promptWithKey(sid, "key", "original")
+	second := c.promptWithKey(sid, "key", "retry")
+	c.notify("$/cancel_request", map[string]any{"requestId": c.lastID()})
+	for _, ch := range []<-chan rpcResponse{second, first} {
+		if r := c.await(ch); r.Error == nil || r.Error.Code != -32800 {
+			t.Fatalf("withdrawal: %+v", r)
+		}
+	}
+	retry := c.promptWithKey(sid, "key", "new attempt")
+	gate.release <- nil
+	if r := c.await(resume); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	if r := c.await(retry); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	c.waitFor(sid, func(n notification) bool { return n.Update.StopReason == string(acp.StopEndTurn) })
+}

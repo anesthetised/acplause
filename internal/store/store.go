@@ -32,6 +32,9 @@ var (
 	ErrLost     = errors.New("session was resumed in another acplause process")
 )
 
+// ErrKeyConflict means a save would change or duplicate a recorded prompt identity.
+var ErrKeyConflict = errors.New("conflicting prompt identity")
+
 // idle is the foreground state in which another process may take a session
 // over.
 const idle = "idle"
@@ -54,13 +57,15 @@ type Session struct {
 type Row struct {
 	Seq  int
 	Data []byte
+	Key  string // private to a user-message transcript row; empty writes SQL NULL
 }
 
 // Loaded is a session taken over by this process, with its entries in order.
 type Loaded struct {
 	Session
-	History    [][]byte
-	Transcript [][]byte
+	History        [][]byte
+	Transcript     [][]byte
+	TranscriptKeys map[int]string // keyed by index into Transcript
 	// AlreadyOwned reports whether this process owned the row immediately
 	// before Acquire, observed in the same transaction as the takeover.
 	AlreadyOwned bool
@@ -148,6 +153,9 @@ var migrations = []string{
 		effort TEXT NOT NULL
 	);`,
 	`ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build' CHECK (mode IN ('build', 'plan'));`,
+	`ALTER TABLE transcript ADD COLUMN idempotency_key BLOB;
+	CREATE UNIQUE INDEX transcript_prompt_key ON transcript (session_id, idempotency_key)
+		WHERE idempotency_key IS NOT NULL;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -217,11 +225,15 @@ func (s *Store) Create(ctx context.Context, sess Session) error {
 
 // Save replaces the history suffix starting at history[0].Seq and upserts
 // transcript entries atomically. An empty history leaves it unchanged.
-// It fails with ErrLost once another process has the session.
-func (s *Store) Save(ctx context.Context, sess Session, history, transcript []Row) error {
+// It fails with ErrLost once another process has the session. If supplied,
+// cancelled checks all insertion waiters just before starting the transaction.
+func (s *Store) Save(ctx context.Context, sess Session, history, transcript []Row, cancelled func() bool) error {
 	dirs, err := json.Marshal(nonNil(sess.Dirs))
 	if err != nil {
 		return err
+	}
+	if cancelled != nil && cancelled() {
+		return context.Canceled
 	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE sessions
@@ -239,20 +251,41 @@ func (s *Store) Save(ctx context.Context, sess Session, history, transcript []Ro
 				return err
 			}
 		}
-		for _, t := range []struct {
-			table string
-			rows  []Row
-		}{{"history", history}, {"transcript", transcript}} {
-			for _, r := range t.rows {
-				if _, err := tx.ExecContext(ctx,
-					`INSERT OR REPLACE INTO `+t.table+` (session_id, seq, data) VALUES (?, ?, ?)`,
-					sess.ID, r.Seq, string(r.Data)); err != nil {
-					return err
-				}
+		for _, r := range history {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO history (session_id, seq, data) VALUES (?, ?, ?)`,
+				sess.ID, r.Seq, string(r.Data)); err != nil {
+				return err
+			}
+		}
+		for _, r := range transcript {
+			// A keyed row is immutable. REPLACE could delete a different
+			// message on a unique-key collision and silently acknowledge both.
+			res, err := tx.ExecContext(ctx, `INSERT INTO transcript (session_id, seq, data, idempotency_key)
+				VALUES (?, ?, ?, NULLIF(?, x''))
+				ON CONFLICT (session_id, seq) DO UPDATE SET data = excluded.data
+				WHERE transcript.idempotency_key IS excluded.idempotency_key
+				  AND (transcript.idempotency_key IS NULL OR transcript.data = excluded.data)
+				ON CONFLICT DO NOTHING`, sess.ID, r.Seq, string(r.Data), []byte(r.Key))
+			if err != nil {
+				return err
+			}
+			if n, err := res.RowsAffected(); err != nil || n == 0 {
+				return cmp.Or(err, ErrKeyConflict)
 			}
 		}
 		return nil
 	})
+}
+
+// CheckOwner verifies that this process still holds the row without changing its lease.
+// Deletion and takeover both invalidate the local session.
+func (s *Store) CheckOwner(ctx context.Context, id string) error {
+	var owned bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ? AND owner = ?)`, id, s.owner).Scan(&owned)
+	if err == nil && !owned {
+		return ErrLost
+	}
+	return err
 }
 
 // Acquire takes a session over for this process and loads it. A session
@@ -284,10 +317,11 @@ func (s *Store) Acquire(ctx context.Context, id string) (*Loaded, error) {
 			s.owner, s.leaseUntil(), id); err != nil {
 			return err
 		}
-		if l.History, err = entries(ctx, tx, "history", id); err != nil {
+		if l.History, err = entries(ctx, tx, `SELECT data, NULL FROM history WHERE session_id = ? ORDER BY seq`, id, nil); err != nil {
 			return err
 		}
-		l.Transcript, err = entries(ctx, tx, "transcript", id)
+		l.TranscriptKeys = make(map[int]string)
+		l.Transcript, err = entries(ctx, tx, `SELECT data, idempotency_key FROM transcript WHERE session_id = ? ORDER BY seq`, id, l.TranscriptKeys)
 		return err
 	})
 	if err != nil {
@@ -302,19 +336,22 @@ func (s *Store) heldElsewhere(owner string, leaseUntil int64, state string) bool
 	return owner != "" && owner != s.owner && leaseUntil > s.now().UnixNano() && state != idle
 }
 
-func entries(ctx context.Context, tx *sql.Tx, table, id string) ([][]byte, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT data FROM `+table+` WHERE session_id = ? ORDER BY seq`, id)
+func entries(ctx context.Context, tx *sql.Tx, query, id string, keys map[int]string) ([][]byte, error) {
+	rows, err := tx.QueryContext(ctx, query, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out [][]byte
 	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
+		var data, key []byte
+		if err := rows.Scan(&data, &key); err != nil {
 			return nil, err
 		}
-		out = append(out, []byte(data))
+		if len(key) != 0 {
+			keys[len(out)] = string(key)
+		}
+		out = append(out, data)
 	}
 	return out, rows.Err()
 }

@@ -20,7 +20,8 @@ import (
 // (ADRs 0004 and 0005).
 type Store interface {
 	Create(ctx context.Context, sess store.Session) error
-	Save(ctx context.Context, sess store.Session, history, transcript []store.Row) error
+	Save(ctx context.Context, sess store.Session, history, transcript []store.Row, cancelled func() bool) error
+	CheckOwner(ctx context.Context, id string) error
 	Acquire(ctx context.Context, id string) (*store.Loaded, error)
 	Renew(ctx context.Context, ids []string) (lost []string, err error)
 	Release(ctx context.Context, id string) error
@@ -135,7 +136,7 @@ func (s *Session) pending() (sess store.Session, history, transcript []store.Row
 		if err != nil {
 			return sess, nil, nil, nil, err
 		}
-		transcript = append(transcript, store.Row{Seq: i, Data: data})
+		transcript = append(transcript, store.Row{Seq: i, Data: data, Key: s.transcriptKeys[i]})
 	}
 	s.saved, s.dirty = len(s.history)-1, map[int]bool{}
 	undo = func() {
@@ -162,7 +163,7 @@ func (s *Session) flush() {
 	sess, history, transcript, undo, err := s.pending()
 	s.mu.Unlock()
 	if err == nil {
-		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript)
+		err = s.deps.store.Save(context.WithoutCancel(s.ctx), sess, history, transcript, nil)
 	}
 	if err == nil {
 		s.mu.Lock()
@@ -172,7 +173,8 @@ func (s *Session) flush() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if errors.Is(err, store.ErrLost) {
+	if errors.Is(err, store.ErrLost) || errors.Is(err, store.ErrKeyConflict) {
+		// Rebuild from the authoritative transcript on the next resume.
 		s.loseLocked()
 		return
 	}
@@ -192,6 +194,35 @@ func (s *Session) warnSave(err error) {
 			Description: "Work continues in memory. Recent changes may be lost if acplause exits. Saving will be retried automatically.",
 		})
 		s.saveWarning = true
+	}
+}
+
+// resolveRecorded verifies an already-inserted message against the current owner.
+// flushMu orders the check and its result with a local reacquisition. Close waits
+// for this admitted lookup before releasing the lease.
+func (s *Session) resolveRecorded(reply requestReply, id string) {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	// SQLite can transfer an idle session immediately after the read. Cover
+	// only retries already admitted by the time we make that observation.
+	if g, ok := reply.(*promptGroup); ok {
+		g.owner.mu.Lock()
+		g.detachLocked()
+		g.owner.mu.Unlock()
+	}
+	err := s.deps.store.CheckOwner(context.WithoutCancel(s.ctx), s.id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.lost:
+		reply.Reject(errSessionLost())
+	case errors.Is(err, store.ErrLost):
+		s.loseLocked()
+		reply.Reject(errSessionLost())
+	case err != nil:
+		reply.Reject(jsonrpc.NewError(jsonrpc.CodeInternalError, "cannot verify session ownership: %v", err))
+	default:
+		reply.Resolve(acp.PromptResponse{MessageID: id})
 	}
 }
 
@@ -232,11 +263,20 @@ func restoreSession(parent context.Context, d deps, c *catalog, l *store.Loaded)
 		}
 		s.history = append(s.history, m)
 	}
-	for _, data := range l.Transcript {
+	for i, data := range l.Transcript {
 		u, err := decodeEntry(data)
 		if err != nil {
 			s.Close()
 			return nil, fmt.Errorf("session %s transcript: %w", l.ID, err)
+		}
+		if key := l.TranscriptKeys[i]; key != "" {
+			msg, ok := u.(acp.UserMessage)
+			if !ok || msg.MessageID == "" {
+				s.Close()
+				return nil, fmt.Errorf("session %s transcript: key without a user message ID", l.ID)
+			}
+			s.keys[key] = msg.MessageID
+			s.transcriptKeys[i] = key
 		}
 		if plan, ok := u.(acp.PlanUpdate); ok {
 			s.planIndex[plan.Plan.PlanID] = len(s.transcript)
@@ -299,8 +339,8 @@ func (s *Session) repair() {
 // transaction. Requires flushMu and mu; releases mu during I/O so protocol
 // handlers stay responsive. A successful commit is the insertion boundary:
 // cancellation after it still acknowledges the prompt, then ends the turn.
-func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.Message, updated time.Time) error {
-	if ctx.Err() != nil {
+func (s *Session) claimTurn(ctx context.Context, sub *submission, msg acp.UserMessage, user llm.Message, updated time.Time) error {
+	if ctx.Err() != nil || sub.cancelled() {
 		return acp.ErrRequestCancelled()
 	}
 	if s.deps.store == nil {
@@ -315,13 +355,13 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 		}
 		if err == nil {
 			history = append(history, store.Row{Seq: len(s.history) - 1, Data: h})
-			transcript = append(transcript, store.Row{Seq: len(s.transcript), Data: t})
+			transcript = append(transcript, store.Row{Seq: len(s.transcript), Data: t, Key: sub.key})
 			sess.State, sess.UpdatedAt = string(acp.StateRunning), updated
 			if sess.Title == "" {
 				sess.Title = title(msg.Content)
 			}
 			s.mu.Unlock()
-			err = s.deps.store.Save(ctx, sess, history, transcript)
+			err = s.deps.store.Save(ctx, sess, history, transcript, sub.cancelled)
 			s.mu.Lock()
 		}
 	}
@@ -337,7 +377,11 @@ func (s *Session) claimTurn(ctx context.Context, msg acp.UserMessage, user llm.M
 		s.loseLocked()
 		return errSessionLost()
 	}
-	if ctx.Err() != nil {
+	if errors.Is(err, store.ErrKeyConflict) {
+		s.loseLocked()
+		return jsonrpc.NewError(jsonrpc.CodeInternalError, "%v", store.ErrKeyConflict)
+	}
+	if ctx.Err() != nil || sub.cancelled() || errors.Is(err, context.Canceled) {
 		return acp.ErrRequestCancelled()
 	}
 	// Other storage failures retain the existing in-memory fallback.

@@ -24,7 +24,8 @@ together. A lock may be skipped, but never taken after a later one.
 7. `jsonrpc.Reply.mu`
 8. `jsonrpc.Conn.mu`
 
-Leaves, never held while another lock is taken: the catalog cache mutex in
+Leaves, never held while another lock is taken: the pending prompt groups mutex
+in `prompt_retries.go`, the catalog cache mutex in
 `cacheCatalog`, `calibration.mu`, `mcp.httpTransport.mu`, and outside these packages
 `tools.ShellObserver.mu` and the Windows-only `winproc.Job.mu`.
 
@@ -47,6 +48,7 @@ Where each edge comes from:
 | --- | --- | --- |
 | `Agent.ownershipMu` (`agent.go`) | Ownership transitions: lease renewal and its loss handling, `Store.Acquire` in `Agent.acquire`, publication and first save of a restored session | A renewal that finds a session lost must not interleave with a resume that reacquires it. Only background work takes it; turns never do |
 | `Agent.mu` (`agent.go`) | `sessions`, `lost`, `operations`, `shuttingDown`, `selectionSaved` | The session map and the `sessionOperation` chain. Held briefly; never across I/O or while waiting for `Session.mu` |
+| `pendingPrompts.mu` | Pending session/key groups and their waiters | The reader can attach a retry during setup, validation or a blocked commit. Settlement detaches the group before delivering its replies |
 | `Session.flushMu` (`session.go`, `persist.go`) | Serialises store writes: `Session.flush` and the prompt's `Session.claimTurn` | Each save takes the latest state, so saves cannot reorder. Ownership changes take it to drain an in-flight save, so an old write cannot revive this process's owner ID after a takeover |
 | `Session.mu` (`session.go`) | Every mutable `Session` field except those below: settings, `history`, `transcript`, `state`, `queue`, `worker`, `claimed`, `stopTurn`, `closed`, toolbox pins, roots, remembered shell decisions, `replaying`/`deferred`, and the persistence marks `saved`, `dirty`, `lost`, `saveWarning` | Transcript changes and their live update are one step, so a resume snapshot and live updates cannot reorder |
 | `mcp.Manager.mu` (`mcp/catalog.go`) | `servers`, `revision`, `closed`, `resources`, each server's `recoveryAttempted`; `preparing.Add` happens under it | Configuration publication is atomic; `Close` cannot miss a preparation in progress |
@@ -114,7 +116,7 @@ Per session:
 | --- | --- | --- |
 | Worker | `Session.submit`, when the queue gains work and none runs | `Session.work` runs turns one at a time and exits when the queue is empty; `Session.worker` is closed then |
 | Prompt withdrawal | `context.AfterFunc` in `Session.submit` | rejects a queued prompt whose request was cancelled |
-| Async save | `Session.flushAsync`; tracked by `Session.saves` | `Session.Close` waits for it before the lease can be released |
+| Async save or cached retry check | `Session.flushAsync` or `Session.submit`; tracked by `Session.saves` | `Session.Close` waits for it before the lease can be released |
 | Read-group workers | `orderedReads` in `parallel_reads.go` | up to `ACPLAUSE_READ_CONCURRENCY` (at most 8) built-in reads against the worker's pinned toolbox. Outcomes are committed on the worker in call order; all join before return |
 | Terminal pump | `Session.executeTool` in `terminal.go`, per observed shell call | publishes shell output under `Session.mu` and saves at tool start; joined before the tool finishes |
 | MCP close on loss | `Session.loseLocked` | |
@@ -149,8 +151,8 @@ when it is answered, on `$/cancel_request`, or when `Serve` returns.
 | `session/list` | the job in `Agent.listSessions` |
 | `session/resume` | the operation goroutine (`Agent.resumeSession`) |
 | `session/close`, `session/delete` | the operation goroutine, or the close handler when there is no active session or earlier work to wait for. Terminal cleanup runs even if the reply was already rejected as cancelled |
-| `session/prompt`, before submission | the handler's return when the session is unknown or lost; otherwise `Agent.startOperation`, when the prompt waited behind setup and was cancelled, setup failed, or the session is gone |
-| `session/prompt`, after submission | the `Session`: `Session.submit` (closed, lost, no model), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
+| `session/prompt`, before submission | the handler when the session is unknown or lost; otherwise `Agent.startOperation`, when the prompt waited behind setup and was cancelled, setup failed, or the session is gone |
+| `session/prompt`, after submission | the `Session`: `Session.submit` (in-memory recorded key, closed, lost, no model), `Session.resolveRecorded` (stored owner check), `Session.withdraw`, `Session.Cancel` (queued prompts), `Session.insert` on the worker |
 | any handler that panics or a method that does not exist | `Conn` itself |
 
 `session/cancel` is a notification. `Agent.cancelWaitingPrompts` only cancels
@@ -161,7 +163,7 @@ The **insertion boundary** is `Session.insert` → `Session.claimTurn`
 (`persist.go`), on the worker, under `flushMu` and `Session.mu`.
 `claimTurn` stages the user message and the running state in one
 ownership-checked `Store.Save`; its successful commit is the boundary. Without
-a store, or after a save failure that is not a loss, the in-memory fallback
+a store, or after an ordinary storage failure, the in-memory fallback
 crosses it too. Before the boundary, `insert` rejects: `errSessionLost`, `-32800`
 Request cancelled, invalid images or an unusable model. After it, `insert`
 resolves `messageId` under `Session.mu` before sending `user_message`, so the
@@ -170,6 +172,24 @@ derives from `Session.ctx`, not from the request, so answering the request
 does not stop the turn. `Session.runTurn` then sends exactly one idle
 `state_update` under `Session.mu`, `cancelled` whenever the turn's context
 ended.
+
+The reader groups attempts with the same session and key before reserving
+setup work or submitting to a live session. Each group occupies one queue
+position. Cancelling any member signals the insertion context. Only the
+insertion outcome settles the group once its worker has claimed it.
+For an explicit `$/cancel_request`, the request-bound reply signals both
+the group and its in-flight save on the reader. The signal takes only the
+group registry lock. Immediately before opening the SQLite transaction, the
+store checks the waiter contexts again to observe cancellation even while a
+context callback is still pending.
+A terminal operation detaches the old groups. Prompts arriving before a new
+resume reservation receive the session-not-found error before joining a group.
+Under `Session.mu`, insertion associates the key with the acknowledged message
+ID and keeps it with the transcript row for later saves. Recorded retries can
+return that ID even while the original turn runs.
+A cache hit stops admitting waiters before checking the stored owner on a
+goroutine under `flushMu`. Each later retry needs a fresh observation. Close
+waits for admitted lookups before releasing the lease.
 
 ## Session operations
 
@@ -248,7 +268,7 @@ catalog and restoring happen after both are released.
 
 ## Lease loss
 
-Loss is detected in three places:
+Loss is detected at these points:
 
 - `Agent.renew`, every `store.LeaseRenewal`, under `ownershipMu`. For each
   lost ID, `Agent.dropLocked` removes the session, records it in `lost` so
@@ -256,9 +276,9 @@ Loss is detected in three places:
   captured at the check. A resume reserved after the check is left alone so it
   can restore the session. It then marks the session lost, drains `flushMu`
   and closes it on a goroutine.
-- `Session.flush` or `Session.claimTurn` getting `store.ErrLost`, under
-  `flushMu` and `Session.mu`. `Session.loseLocked` marks the session lost; it
-  stays in the map until the next renewal drops it.
+- `Session.flush`, `Session.claimTurn`, or a recorded retry receiving
+  `store.ErrLost`, under `flushMu` and `Session.mu`. `Session.loseLocked`
+  marks the session lost. It stays in the map until the next renewal drops it.
 - `Agent.acquire`, when the live session was not continuously owned.
 
 `Session.loseLocked` sets `lost`, cancels `Session.ctx` and closes MCP servers

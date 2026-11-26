@@ -14,11 +14,12 @@ import (
 // synchronously inside Resolve or Reject, even before the handler returns.
 // A notification sent afterwards therefore follows the response on the wire.
 type Reply struct {
-	mu      sync.Mutex
-	settled bool
-	result  any
-	err     error
-	deliver func(result any, err error)
+	mu              sync.Mutex
+	settled         bool
+	result          any
+	err             error
+	deliver         func(result any, err error)
+	onCancelRequest context.CancelFunc // installed and invoked only on the reader
 }
 
 type replyContextKey struct{}
@@ -32,6 +33,11 @@ func NewReply(ctx context.Context) *Reply {
 	}
 	return &Reply{}
 }
+
+// OnCancelRequest registers a synchronous signal for an explicit peer cancellation.
+// Call it from the handler before returning. The signal runs on the protocol
+// reader, so it must neither wait for application work nor settle the reply.
+func (r *Reply) OnCancelRequest(cancel context.CancelFunc) { r.onCancelRequest = cancel }
 
 // Resolve answers the request with result.
 func (r *Reply) Resolve(result any) { r.settle(result, nil) }

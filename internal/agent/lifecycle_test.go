@@ -18,7 +18,7 @@ import (
 )
 
 // settledReply reads the actual JSON-RPC result without exposing Reply internals.
-func settledReply(t *testing.T, reply *jsonrpc.Reply) (json.RawMessage, *jsonrpc.Error) {
+func settledReply(t *testing.T, reply requestReply) (json.RawMessage, *jsonrpc.Error) {
 	t.Helper()
 	var output bytes.Buffer
 	conn := jsonrpc.NewConn(bytes.NewBufferString("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"test\"}\n"), &output, slog.New(slog.DiscardHandler))

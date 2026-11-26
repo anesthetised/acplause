@@ -26,7 +26,7 @@ func TestIssue50AcquireReportsPreviousOwnership(t *testing.T) {
 	}
 	acquire(a, true)
 	acquire(b, false)
-	if err := b.Save(ctx, session("s", "idle"), rows(`"B retained history"`), nil); err != nil {
+	if err := b.Save(ctx, session("s", "idle"), rows(`"B retained history"`), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	loaded := acquire(a, false)

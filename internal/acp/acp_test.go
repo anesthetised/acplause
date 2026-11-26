@@ -130,3 +130,30 @@ func TestToolCallUpdateMerge(t *testing.T) {
 		t.Fatalf("unexpected merge: %+v", got)
 	}
 }
+
+func TestPromptKeyValidation(t *testing.T) {
+	for _, raw := range []string{`""`, `true`, `14`, `{}`, `[]`, `"\ud800"`, `"\udfff"`, `"` + string([]byte{0xff}) + `"`, `"` + strings.Repeat("👋", 256) + `"`} {
+		var req PromptRequest
+		err := jsonrpc.DecodeParams([]byte(`{"sessionId":"s","prompt":[],"idempotencyKey":`+raw+`}`), &req)
+		if err == nil || jsonrpc.AsError(err).Code != -32602 {
+			t.Errorf("invalid key accepted or wrong error: %q, %v", raw, err)
+		}
+	}
+}
+
+func TestPromptKeyExactCharacters(t *testing.T) {
+	for raw, want := range map[string]string{
+		"": "", `,"idempotencyKey":null`: "", `,"idempotencyKey":" \u0000 "`: " \x00 ",
+		`,"idempotencyKey":"\ud83d\udc4b"`: "👋", `,"idempotencyKey":"\uFFFD"`: "�",
+		`,"idempotencyKey":"e\u0301"`: "e\u0301", `,"idempotencyKey":"é"`: "é",
+		`,"idempotencyKey":"real","IdempotencyKey":null`:       "real",
+		`,"IdempotencyKey":"ignored"`:                          "",
+		`,"idempotencyKey":"` + strings.Repeat("👋", 255) + `"`: strings.Repeat("👋", 255),
+	} {
+		var req PromptRequest
+		err := jsonrpc.DecodeParams([]byte(`{"sessionId":"s","prompt":[]`+raw+`}`), &req)
+		if err != nil || string(req.IdempotencyKey) != want {
+			t.Errorf("%q: got %q, %v", raw, req.IdempotencyKey, err)
+		}
+	}
+}

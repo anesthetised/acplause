@@ -22,7 +22,7 @@ implemented, parked by the maintainer (needs a design decision first);
 | --- | --- | --- | --- |
 | `initialize` | client→agent | Covered | `e2e/protocol_test.go`, `internal/acp/acp_test.go` |
 | `session/new` | client→agent | Covered | `e2e/sessions_test.go`, `internal/agent/methods_test.go` |
-| `session/prompt` | client→agent | Covered | `e2e/lifecycle_test.go`, `e2e/prompt_images_test.go` |
+| `session/prompt` | client→agent | Covered | `e2e/lifecycle_test.go`, `e2e/prompt_images_test.go`, `e2e/prompt_retries_test.go` |
 | `session/cancel` | client→agent | Covered | `e2e/lifecycle_test.go`, `internal/agent/queue_test.go` |
 | `session/list` | client→agent | Covered | `e2e/store_test.go` |
 | `session/resume` | client→agent | Covered | `e2e/replay_unix_test.go`, `internal/agent/resume_setup_test.go` |
@@ -115,14 +115,12 @@ values acplause emits. System prompts, individual tool and terminal
 cancellation, subagents and background work have no advertised producer or
 capability here. [Upstream schema changelog][beta-changelog]
 
+Prompt retries share one insertion and retain the original message ID across
+compaction and restart. Coverage includes validation, pending setup, cancellation
+during commit, and retry after a lost response. [ADR 0033](../adr/0033-prompt-idempotency-keys.md) · [Retrying prompts][beta-retry]
+
 ### Tracked follow-ups
 
-- **Prompt retries.** Agents advertising sessions must honor a valid
-  `idempotencyKey` while the message is retained, including after restart.
-  [Prompt decoding](../../internal/acp/content.go) drops the key and
-  [insertion](../../internal/agent/session.go) always allocates a new ID.
-  [#218](https://github.com/anesthetised/acplause/issues/218) covers validation,
-  concurrent retries and retry after a lost response. [Retrying prompts][beta-retry]
 - **Replay boundary.** Cursor-based resumes must mark completed history
   exactly once, before current-state synchronization and live updates.
   [Resume](../../internal/agent/session.go) appends current state to the

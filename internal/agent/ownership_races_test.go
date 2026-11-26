@@ -29,14 +29,14 @@ type issue50GatedStore struct {
 	saveResult          chan error
 }
 
-func (s *issue50GatedStore) Save(ctx context.Context, row store.Session, h, tr []store.Row) error {
+func (s *issue50GatedStore) Save(ctx context.Context, row store.Session, h, tr []store.Row, cancelled func() bool) error {
 	s.saves.Add(1)
 	if !s.saveGate.CompareAndSwap(true, false) {
-		return s.Store.Save(ctx, row, h, tr)
+		return s.Store.Save(ctx, row, h, tr, cancelled)
 	}
 	close(s.saveEntered)
 	<-s.releaseSave
-	err := s.Store.Save(ctx, row, h, tr)
+	err := s.Store.Save(ctx, row, h, tr, cancelled)
 	s.saveResult <- err
 	return err
 }
