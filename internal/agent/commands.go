@@ -10,7 +10,11 @@ import (
 )
 
 func availableCommands() []acp.AvailableCommand {
-	return []acp.AvailableCommand{{Name: "compact", Description: "Summarize older conversation history to free model context."}}
+	return []acp.AvailableCommand{{
+		Type:        "command",
+		Name:        "compact",
+		Description: "Summarize older conversation history to free model context.",
+	}}
 }
 
 // isCompactCommand checks the original blocks, never flattened resource text.

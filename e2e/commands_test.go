@@ -18,15 +18,16 @@ func TestCommandDiscoveryOnNewAndResume(t *testing.T) {
 		Commands  []map[string]any `json:"availableCommands"`
 	}
 	a.ok("session/new", map[string]any{"cwd": cwd}, &created)
-	if len(created.Commands) != 1 || created.Commands[0]["name"] != "compact" || created.Commands[0]["description"] == "" || created.Commands[0]["input"] != nil {
-		t.Fatalf("commands: %+v", created.Commands)
+	if len(created.Commands) != 1 || created.Commands[0]["type"] != "command" ||
+		created.Commands[0]["name"] != "compact" || created.Commands[0]["description"] == "" || created.Commands[0]["input"] != nil {
+		t.Fatalf("new session commands: %+v", created.Commands)
 	}
 	var resumed struct {
 		Commands []map[string]any `json:"availableCommands"`
 	}
 	a.ok("session/resume", map[string]any{"sessionId": created.SessionID, "cwd": cwd}, &resumed)
 	if !reflect.DeepEqual(created.Commands, resumed.Commands) {
-		t.Fatalf("resume commands: %+v", resumed.Commands)
+		t.Fatalf("resumed session commands: %+v, want %+v", resumed.Commands, created.Commands)
 	}
 	updates := a.untilIdle(created.SessionID)
 	if len(filter(updates, "available_commands_update")) != 0 {

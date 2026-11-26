@@ -24,7 +24,8 @@ func TestCompactCommandDiscovery(t *testing.T) {
 		Commands  []map[string]any `json:"availableCommands"`
 	}
 	c.ok(acp.MethodSessionNew, map[string]any{"cwd": cwd}, &created)
-	if len(created.Commands) != 1 || created.Commands[0]["name"] != "compact" || created.Commands[0]["description"] == "" || created.Commands[0]["input"] != nil {
+	if len(created.Commands) != 1 || created.Commands[0]["type"] != "command" ||
+		created.Commands[0]["name"] != "compact" || created.Commands[0]["description"] == "" || created.Commands[0]["input"] != nil {
 		t.Fatalf("commands: %+v", created.Commands)
 	}
 	var resumed struct {

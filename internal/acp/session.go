@@ -32,6 +32,7 @@ type NewSessionResponse struct {
 
 // AvailableCommand advertises an agent command without arguments.
 type AvailableCommand struct {
+	Type        string `json:"type"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }

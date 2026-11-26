@@ -1,4 +1,4 @@
 repository: https://github.com/agentclientprotocol/agent-client-protocol
-commit:     3be9cfc8ea2dfe5a28973b461fd956b4045f24d3 (2026-10-17)
-schema:     2.0.0-alpha.9 (draft)
+commit:     840484ff59b3deb1314d1a74e351cd16ef052b30 (2026-11-23)
+schema:     2.0.0-beta.4 (preview)
 files:      schema/v2/schema.json, schema/v2/meta.json
